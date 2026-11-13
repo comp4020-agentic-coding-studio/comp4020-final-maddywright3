@@ -58,8 +58,29 @@ class SseStream {
     }
   }
 
-  close(): void {
+  // Waits for a frame matching predicate, skipping any that don't (a stray
+  // broadcast from another connection — e.g. a previous test's stream still
+  // being torn down server-side — can otherwise land as "the next frame").
+  async waitFor(predicate: (state: MeterState) => boolean, timeoutMs = 2000): Promise<MeterState> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`condition not met within ${timeoutMs}ms`);
+      const state = await this.next(remaining);
+      if (predicate(state)) return state;
+    }
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.reader.cancel();
+    } catch {
+      // already closed
+    }
     this.controller.abort();
+    // Give the server a moment to notice the socket closed, so the next
+    // test's present count isn't racing this connection's teardown.
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 
@@ -68,10 +89,10 @@ it("a tap shows up on an open /events stream within 1 second", async () => {
   try {
     const before = await stream.next();
     await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
-    const after = await stream.next(1000);
+    const after = await stream.waitFor((s) => s.live >= before.live + 1, 1000);
     expect(after.live).toBeGreaterThanOrEqual(before.live + 1);
   } finally {
-    stream.close();
+    await stream.close();
   }
 });
 
@@ -81,13 +102,13 @@ it("present goes up when a second stream connects", async () => {
     const initial = await a.next();
     const b = await SseStream.open("/l/demo/events");
     try {
-      const updated = await a.next();
+      const updated = await a.waitFor((s) => s.present === initial.present + 1);
       expect(updated.present).toBe(initial.present + 1);
     } finally {
-      b.close();
+      await b.close();
     }
   } finally {
-    a.close();
+    await a.close();
   }
 });
 
@@ -99,13 +120,13 @@ it("shown is false below min_present, true once enough people are present", asyn
 
     const b = await SseStream.open("/l/demo/events");
     try {
-      const updated = await a.next();
+      const updated = await a.waitFor((s) => s.shown);
       expect(updated.shown).toBe(true);
     } finally {
-      b.close();
+      await b.close();
     }
   } finally {
-    a.close();
+    await a.close();
   }
 });
 
@@ -133,7 +154,7 @@ it(
       }
       expect(sawFade).toBe(true);
     } finally {
-      stream.close();
+      await stream.close();
     }
   },
   70_000,
