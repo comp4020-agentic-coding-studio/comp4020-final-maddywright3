@@ -23,14 +23,22 @@ db.exec(`
   )
 `);
 
+const lectureColumns = db.prepare("PRAGMA table_info(lectures)").all() as { name: string }[];
+if (!lectureColumns.some((c) => c.name === "min_present")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN min_present INTEGER NOT NULL DEFAULT 5");
+}
+
 db.prepare(
   "INSERT OR IGNORE INTO lectures (id, title, created_at) VALUES (?, ?, ?)",
 ).run("demo", "Demo lecture", new Date().toISOString());
+
+db.prepare("UPDATE lectures SET min_present = 2 WHERE id = 'demo'").run();
 
 export interface Lecture {
   id: string;
   title: string;
   created_at: string;
+  min_present: number;
 }
 
 export interface Tap {
@@ -61,4 +69,18 @@ export function tapsNewestFirst(lectureId: string): Tap[] {
   return db
     .prepare("SELECT * FROM taps WHERE lecture_id = ? ORDER BY created_at DESC, id DESC")
     .all(lectureId) as unknown as Tap[];
+}
+
+export interface LiveTapInfo {
+  count: number;
+  earliest: string | null;
+}
+
+export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS count, MIN(created_at) AS earliest FROM taps WHERE lecture_id = ? AND created_at >= ?",
+    )
+    .get(lectureId, sinceIso) as { count: number; earliest: string | null };
+  return row;
 }
