@@ -1,8 +1,17 @@
 import { createServer } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
 import { addTap, getLecture, tapCount, tapsNewestFirst } from "./db.ts";
+import {
+  addConnection,
+  broadcast,
+  computeState,
+  removeConnection,
+  scheduleFade,
+  startHeartbeat,
+} from "./realtime.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 
@@ -80,15 +89,44 @@ async function handleLecture(id: string): Promise<Response> {
     .map((t) => `<li>${escapeHtml(new Date(t.created_at).toLocaleString())}</li>`)
     .join("\n");
 
+  const state = computeState(id) ?? { present: 0, live: 0, shown: false };
+  const gaugeText = gaugeMessage(state, lecture.min_present);
+
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
-    <form method="post" action="/l/${encodeURIComponent(id)}/tap">
+    <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
+    <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
       <button class="tap-button" type="submit">I'm lost</button>
     </form>
     <p id="tap-count">Total taps: ${count}</p>
     <ul class="taps">
 ${tapItems}
     </ul>
+    <script>
+      (function () {
+        var minPresent = ${JSON.stringify(lecture.min_present)};
+        var gauge = document.getElementById("gauge");
+        var form = document.getElementById("tap-form");
+
+        function render(state) {
+          if (state.shown) {
+            gauge.textContent = state.present + " people here, " + state.live + " lost right now";
+          } else {
+            gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
+          }
+        }
+
+        var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/events`)});
+        source.onmessage = function (event) {
+          render(JSON.parse(event.data));
+        };
+
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          fetch(form.action, { method: "POST" });
+        });
+      })();
+    </script>
   `;
   return new Response(page(lecture.title, body), {
     status: 200,
@@ -105,9 +143,42 @@ async function handleTap(id: string): Promise<Response> {
     });
   }
   addTap(id);
+  broadcast(id);
+  scheduleFade(id);
   return new Response(null, {
     status: 303,
     headers: { location: `/l/${encodeURIComponent(id)}` },
+  });
+}
+
+function gaugeMessage(state: { present: number; live: number; shown: boolean }, minPresent: number): string {
+  if (state.shown) {
+    return `${state.present} people here, ${state.live} lost right now`;
+  }
+  return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
+}
+
+function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): void {
+  const lecture = getLecture(id);
+  if (!lecture) {
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+
+  addConnection(id, res);
+  broadcast(id);
+  scheduleFade(id);
+
+  req.on("close", () => {
+    removeConnection(id, res);
+    broadcast(id);
   });
 }
 
@@ -175,11 +246,21 @@ async function route(req: Request): Promise<Response> {
 
 const server = createServer(async (req, res) => {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+  const { pathname } = new URL(url);
+
+  const eventsMatch = req.method === "GET" && pathname.match(/^\/l\/([^/]+)\/events$/);
+  if (eventsMatch) {
+    handleEvents(decodeURIComponent(eventsMatch[1]), req, res);
+    return;
+  }
+
   const request = new Request(url, { method: req.method });
   const response = await route(request);
   res.writeHead(response.status, Object.fromEntries(response.headers));
   res.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
 });
+
+startHeartbeat();
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on 0.0.0.0:${PORT}`);
