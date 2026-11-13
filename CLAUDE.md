@@ -1,10 +1,17 @@
-# Your harness
+# Rules for this repo
 
-This file is yours, and it arrives empty on purpose. The rules you hold the
-agent to are part of what gets marked, so they should be rules you decided on.
+## Stack (see docs/adr/001-stack.md)
+- Node 24 + TypeScript run directly, node:http, node:sqlite. No frameworks or new dependencies without asking me first.
+- Serve HTTP on 0.0.0.0:$PORT.
+- All persistent data lives under DATA_DIR (/data on Fly, ./data locally). Nothing that must survive a restart goes anywhere else.
 
-Nothing about the template is recorded here. What the repo ships is explained
-where it lives --- `fly.toml`, the `Dockerfile`, the CI workflow and
-`spec/README.md` each say what they fix --- and the course website publishes the
-[final project brief](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/assessments/final-project/).
-What the agent needs to carry from any of it is your call.
+## Never
+- Never change fly.toml settings, spec/invariants.test.ts or the shipped CI checks.
+- Never commit mise.local.toml or any secret.
+- Never write README.md, PROCESS.md or reflections/. I write those.
+
+## Every change
+- /readme/ renders README.md on the server, so headings are in the HTML before any script runs.
+- Works at 390x844 and 1920x1080, and with the keyboard alone.
+- Every behaviour change comes with a test in spec/. Run pnpm check before saying it's done.
+- When I correct you, suggest a rule for this file or a test in spec/ so it can't happen again.
