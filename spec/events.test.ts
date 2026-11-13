@@ -109,11 +109,11 @@ it("shown is false below min_present, true once enough people are present", asyn
   }
 });
 
-// The real 60-second fade, left skipped in the normal run since it's slow by
-// nature: a tap posted now must stop counting as "live" once it passes 60s
-// old, and the server must push that update on its own (no new tap needed).
-// Run deliberately with: RUN_SLOW_TESTS=1 pnpm check
-it.skipIf(!process.env.RUN_SLOW_TESTS)(
+// The real 60-second fade: a tap posted now must stop counting as "live"
+// once it passes 60s old, and the server must push that update on its own
+// (no new tap needed). README.md calls this enforced by tests, so it runs
+// for real in every pnpm check — slow (~65s), but that's the actual claim.
+it(
   "a tap fades out of `live` 60 seconds after it was made",
   async () => {
     const stream = await SseStream.open("/l/demo/events");
