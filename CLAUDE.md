@@ -22,6 +22,7 @@
 
 ## Privacy (from the README's one idea)
 - No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
+- Exception: the demo lecture's code, DEMO, is public on purpose and may be shown on the demo's pages only. No other lecture code is ever shown after it's created. (ADR 003: markers need to get in.)
 - No per-person history is ever shown. Taps are shown as counts per slide, by distinct browser.
 - Lecturer and student state travel on separate routes.
 - live and totalTaps only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
