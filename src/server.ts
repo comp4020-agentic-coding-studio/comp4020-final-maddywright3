@@ -8,8 +8,9 @@ import {
   createLecture,
   getLecture,
   hideNoteById,
+  lectureCount,
   resolveTap,
-  setCurrentSlide,
+  stepCurrentSlide,
   setNote,
   setTapReason,
   tapIfNotRecentlyTapped,
@@ -17,17 +18,19 @@ import {
 import {
   BROWSER_COOKIE,
   LECTURER_COOKIE,
+  checkCreateLectureRateLimit,
   checkLoginRateLimit,
   createLecturerSession,
   ensureBrowserId,
   rawBrowserCookie,
   recordFailedLogin,
+  recordLectureCreation,
   validateBrowserId,
   validateLecturerSession,
 } from "./auth.ts";
 import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
-import { logAction } from "./logging.ts";
+import { logAction, who } from "./logging.ts";
 import {
   LIVE_WINDOW_MS,
   addConnection,
@@ -184,13 +187,21 @@ async function handleHome(): Promise<Response> {
   });
 }
 
-function gaugeMessage(
+// Split into two parts, rendered in separate DOM nodes: the people-present
+// count changes on every arrival/departure, which isn't itself news worth
+// announcing to a screen reader; the lost-count (or the waiting-for-more
+// message) is the part that actually says something new, so only that part
+// is aria-live. Announcing both on every presence change was the "noisy
+// aria-live" finding from the C10 feedback review.
+function presentText(present: number): string {
+  return `${present} people here`;
+}
+
+function lostText(
   state: { present: number; shown: false } | { present: number; shown: true; live: number },
   minPresent: number,
 ): string {
-  if (state.shown) {
-    return `${state.present} people here, ${state.live} lost right now`;
-  }
+  if (state.shown) return `${state.live} lost right now`;
   return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
 }
 
@@ -418,7 +429,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     yourTapCount: 0,
     youAreCounted: false,
   };
-  const gaugeText = gaugeMessage(state, lecture.min_present);
+  const presentTextNow = presentText(state.present);
+  const lostTextNow = lostText(state, lecture.min_present);
 
   // Without JS, the unlock instant is printed as static text ("You can tap
   // again at 3:45pm") — a static page has no countdown to tick. With JS,
@@ -451,7 +463,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     ${slideProgressLabel(id, viewedDeck, viewedSlide)}
     ${slideNavHtml(id, viewedDeck, viewedSlide, LIVE_DECK, liveSlide)}
     ${slideSectionHtml(id, viewedDeck, viewedSlide)}
-    <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
+    <section id="gauge">
+      <span id="gauge-present">${escapeHtml(presentTextNow)}</span>,
+      <span id="gauge-lost" aria-live="polite">${escapeHtml(lostTextNow)}</span>
+    </section>
+    <p id="connection-status" aria-live="polite"></p>
     ${topReasonHtml}
     <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
       <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
@@ -472,7 +488,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
         )};
         var liveDeck = ${JSON.stringify(LIVE_DECK)};
-        var gauge = document.getElementById("gauge");
+        var gaugePresent = document.getElementById("gauge-present");
+        var gaugeLost = document.getElementById("gauge-lost");
         var form = document.getElementById("tap-form");
         var button = document.getElementById("tap-button");
         var feedback = document.getElementById("tap-feedback");
@@ -482,6 +499,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var deckInput = document.getElementById("deck-input");
         var deckSelect = document.getElementById("deck-select");
         var deckForm = document.getElementById("deck-form");
+        var connectionStatus = document.getElementById("connection-status");
 
         // Kept separate: the deck/slide this browser is looking at (what a
         // tap records, what the arrows move), and the live deck/slide the
@@ -793,8 +811,14 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           var backLink = document.getElementById("back-to-live-link");
           var onLive = viewedDeck === liveDeck && viewedSlide === liveSlide;
           if (backLink) backLink.style.display = onLive ? "none" : "";
+          // gaugePresent is a plain (non-aria-live) node: people arriving and
+          // leaving updates it visually but says nothing new out loud.
+          // gaugeLost is the aria-live node — only it changes on an actual
+          // lost-count change or a shown boundary crossing, so a screen
+          // reader hears only what's actually news.
+          if (gaugePresent) gaugePresent.textContent = state.present + " people here";
           if (state.shown) {
-            gauge.textContent = state.present + " people here, " + state.live + " lost right now";
+            if (gaugeLost) gaugeLost.textContent = state.live + " lost right now";
             if (!tapCount) {
               tapCount = document.createElement("p");
               tapCount.id = "tap-count";
@@ -802,7 +826,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
             }
             tapCount.textContent = "Total taps: " + state.totalTaps;
           } else {
-            gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
+            if (gaugeLost) gaugeLost.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
             if (tapCount) {
               tapCount.remove();
               tapCount = null;
@@ -844,7 +868,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/events`)});
         source.onmessage = function (event) {
+          if (connectionStatus) connectionStatus.textContent = "";
           render(JSON.parse(event.data));
+        };
+        source.onerror = function () {
+          if (connectionStatus) connectionStatus.textContent = "Reconnecting...";
         };
 
         form.addEventListener("submit", function (event) {
@@ -1306,7 +1334,11 @@ function lecturerDashboard(
   return `
     <h1>Lecturer view</h1>
 ${slideControlsHtml}
-    <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
+    <section id="gauge">
+      <span id="gauge-present">${escapeHtml(presentText(state.present))}</span>,
+      <span id="gauge-lost" aria-live="polite">${escapeHtml(lostText(state, minPresent))}</span>
+    </section>
+    <p id="connection-status" aria-live="polite"></p>
 ${tapCountHtml}
     <div id="bars">${barsHtml(state.bars)}</div>
     <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
@@ -1314,7 +1346,9 @@ ${notesHtml(id, state.notes)}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
-        var gauge = document.getElementById("gauge");
+        var gaugePresent = document.getElementById("gauge-present");
+        var gaugeLost = document.getElementById("gauge-lost");
+        var connectionStatus = document.getElementById("connection-status");
 
         function renderBars(bars) {
           var container = document.getElementById("bars");
@@ -1487,8 +1521,14 @@ ${notesHtml(id, state.notes)}
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) slideLabel.textContent = "Slide " + state.slide;
+          // gaugePresent is plain (non-aria-live): arrivals/departures update
+          // it visually but announce nothing. gaugeLost is the aria-live
+          // node, changing only on an actual lost-count change or a shown
+          // boundary crossing.
+          if (gaugePresent) gaugePresent.textContent = state.present + " people here";
+          var gauge = document.getElementById("gauge");
           if (state.shown) {
-            gauge.textContent = state.present + " people here, " + state.live + " lost right now";
+            if (gaugeLost) gaugeLost.textContent = state.live + " lost right now";
             var tapCount = document.getElementById("tap-count");
             if (!tapCount) {
               tapCount = document.createElement("p");
@@ -1497,7 +1537,7 @@ ${notesHtml(id, state.notes)}
             }
             tapCount.textContent = "Total taps: " + state.totalTaps;
           } else {
-            gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
+            if (gaugeLost) gaugeLost.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
             var oldTapCount = document.getElementById("tap-count");
             if (oldTapCount) oldTapCount.remove();
           }
@@ -1508,7 +1548,11 @@ ${notesHtml(id, state.notes)}
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
         source.onmessage = function (event) {
+          if (connectionStatus) connectionStatus.textContent = "";
           render(JSON.parse(event.data));
+        };
+        source.onerror = function () {
+          if (connectionStatus) connectionStatus.textContent = "Reconnecting...";
         };
       })();
     </script>
@@ -1571,7 +1615,7 @@ async function handleLecturerPost(id: string, req: Request): Promise<Response> {
     );
   }
 
-  if (!checkLoginRateLimit(id)) {
+  if (!checkLoginRateLimit(id, browserId)) {
     logAction("lecturer_login_failed", id, browserId);
     return new Response(page("Lecturer view", lecturerLoginForm(id, "Too many attempts. Try again in a minute.")), {
       status: 429,
@@ -1583,7 +1627,7 @@ async function handleLecturerPost(id: string, req: Request): Promise<Response> {
   const code = new URLSearchParams(body).get("code") ?? "";
 
   if (!verifyCode(code, lecture.code_hash, lecture.code_salt)) {
-    recordFailedLogin(id);
+    recordFailedLogin(id, browserId);
     logAction("lecturer_login_failed", id, browserId);
     return new Response(page("Lecturer view", lecturerLoginForm(id, "Wrong code.")), { status: 200, headers });
   }
@@ -1621,8 +1665,7 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
     });
   }
 
-  const newSlide = Math.max(1, lecture.current_slide + direction);
-  setCurrentSlide(id, newSlide);
+  stepCurrentSlide(id, direction);
   logAction("slide_changed", id, browserId);
   broadcast(id);
   broadcastToLecturer(id);
@@ -1645,27 +1688,80 @@ function newLectureForm(error?: string): string {
   `;
 }
 
-async function handleNewGet(): Promise<Response> {
-  return new Response(page("Start a lecture", newLectureForm()), {
-    status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+const LECTURE_TITLE_MAX_LENGTH = 100;
+// A straight COUNT(*) >= N check with no logic to get wrong — exercising it
+// cleanly means actually creating 500 lectures or adding a test-only seam to
+// lower the threshold, and neither is worth the cost here, so this one is
+// judged by hand rather than enforced by a test (same enforced/judged split
+// the README already uses for other claims).
+const LECTURE_TOTAL_CAP = 500;
+
+async function handleNewGet(req: Request): Promise<Response> {
+  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
+  if (minted) {
+    headers.append(
+      "set-cookie",
+      serializeCookie(BROWSER_COOKIE, browserId, {
+        httpOnly: true,
+        sameSite: "Lax",
+        path: "/",
+        secure: isHttps(req),
+        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
+      }),
+    );
+  }
+  return new Response(page("Start a lecture", newLectureForm()), { status: 200, headers });
 }
 
 async function handleNewPost(req: Request): Promise<Response> {
+  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
+  if (minted) {
+    headers.append(
+      "set-cookie",
+      serializeCookie(BROWSER_COOKIE, browserId, {
+        httpOnly: true,
+        sameSite: "Lax",
+        path: "/",
+        secure: isHttps(req),
+        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
+      }),
+    );
+  }
+
   const body = await req.text();
   const title = new URLSearchParams(body).get("title")?.trim();
   if (!title) {
     return new Response(page("Start a lecture", newLectureForm("A title is required.")), {
       status: 400,
-      headers: { "content-type": "text/html; charset=utf-8" },
+      headers,
     });
+  }
+  if (title.length > LECTURE_TITLE_MAX_LENGTH) {
+    return new Response(
+      page("Start a lecture", newLectureForm(`Titles are limited to ${LECTURE_TITLE_MAX_LENGTH} characters.`)),
+      { status: 400, headers },
+    );
+  }
+  if (!checkCreateLectureRateLimit(browserId)) {
+    return new Response(
+      page("Start a lecture", newLectureForm("Too many lectures from this browser. Try again in an hour.")),
+      { status: 429, headers },
+    );
+  }
+  if (lectureCount() >= LECTURE_TOTAL_CAP) {
+    return new Response(
+      page("Start a lecture", newLectureForm("This app isn't accepting new lectures right now.")),
+      { status: 429, headers },
+    );
   }
 
   const id = randomBytes(4).toString("hex");
   const code = generateAccessCode();
   createLecture(id, title, 5, hashCode(code));
-  logAction("lecture_created", id, undefined);
+  recordLectureCreation(browserId);
+  logAction("lecture_created", id, browserId);
 
   const studentUrl = `/l/${id}`;
   const lecturerUrl = `/l/${id}/lecturer`;
@@ -1675,10 +1771,7 @@ async function handleNewPost(req: Request): Promise<Response> {
     <p>Lecturer code (shown once, write it down): <strong>${escapeHtml(code)}</strong></p>
     <p><a href="${lecturerUrl}">Go to the lecturer view</a></p>
   `;
-  return new Response(page("Lecture created", bodyHtml), {
-    status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return new Response(page("Lecture created", bodyHtml), { status: 200, headers });
 }
 
 async function handleReadme(): Promise<Response> {
@@ -1722,7 +1815,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "GET" && pathname === "/") return handleHome();
   if (method === "GET" && pathname === "/readme/") return handleReadme();
-  if (method === "GET" && pathname === "/new") return handleNewGet();
+  if (method === "GET" && pathname === "/new") return handleNewGet(req);
   if (method === "POST" && pathname === "/new") return handleNewPost(req);
 
   const lecturerMatch = pathname.match(/^\/l\/([^/]+)\/lecturer$/);
@@ -1860,11 +1953,38 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   res.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
 }
 
+// Enough context to reproduce the error (route, lecture, hashed who) — never
+// the request body or note text, which this never even reads: pathname and
+// the cookie header are all that's available to the top-level handler, by
+// construction, so there's nothing here that could leak a POST body even by
+// accident.
+function logServerError(req: IncomingMessage, err: unknown): void {
+  const pathname = (() => {
+    try {
+      return new URL(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`).pathname;
+    } catch {
+      return req.url ?? "/";
+    }
+  })();
+  const lectureId = pathname.match(/^\/l\/([^/]+)/)?.[1];
+  const browserId = rawBrowserCookie(req.headers.cookie);
+  console.error(
+    JSON.stringify({
+      time: new Date().toISOString(),
+      action: "error",
+      route: pathname,
+      lecture: lectureId,
+      who: who(browserId),
+      error: String(err),
+    }),
+  );
+}
+
 const server = createServer(async (req, res) => {
   try {
     await handleRequest(req, res);
   } catch (err) {
-    console.error(JSON.stringify({ time: new Date().toISOString(), action: "error", error: String(err) }));
+    logServerError(req, err);
     if (!res.headersSent) {
       res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
     }
