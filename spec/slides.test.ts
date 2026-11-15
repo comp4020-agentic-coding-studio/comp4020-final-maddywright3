@@ -548,9 +548,9 @@ it("tapping, undoing, and tapping the same slide again counts once toward its ba
   }
 
   await tapSlide1(tapCookie);
-  // A second tap from the same browser within 60s is deduped by the
-  // existing tapIfNotRecentlyTapped logic — shouldn't change the bar either
-  // way, but exercising it here confirms the dedup and the bar count agree.
+  // A second tap from the same browser on the same slide is ignored (one
+  // tap per slide, ever) — shouldn't change the bar either way, but
+  // exercising it here confirms the dedup and the bar count agree.
   await tapSlide1(tapCookie);
   for (const cookie of otherCookies) await tapSlide1(cookie);
 

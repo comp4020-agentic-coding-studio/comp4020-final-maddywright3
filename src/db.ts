@@ -65,6 +65,60 @@ if (!tapColumns.some((c) => c.name === "reason")) {
 if (!tapColumns.some((c) => c.name === "resolved_at")) {
   db.exec("ALTER TABLE taps ADD COLUMN resolved_at TEXT");
 }
+// Every existing row belongs to run 1; ADR 006's fresh runs start at 2.
+if (!tapColumns.some((c) => c.name === "run_id")) {
+  db.exec("ALTER TABLE taps ADD COLUMN run_id INTEGER NOT NULL DEFAULT 1");
+}
+if (!tapColumns.some((c) => c.name === "legacy_duplicate")) {
+  db.exec("ALTER TABLE taps ADD COLUMN legacy_duplicate INTEGER NOT NULL DEFAULT 0");
+}
+
+// One "I'm lost" per (lecture, run, deck, slide, browser), held by a unique
+// index rather than by a check in the insert. Two things make the index
+// unusual, and both are deliberate:
+// - COALESCE(deck, ''): a created lecture's deck is NULL, and SQLite treats
+//   every NULL as distinct in a unique index, so a plain index on deck
+//   would let those lectures' duplicates through.
+// - WHERE legacy_duplicate = 0: before this rule a browser could tap the
+//   same slide again after 60 seconds or after "I get it now", so existing
+//   databases hold duplicates and CREATE UNIQUE INDEX would fail on them.
+//   Nothing is deleted. The earliest tap per key stays counted; later ones
+//   are marked legacy_duplicate = 1, which only takes them out of this
+//   index. Bars and reasons already count distinct browsers, and the total
+//   still counts every row, so no number shown before changes. Rows with no
+//   browser or no slide (from before C10) can't collide and are left alone.
+// The whole migration runs once, in one transaction, before the index
+// exists, so a crash part-way leaves the database as it was.
+const hasOneTapIndex = db
+  .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'taps_one_per_slide'")
+  .get();
+if (!hasOneTapIndex) {
+  db.exec("BEGIN");
+  try {
+    // Created lectures' taps were once filed under the demo's default deck
+    // (fixed in 28b7d1d). Only the demo has decks, so those rows go back to
+    // NULL, where their notes already are.
+    db.exec("UPDATE taps SET deck = NULL WHERE lecture_id <> 'demo' AND deck IS NOT NULL");
+    db.exec(`
+      UPDATE taps SET legacy_duplicate = 1
+      WHERE browser_id IS NOT NULL AND slide IS NOT NULL
+        AND id NOT IN (
+          SELECT MIN(id) FROM taps
+          WHERE browser_id IS NOT NULL AND slide IS NOT NULL
+          GROUP BY lecture_id, run_id, COALESCE(deck, ''), slide, browser_id
+        )
+    `);
+    db.exec(`
+      CREATE UNIQUE INDEX taps_one_per_slide
+      ON taps (lecture_id, run_id, COALESCE(deck, ''), slide, browser_id)
+      WHERE legacy_duplicate = 0
+    `);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS notes (
@@ -157,51 +211,56 @@ export interface LiveTapInfo {
 
 // AND resolved_at IS NULL: a resolved tap stops counting as live
 // immediately, everywhere "live" is read — "I get it now" ends a tap's live
-// status at once, independent of the 60s window.
+// status at once, independent of the 60s window. `count` is distinct
+// browsers, not taps: with one tap per slide, a browser lost on two slides
+// inside a minute has two live taps, and it's still one person lost.
 export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
   const row = db
     .prepare(
-      "SELECT COUNT(*) AS count, MIN(created_at) AS earliest FROM taps WHERE lecture_id = ? AND created_at >= ? AND resolved_at IS NULL",
+      "SELECT COUNT(DISTINCT browser_id) AS count, MIN(created_at) AS earliest FROM taps WHERE lecture_id = ? AND created_at >= ? AND resolved_at IS NULL",
     )
     .get(lectureId, sinceIso) as { count: number; earliest: string | null };
   return row;
 }
 
-// Atomic insert-if-not-recently-tapped: a single statement rather than a
-// separate SELECT-then-INSERT, so a browser can't double-count a tap no
-// matter how the handler around it changes later. Returns whether a row was
-// actually inserted. The dedup clause also excludes resolved taps — without
-// this, "I get it now" flips youAreCounted to false and re-enables the
-// button, but a re-tap inside the original 60s window would silently fail
-// to insert (the clause only looked at created_at >= since, never at
-// resolution) — this is the one place a resolved tap must stop blocking a
-// fresh tap, exactly mirroring how it already stops counting as live.
-export function tapIfNotRecentlyTapped(
-  lectureId: string,
-  browserId: string,
-  sinceIso: string,
-  deck: string | null,
-  slide: number,
-): boolean {
-  const nowIso = new Date().toISOString();
+// One "I'm lost" per browser per slide, ever: a single INSERT that the
+// taps_one_per_slide index turns into a no-op when this browser has already
+// tapped this (lecture, run, deck, slide). Two requests at the same moment
+// can't both get in, because the index, not a prior SELECT, decides. ON
+// CONFLICT DO NOTHING ignores only that conflict; any other failure (a
+// missing lecture id, say) still raises. Returns whether a row was
+// inserted.
+export function tapOncePerSlide(lectureId: string, browserId: string, deck: string | null, slide: number): boolean {
   const result = db
     .prepare(
       `INSERT INTO taps (lecture_id, created_at, browser_id, deck, slide)
-       SELECT ?, ?, ?, ?, ?
-       WHERE NOT EXISTS (
-         SELECT 1 FROM taps
-         WHERE lecture_id = ? AND browser_id = ? AND created_at >= ? AND resolved_at IS NULL
-       )`,
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
     )
-    .run(lectureId, nowIso, browserId, deck, slide, lectureId, browserId, sinceIso);
+    .run(lectureId, new Date().toISOString(), browserId, deck, slide);
   return result.changes > 0;
 }
 
-export function yourTapCount(lectureId: string, browserId: string): number {
-  const row = db
-    .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ? AND browser_id = ?")
-    .get(lectureId, browserId) as { count: number };
-  return row.count;
+export interface YourSlide {
+  deck: string | null;
+  slide: number;
+  // Still counted as lost: inside the live window and not resolved.
+  live: boolean;
+}
+
+// Every (deck, slide) this browser has said it's lost on in the lecture,
+// and whether that tap still counts as live. For its own page only: never
+// sent to any other browser or the lecturer.
+export function slidesYouTapped(lectureId: string, browserId: string, sinceIso: string): YourSlide[] {
+  const rows = db
+    .prepare(
+      `SELECT deck, slide, (created_at >= ? AND resolved_at IS NULL) AS live
+       FROM taps
+       WHERE lecture_id = ? AND browser_id = ? AND slide IS NOT NULL AND legacy_duplicate = 0
+       ORDER BY deck, slide`,
+    )
+    .all(sinceIso, lectureId, browserId) as { deck: string | null; slide: number; live: number }[];
+  return rows.map((row) => ({ deck: row.deck, slide: row.slide, live: row.live === 1 }));
 }
 
 // The caller's own live (unresolved, within the window) tap, if any —
@@ -214,33 +273,44 @@ export function liveTapFor(lectureId: string, browserId: string, sinceIso: strin
     .get(lectureId, browserId, sinceIso) as Tap | undefined;
 }
 
-export function setTapReason(lectureId: string, browserId: string, sinceIso: string, reason: string): boolean {
-  const result = db
+// With one tap per slide, a browser can have live taps on two slides at
+// once, so a reason or "I get it now" names the slide it's about. A request
+// that names none (a page from before this change) gets the browser's most
+// recent live tap, as it always did.
+export function liveTapOn(
+  lectureId: string,
+  browserId: string,
+  sinceIso: string,
+  slideRef: SlideRef | undefined,
+): Tap | undefined {
+  if (slideRef === undefined) return liveTapFor(lectureId, browserId, sinceIso);
+  return db
     .prepare(
-      `UPDATE taps SET reason = ?
-       WHERE id = (
-         SELECT id FROM taps
-         WHERE lecture_id = ? AND browser_id = ? AND created_at >= ? AND resolved_at IS NULL
-         ORDER BY created_at DESC LIMIT 1
-       )`,
+      `SELECT * FROM taps
+       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+         AND created_at >= ? AND resolved_at IS NULL AND legacy_duplicate = 0
+       ORDER BY created_at DESC LIMIT 1`,
     )
-    .run(reason, lectureId, browserId, sinceIso);
-  return result.changes > 0;
+    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide, sinceIso) as Tap | undefined;
 }
 
-export function resolveTap(lectureId: string, browserId: string, sinceIso: string): boolean {
-  const nowIso = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE taps SET resolved_at = ?
-       WHERE id = (
-         SELECT id FROM taps
-         WHERE lecture_id = ? AND browser_id = ? AND created_at >= ? AND resolved_at IS NULL
-         ORDER BY created_at DESC LIMIT 1
-       )`,
-    )
-    .run(nowIso, lectureId, browserId, sinceIso);
-  return result.changes > 0;
+export interface SlideRef {
+  deck: string | null;
+  slide: number;
+}
+
+export function setTapReason(tapId: number, reason: string): boolean {
+  return db.prepare("UPDATE taps SET reason = ? WHERE id = ?").run(reason, tapId).changes > 0;
+}
+
+// resolved_at IS NULL in the WHERE: two "I get it now" presses at once
+// resolve it once, keeping the first time.
+export function resolveTap(tapId: number): boolean {
+  return (
+    db
+      .prepare("UPDATE taps SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL")
+      .run(new Date().toISOString(), tapId).changes > 0
+  );
 }
 
 export interface ReasonCount {
@@ -294,7 +364,7 @@ const NO_DECK = "";
 // One note per (lecture, deck, browser, slide): sending again replaces the
 // previous note and un-hides it (a replaced note is a fresh one), as one
 // atomic statement rather than a separate select/update — same reasoning
-// as tapIfNotRecentlyTapped's atomic insert.
+// as tapOncePerSlide's single statement.
 export function setNote(lectureId: string, deck: string | null, browserId: string, slide: number, text: string): void {
   const nowIso = new Date().toISOString();
   db.prepare(
@@ -385,7 +455,7 @@ export function lecturerSessionValid(token: string, lectureId: string, sinceIso:
 // itself (current_slide +/- 1, clamped to a floor of 1 in the same
 // statement) means each write starts from whatever the column holds at the
 // moment it actually runs, not a stale value read earlier — same atomicity
-// discipline as tapIfNotRecentlyTapped's single-statement dedup.
+// discipline as tapOncePerSlide's single-statement dedup.
 export function stepCurrentSlide(lectureId: string, direction: 1 | -1): void {
   db.prepare(
     `UPDATE lectures SET current_slide = MAX(1, current_slide + ?) WHERE id = ?`,

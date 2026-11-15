@@ -49,9 +49,9 @@ it("/l/demo answers 200 and shows a tap count", async () => {
 it("posting a tap to /l/demo increases the count by one", async () => {
   const close = await openPresenceConnections("demo", 2); // demo's min_present is 2
   try {
-    // A fresh browser identity each run: C10 dedupes repeat taps from the same
-    // browser within 60s, so reusing a cookie across test runs could make this
-    // flaky depending on timing. Spec files run one at a time (see
+    // A fresh browser identity each run: a browser taps each slide once,
+    // ever, so reusing a cookie across test runs would make the second run
+    // count nothing. Spec files run one at a time (see
     // vitest.config.ts), so the shared total is stable to assert an exact
     // delta on again.
     const cookie = await newBrowserCookie("demo");

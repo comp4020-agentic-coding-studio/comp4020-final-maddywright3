@@ -173,11 +173,23 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       // reasons and note, so from Send it's back up the page.
       await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I get it now", 60, "Shift+Tab");
       await page.keyboard.press("Enter");
-      await expect.poll(() => page.locator("#tap-button").textContent(), { timeout: 2000 }).toBe("I'm lost");
+      // One "I'm lost" per slide, ever: after "I get it now" this slide stays
+      // used for this browser, and the page says so rather than offering a
+      // tap the server would ignore.
+      const tapButton = page.locator("#tap-button");
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("Counted on this slide");
+      expect(await tapButton.getAttribute("aria-disabled")).toBe("true");
+      expect(await page.locator("#tap-said").textContent()).toBe("You've said you're lost on this slide.");
+      expect(await page.locator("#tap-said").isVisible()).toBe(true);
+      expect(await page.locator("#resolve-form").isVisible()).toBe(false);
       expect((await focusedIsVisible(page)).visible, "focus lost after I get it now").toBe(true);
 
       await page.keyboard.press("ArrowRight");
       await expect.poll(() => label.textContent()).not.toBe(startLabel);
+      // A slide this browser hasn't tapped offers "I'm lost" again.
+      await expect.poll(() => tapButton.textContent()).toBe("I'm lost");
+      expect(await tapButton.getAttribute("aria-disabled")).toBeNull();
+      expect(await page.locator("#tap-said").isVisible()).toBe(false);
       // Back to live is in the slide bar, above the tap bar.
       await tabTo(page, (f) => f.tag === "A" && f.text === "Back to live", 80, "Shift+Tab");
       await page.keyboard.press("Enter");

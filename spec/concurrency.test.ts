@@ -133,3 +133,26 @@ it("two lecturers pressing Next at once both register — the slide advances by 
   const afterSlide = Number(afterHtml.match(/Slide (\d+)/)?.[1]);
   expect(afterSlide).toBe(beforeSlide + 2);
 });
+
+// One tap per browser per slide is held by a unique index, not by a check
+// before the insert, so requests landing at the same moment can't both get
+// in. Ten at once from one browser on one slide count once; one more on a
+// different slide counts.
+it("ten taps at once from one browser on one slide count once", async () => {
+  const lecture = await createLectureAndLogIn("Parallel taps test");
+  const cookie = await newBrowserCookie(lecture.id);
+  const tapNow = (slide: number) =>
+    fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `slide=${slide}`,
+      redirect: "manual",
+    });
+  const results = await Promise.all(Array.from({ length: 10 }, () => tapNow(1)));
+  expect(results.every((r) => r.status === 303)).toBe(true);
+  await tapNow(2);
+
+  const yourCount = (html: string) => Number(html.match(/You've said you're lost (\d+) time/)?.[1]);
+  const html = await (await fetch(new URL(`/l/${lecture.id}`, baseUrl), { headers: { cookie } })).text();
+  expect(yourCount(html)).toBe(2);
+});

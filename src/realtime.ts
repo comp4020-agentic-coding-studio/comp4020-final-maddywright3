@@ -1,16 +1,15 @@
 import type { ServerResponse } from "node:http";
 import {
   getLecture,
-  liveTapFor,
   liveTapInfo,
   reasonCounts as rawReasonCounts,
+  slidesYouTapped,
   slideNoteCounts,
   slideTapCounts,
   tapCount,
   visibleNotesForSlide,
-  yourTapCount,
 } from "./db.ts";
-import type { Lecture } from "./db.ts";
+import type { Lecture, YourSlide } from "./db.ts";
 import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
@@ -47,9 +46,10 @@ export interface NoteEntry {
 // — a slide clears the bar threshold once >= min_present distinct browsers
 // have ever tapped it, whoever is present right now (ADR 004's refined
 // privacy rule), so `bars` is present on both branches of this union.
-// `liveForMs` and `topReason` are per-browser/per-slide extras: `liveForMs`
-// only appears while `youAreCounted` (the caller's own live tap), never
-// sent to anyone else's stream; `topReason` only appears once the current
+// `yourSlides` and `topReason` are per-browser/per-slide extras:
+// `yourSlides` lists the slides this browser has said it's lost on (one tap
+// per slide, ever) and whether each still counts as live, and is only ever
+// in this browser's own stream; `topReason` only appears once the current
 // slide's top reason has itself cleared its own (deck, slide, reason) gate.
 // `deck` (demo only) names the deck whose live slide `slide` is: each demo
 // stream watches one deck, and each deck runs its own clock.
@@ -62,7 +62,7 @@ export type MeterState =
       bars: Bar[];
       yourTapCount: number;
       youAreCounted: boolean;
-      liveForMs?: number;
+      yourSlides: YourSlide[];
       topReason?: string;
     }
   | {
@@ -75,7 +75,7 @@ export type MeterState =
       totalTaps: number;
       yourTapCount: number;
       youAreCounted: boolean;
-      liveForMs?: number;
+      yourSlides: YourSlide[];
       topReason?: string;
     };
 
@@ -269,7 +269,7 @@ interface SharedMeterState {
 interface YourState {
   yourTapCount: number;
   youAreCounted: boolean;
-  liveForMs?: number;
+  yourSlides: YourSlide[];
 }
 
 function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterState {
@@ -295,14 +295,15 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
   return { ...base, live, totalTaps: tapCount(lectureId) };
 }
 
+// yourTapCount is the slides this browser has said it's lost on, which
+// with one tap per slide is its count of counted taps; legacy duplicates
+// from before that rule don't inflate it.
 function yourStateFor(lectureId: string, browserId: string, since: string): YourState {
-  const liveTap = liveTapFor(lectureId, browserId, since);
+  const yourSlides = slidesYouTapped(lectureId, browserId, since);
   return {
-    yourTapCount: yourTapCount(lectureId, browserId),
-    youAreCounted: liveTap !== undefined,
-    ...(liveTap !== undefined
-      ? { liveForMs: Math.max(0, new Date(liveTap.created_at).getTime() + LIVE_WINDOW_MS - Date.now()) }
-      : {}),
+    yourTapCount: yourSlides.length,
+    youAreCounted: yourSlides.some((s) => s.live),
+    yourSlides,
   };
 }
 

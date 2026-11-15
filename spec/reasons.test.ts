@@ -18,7 +18,7 @@ interface MeterState {
   totalTaps?: number;
   yourTapCount: number;
   youAreCounted: boolean;
-  liveForMs?: number;
+  yourSlides: { deck: string | null; slide: number; live: boolean }[];
   topReason?: string;
 }
 
@@ -200,56 +200,112 @@ it("I get it now drops live by one within a second, and youAreCounted flips fals
   }
 });
 
-it("after I get it now, a fresh tap inside the original 60s window is accepted", async () => {
+// One "I'm lost" per slide, ever: "I get it now" ends the tap's live status
+// but doesn't free the slide. This replaces the C10-era test that a fresh
+// tap inside the 60s window was accepted after resolving, which was right
+// for one live tap per browser and is the opposite of the rule now
+// (README: "One "I'm lost" per browser per slide").
+it("after I get it now, the same slide can't be tapped again, but another slide can", async () => {
   const cookie = await newBrowserCookie("demo");
-  await fetch(new URL("/l/demo/tap", baseUrl), {
-    method: "POST",
-    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
-  });
-  const resolveRes = await fetch(new URL("/l/demo/resolve", baseUrl), {
-    method: "POST",
-    headers: { cookie },
-    redirect: "manual",
-  });
+  const post = (path: string, body: string) =>
+    fetch(new URL(path, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body,
+      redirect: "manual",
+    });
+  await post("/l/demo/tap", "deck=week-4&slide=2");
+  const resolveRes = await post("/l/demo/resolve", "deck=week-4&slide=2");
   expect(resolveRes.status).toBe(303);
 
-  // This must land a fresh row, not be silently ignored by the dedup clause
-  // — the regression this test guards against is "I get it now" leaving a
-  // resolved tap that still blocks a real re-tap inside the same 60s window.
-  const retapRes = await fetch(new URL("/l/demo/tap", baseUrl), {
-    method: "POST",
-    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
-    redirect: "manual",
-  });
+  const retapRes = await post("/l/demo/tap", "deck=week-4&slide=2");
   expect(retapRes.status).toBe(303);
-
-  const stream = await SseStream.open("/l/demo/events", cookie);
+  const afterRetap = await SseStream.open("/l/demo/events", cookie);
   try {
-    const state = await stream.next();
-    expect(state.youAreCounted).toBe(true); // the fresh tap is live again
+    const state = await afterRetap.next();
+    expect(state.youAreCounted).toBe(false);
+    expect(state.yourTapCount).toBe(1);
   } finally {
-    await stream.close();
+    await afterRetap.close();
+  }
+
+  await post("/l/demo/tap", "deck=week-4&slide=5");
+  const afterOther = await SseStream.open("/l/demo/events", cookie);
+  try {
+    const state = await afterOther.next();
+    expect(state.youAreCounted).toBe(true);
+    expect(state.yourTapCount).toBe(2);
+  } finally {
+    await afterOther.close();
   }
 });
 
-it("liveForMs never appears in another browser's payload", async () => {
+// A browser's own slides are its own: another browser's stream never lists
+// them, the same discipline the old per-browser countdown had.
+it("yourSlides lists only this browser's own taps, never another browser's", async () => {
   const cookieA = await newBrowserCookie("demo");
   const cookieB = await newBrowserCookie("demo");
   await fetch(new URL("/l/demo/tap", baseUrl), {
     method: "POST",
     headers: { cookie: cookieA, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
+    body: "deck=week-6&slide=7",
   });
 
   const streamB = await SseStream.open("/l/demo/events", cookieB);
   try {
     const state = await streamB.next();
-    const payload = JSON.stringify(state);
-    expect(payload).not.toContain("liveForMs"); // B has no live tap of its own
+    expect(state.yourSlides).toEqual([]);
+    expect(state.yourTapCount).toBe(0);
   } finally {
     await streamB.close();
+  }
+  const streamA = await SseStream.open("/l/demo/events", cookieA);
+  try {
+    const state = await streamA.next();
+    expect(state.yourSlides).toEqual([{ deck: "week-6", slide: 7, live: true }]);
+  } finally {
+    await streamA.close();
+  }
+});
+
+// With one tap per slide a browser can be live on two slides at once, so a
+// reason and "I get it now" act on the slide they name, not just the latest.
+it("a reason and I get it now act on the slide they name", async () => {
+  const lecture = await createLectureAndLogIn("Targeted reason test");
+  const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
+  const post = (cookie: string, path: string, body: string) =>
+    fetch(new URL(`/l/${lecture.id}/${path}`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body,
+      redirect: "manual",
+    });
+  for (const cookie of cookies) {
+    await post(cookie, "tap", "slide=1");
+    await post(cookie, "tap", "slide=2");
+    // Slide 1 named, though slide 2 is the most recent tap.
+    const reasonRes = await post(cookie, "reason", "slide=1&reason=Notation");
+    expect(reasonRes.headers.get("location")).toBe(`/l/${lecture.id}?slide=1`);
+  }
+  const resolveRes = await post(cookies[0], "resolve", "slide=1");
+  expect(resolveRes.headers.get("location")).toBe(`/l/${lecture.id}?slide=1`);
+
+  const lecturerStream = await SseStream.open(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  try {
+    const state = (await lecturerStream.next()) as unknown as { reasonCounts: { slide: number; reason: string; count: number }[] };
+    expect(state.reasonCounts).toEqual([{ deck: null, slide: 1, reason: "Notation", count: 5 }]);
+  } finally {
+    await lecturerStream.close();
+  }
+  const own = await SseStream.open(`/l/${lecture.id}/events`, cookies[0]);
+  try {
+    const state = await own.next();
+    expect(state.yourSlides).toEqual([
+      { deck: null, slide: 1, live: false },
+      { deck: null, slide: 2, live: true },
+    ]);
+  } finally {
+    await own.close();
   }
 });
 
