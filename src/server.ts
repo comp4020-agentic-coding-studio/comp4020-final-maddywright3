@@ -10,6 +10,7 @@ import {
   getLecture,
   hideNoteById,
   lectureCount,
+  liveTapFor,
   resolveTap,
   stepCurrentSlide,
   setNote,
@@ -1093,11 +1094,25 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     logAction("tap_ignored", id, browserId);
   }
 
-  const deckParam = submittedDeck !== undefined ? `deck=${submittedDeck}&` : "";
   return new Response(null, {
     status: 303,
-    headers: { location: `/l/${encodeURIComponent(id)}?${deckParam}slide=${submittedSlide}` },
+    headers: { location: slidePageLocation(id, submittedDeck ?? null, submittedSlide) },
   });
+}
+
+// Where a no-JS form POST lands: the page for the deck and slide the student
+// tapped. A bare /l/:id would land on the default deck's live slide, so the
+// note form there would carry a slide the student never tapped.
+function slidePageLocation(id: string, deck: string | null, slide: number): string {
+  const deckParam = deck !== null ? `deck=${encodeURIComponent(deck)}&` : "";
+  return `/l/${encodeURIComponent(id)}?${deckParam}slide=${slide}`;
+}
+
+// The caller's live tap decides where a reason or "I get it now" returns
+// to; with no live tap there's no slide to return to, so the lecture page.
+function tapPageLocation(id: string, tap: { deck: string | null; slide: number | null } | undefined): string {
+  if (tap === undefined || tap.slide === null) return `/l/${encodeURIComponent(id)}`;
+  return slidePageLocation(id, tap.deck, tap.slide);
 }
 
 const REASONS = ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
@@ -1134,7 +1149,7 @@ async function handleReason(id: string, req: Request): Promise<Response> {
 
   return new Response(null, {
     status: 303,
-    headers: { location: `/l/${encodeURIComponent(id)}` },
+    headers: { location: tapPageLocation(id, liveTapFor(id, browserId, since)) },
   });
 }
 
@@ -1157,6 +1172,8 @@ async function handleResolve(id: string, req: Request): Promise<Response> {
   }
 
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  // Read before resolving: once resolved, it's no longer the live tap.
+  const tap = liveTapFor(id, browserId, since);
   resolveTap(id, browserId, since);
   logAction("tap_resolved", id, browserId);
   broadcast(id);
@@ -1164,7 +1181,7 @@ async function handleResolve(id: string, req: Request): Promise<Response> {
 
   return new Response(null, {
     status: 303,
-    headers: { location: `/l/${encodeURIComponent(id)}` },
+    headers: { location: tapPageLocation(id, tap) },
   });
 }
 
