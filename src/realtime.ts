@@ -195,7 +195,24 @@ export function presentCount(lectureId: string): number {
   return connections.get(lectureId)?.size ?? 0;
 }
 
-export function computeState(lectureId: string, browserId: string): MeterState | undefined {
+// The part of MeterState shared by every viewer of a given lecture at a
+// given moment — everything except the per-browser yourTapCount/
+// youAreCounted/liveForMs. Computed once per broadcast() call rather than
+// once per connected browser (the fix for the full per-browser recompute:
+// previously every field here, shared or not, was recomputed from scratch
+// for each browser in the broadcast loop).
+interface SharedMeterState {
+  present: number;
+  shown: boolean;
+  slide: number;
+  bars: Bar[];
+  topReason?: string;
+  live?: number;
+  totalTaps?: number;
+  since: string;
+}
+
+function computeSharedState(lectureId: string): SharedMeterState | undefined {
   const lecture = getLecture(lectureId);
   if (!lecture) return undefined;
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
@@ -206,18 +223,42 @@ export function computeState(lectureId: string, browserId: string): MeterState |
   const bars = gatedBars(lectureId, lecture.min_present);
   const gatedReasons = gatedReasonCounts(lectureId, lecture.min_present);
   const topReason = topReasonFor(gatedReasons, deck, slide);
-  const liveTap = liveTapFor(lectureId, browserId, since);
+  const base = { present, shown, slide, bars, since, ...(topReason !== undefined ? { topReason } : {}) };
+  if (!shown) return base;
+  const { count: live } = liveTapInfo(lectureId, since);
+  return { ...base, live, totalTaps: tapCount(lectureId) };
+}
+
+// Merges a browser's own fields onto an already-computed shared state —
+// the genuinely per-recipient part (yourTapCount, youAreCounted, liveForMs).
+function meterStateFor(shared: SharedMeterState, lectureId: string, browserId: string): MeterState {
+  const liveTap = liveTapFor(lectureId, browserId, shared.since);
   const yours = {
     yourTapCount: yourTapCount(lectureId, browserId),
     youAreCounted: liveTap !== undefined,
     ...(liveTap !== undefined
       ? { liveForMs: Math.max(0, new Date(liveTap.created_at).getTime() + LIVE_WINDOW_MS - Date.now()) }
       : {}),
-    ...(topReason !== undefined ? { topReason } : {}),
   };
-  if (!shown) return { present, shown, slide, bars, ...yours };
-  const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), ...yours };
+  if (!shared.shown) {
+    return { present: shared.present, shown: false, slide: shared.slide, bars: shared.bars, ...yours, ...(shared.topReason !== undefined ? { topReason: shared.topReason } : {}) };
+  }
+  return {
+    present: shared.present,
+    shown: true,
+    slide: shared.slide,
+    bars: shared.bars,
+    live: shared.live!,
+    totalTaps: shared.totalTaps!,
+    ...yours,
+    ...(shared.topReason !== undefined ? { topReason: shared.topReason } : {}),
+  };
+}
+
+export function computeState(lectureId: string, browserId: string): MeterState | undefined {
+  const shared = computeSharedState(lectureId);
+  if (!shared) return undefined;
+  return meterStateFor(shared, lectureId, browserId);
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
@@ -237,12 +278,14 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
 
 export function broadcast(lectureId: string): void {
   const byBrowser = connections.get(lectureId);
-  if (byBrowser) {
-    for (const [browserId, set] of byBrowser) {
-      const state = computeState(lectureId, browserId);
-      if (!state) continue;
-      const payload = `data: ${JSON.stringify(state)}\n\n`;
-      for (const res of set) res.write(payload);
+  if (byBrowser && byBrowser.size > 0) {
+    const shared = computeSharedState(lectureId);
+    if (shared) {
+      for (const [browserId, set] of byBrowser) {
+        const state = meterStateFor(shared, lectureId, browserId);
+        const payload = `data: ${JSON.stringify(state)}\n\n`;
+        for (const res of set) res.write(payload);
+      }
     }
   }
   broadcastToLecturer(lectureId);
