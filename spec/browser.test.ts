@@ -214,6 +214,48 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     }
   }, 60_000);
 
+  it("answers lock once sent: reasons, then what helped, with contrast intact", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo?deck=week-6&slide=4", baseUrl).toString());
+      await page.locator("#tap-button").click();
+      await page.locator("#reasons").waitFor();
+      await page.locator("#reasons button", { hasText: "Missed a step" }).click();
+
+      const reasonButtons = page.locator("#reasons button.answer");
+      await expect.poll(() => reasonButtons.evaluateAll((bs) => bs.every((b) => b.getAttribute("aria-disabled") === "true"))).toBe(true);
+      const states = await reasonButtons.evaluateAll((bs) =>
+        bs.map((b) => [b.textContent, b.getAttribute("aria-pressed"), b.className]),
+      );
+      expect(states).toEqual([
+        ["Too fast", "false", "answer answer-other"],
+        ["Missed a step", "true", "answer answer-chosen"],
+        ["Notation", "false", "answer answer-other"],
+        ["Can't see or hear", "false", "answer answer-other"],
+      ]);
+      // Still locked when the page is loaded again (the server marks it).
+      await page.waitForLoadState("networkidle").catch(() => {});
+      await page.goto(new URL("/l/demo?deck=week-6&slide=4", baseUrl).toString());
+      await page.locator("#reasons").waitFor();
+      expect(await page.locator("#reasons button.answer-chosen").textContent()).toBe("Missed a step");
+      expect(await axeViolations(page)).toEqual([]);
+
+      await page.locator("#resolve-form button").click();
+      await page.locator("#helped").waitFor();
+      expect(await page.locator("#glad-text").textContent()).toBe("Glad you've got it now.");
+      expect(await page.locator("#reasons").count()).toBe(0);
+      await page.locator("#helped button", { hasText: "The example" }).click();
+      await expect.poll(() => page.locator("#helped button.answer-chosen").textContent()).toBe("The example");
+      expect(await page.locator("#helped button[aria-disabled=true]").count()).toBe(5);
+      expect(await axeViolations(page)).toEqual([]);
+      expect(await hasHorizontalScroll(page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
   it("two people: a tap in one browser reaches the other within a second", async () => {
     const a = await openWatched(width, height);
     const b = await openWatched(width, height);
@@ -401,7 +443,9 @@ it("a created lecture's student page follows the lecturer's Next live", async ()
         }),
       lectureId,
     );
-    expect(yourSlides).toEqual([{ deck: null, slide: 2, live: true }]);
+    expect(yourSlides).toEqual([
+      { deck: null, slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    ]);
     await lecturer.page.locator("#slide-next-form button").click();
     await expect.poll(() => label.textContent(), { timeout: 3000 }).toBe("Slide 3 (live)");
     // A new slide offers "I'm lost" again.
