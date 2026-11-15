@@ -94,3 +94,23 @@ export function recordFailedLogin(lectureId: string, browserId: string | undefin
   attempts.push(Date.now());
   failedAttempts.set(key, attempts);
 }
+
+const CREATE_LECTURE_WINDOW_MS = 60 * 60 * 1000;
+const CREATE_LECTURE_MAX = 3;
+const lectureCreations = new Map<string, number[]>();
+
+// Max 3 lectures per browser per hour — a sliding window, same shape as the
+// login rate limiter above, keyed by browser alone (there's no lecture yet
+// to also key by, unlike a login attempt).
+export function checkCreateLectureRateLimit(browserId: string): boolean {
+  const now = Date.now();
+  const attempts = (lectureCreations.get(browserId) ?? []).filter((t) => now - t < CREATE_LECTURE_WINDOW_MS);
+  lectureCreations.set(browserId, attempts);
+  return attempts.length < CREATE_LECTURE_MAX;
+}
+
+export function recordLectureCreation(browserId: string): void {
+  const attempts = lectureCreations.get(browserId) ?? [];
+  attempts.push(Date.now());
+  lectureCreations.set(browserId, attempts);
+}

@@ -129,6 +129,11 @@ export function createLecture(id: string, title: string, minPresent: number, cod
   ).run(id, title, new Date().toISOString(), minPresent, code.hash, code.salt);
 }
 
+export function lectureCount(): number {
+  const row = db.prepare("SELECT COUNT(*) AS count FROM lectures").get() as { count: number };
+  return row.count;
+}
+
 export function tapCount(lectureId: string): number {
   const row = db
     .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ?")
@@ -365,6 +370,15 @@ export function lecturerSessionValid(token: string, lectureId: string, sinceIso:
   return row !== undefined;
 }
 
-export function setCurrentSlide(lectureId: string, newSlide: number): void {
-  db.prepare("UPDATE lectures SET current_slide = ? WHERE id = ?").run(newSlide, lectureId);
+// Atomic, not read-then-write: two concurrent Next presses both reading
+// current_slide = 3 before either writes would both compute 4 and both set
+// it to 4, losing one press. Computing the new value inside the UPDATE
+// itself (current_slide +/- 1, clamped to a floor of 1 in the same
+// statement) means each write starts from whatever the column holds at the
+// moment it actually runs, not a stale value read earlier — same atomicity
+// discipline as tapIfNotRecentlyTapped's single-statement dedup.
+export function stepCurrentSlide(lectureId: string, direction: 1 | -1): void {
+  db.prepare(
+    `UPDATE lectures SET current_slide = MAX(1, current_slide + ?) WHERE id = ?`,
+  ).run(direction, lectureId);
 }
