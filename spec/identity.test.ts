@@ -244,6 +244,76 @@ it("a browser holding both cookies gets student state on /l/:id/events and count
   expect(updated.present).toBe(initial.present + 1);
 });
 
+it("below min_present, no tap data (live count, total, or timeline) leaves the server", async () => {
+  // A dedicated lecture rather than demo: demo's min_present is 2 and other
+  // spec files are busy tapping it, so this test needs a lecture it knows is
+  // guaranteed to stay below threshold while it runs.
+  const createRes = await fetch(new URL("/new", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "title=Privacy+check+lecture",
+  });
+  const createHtml = await createRes.text();
+  const lectureId = createHtml.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
+  if (!lectureId || !code) throw new Error("couldn't parse the new lecture's id/code");
+  // This lecture's min_present defaults to 5; one streaming browser plus one
+  // tapping browser (2 present) stays well below that.
+
+  const streamCookie = await newBrowserCookie(lectureId);
+  const tapCookie = await newBrowserCookie(lectureId);
+
+  const stream = await trackedStream(`/l/${lectureId}/events`, streamCookie);
+  const before = await stream.next();
+  expect(before.present).toBeLessThan(5);
+
+  const rightCode = await fetch(new URL(`/l/${lectureId}/lecturer`, baseUrl), {
+    method: "POST",
+    headers: { cookie: streamCookie, "content-type": "application/x-www-form-urlencoded" },
+    body: `code=${code}`,
+    redirect: "manual",
+  });
+  const lsessCookie = rightCode.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("lsess="))
+    ?.split(";")[0];
+  expect(lsessCookie).toBeDefined();
+  const lecturerCookie = `${streamCookie}; ${lsessCookie}`;
+
+  const lecturerStream = await trackedStream(`/l/${lectureId}/lecturer/events`, lecturerCookie);
+  await lecturerStream.next();
+
+  await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), { method: "POST", headers: { cookie: tapCookie } });
+
+  // The student's own open stream: a tap just happened, but present is
+  // still below min_present, so no live count or total should be visible —
+  // only the fields a hidden gauge needs (present, shown, this browser's
+  // own tap bookkeeping).
+  const afterTapOnStream = await stream.next(1000);
+  expect(afterTapOnStream.shown).toBe(false);
+  expect(afterTapOnStream).not.toHaveProperty("live");
+  expect(afterTapOnStream).not.toHaveProperty("totalTaps");
+
+  // The student's own page render (server-rendered HTML), same lecture.
+  const studentHtml = await (
+    await fetch(new URL(`/l/${lectureId}`, baseUrl), { headers: { cookie: tapCookie } })
+  ).text();
+  expect(studentHtml).not.toMatch(/Total taps: \d+/);
+
+  // The lecturer dashboard, both its stream push and its page render.
+  const lecturerFrame = await lecturerStream.next(1000);
+  expect(lecturerFrame.shown).toBe(false);
+  expect(lecturerFrame).not.toHaveProperty("live");
+  expect(lecturerFrame).not.toHaveProperty("totalTaps");
+  expect(lecturerFrame).not.toHaveProperty("timeline");
+
+  const lecturerHtml = await (
+    await fetch(new URL(`/l/${lectureId}/lecturer`, baseUrl), { headers: { cookie: lecturerCookie } })
+  ).text();
+  expect(lecturerHtml).not.toMatch(/Total taps: \d+/);
+  expect(lecturerHtml).not.toContain('<table class="timeline"');
+});
+
 it("the per-minute timeline shows Australia/Sydney time", async () => {
   const cookie = await newBrowserCookie("demo");
   const tapTime = new Date();
