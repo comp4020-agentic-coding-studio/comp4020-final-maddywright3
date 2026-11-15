@@ -1,6 +1,6 @@
 # ADR 002: When the gauge shows, and who counts as "here"
 
-Status: accepted, 13 November 2026 (C9 milestone)
+Status: accepted, 13 November 2026 (C9 milestone). Partly superseded by ADR 003: "here" now counts browsers, not tabs.
 
 ## Context
 
