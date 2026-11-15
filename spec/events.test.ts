@@ -112,12 +112,8 @@ it("the total taps count goes up on an open stream after a tap", async () => {
   try {
     const before = await stream.next();
     await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie: tapCookie } });
-    // >= rather than an exact +1: other spec files tap this same shared
-    // demo lecture concurrently, so a second, unrelated tap can land in the
-    // same window. What this test needs to prove is that the total updates
-    // live on an already-open stream at all, which >= still establishes.
     const after = await stream.waitFor((s) => s.totalTaps > before.totalTaps, 1000);
-    expect(after.totalTaps).toBeGreaterThanOrEqual(before.totalTaps + 1);
+    expect(after.totalTaps).toBe(before.totalTaps + 1);
   } finally {
     await stream.close();
   }

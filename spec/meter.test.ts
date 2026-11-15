@@ -13,16 +13,6 @@ const tapCountFrom = (html: string): number => {
   return Number(match[1]);
 };
 
-// "Total taps" is the whole lecture's shared total, which other spec files
-// running concurrently also bump by tapping the same demo lecture — so only
-// this browser's own count (C10's per-browser tracking) is safe to assert
-// an exact before/after delta on.
-const yourCountFrom = (html: string): number => {
-  const match = html.match(/You've said you're lost (\d+) times?/);
-  if (!match) throw new Error("couldn't find this browser's tap count in the page");
-  return Number(match[1]);
-};
-
 it("/l/demo answers 200 and shows a tap count", async () => {
   const res = await fetch(new URL("/l/demo", baseUrl));
   expect(res.status).toBe(200);
@@ -33,13 +23,15 @@ it("/l/demo answers 200 and shows a tap count", async () => {
 it("posting a tap to /l/demo increases the count by one", async () => {
   // A fresh browser identity each run: C10 dedupes repeat taps from the same
   // browser within 60s, so reusing a cookie across test runs could make this
-  // flaky depending on timing.
+  // flaky depending on timing. Spec files run one at a time (see
+  // vitest.config.ts), so the shared total is stable to assert an exact
+  // delta on again.
   const cookie = await newBrowserCookie("demo");
-  const before = yourCountFrom(await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text());
+  const before = tapCountFrom(await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text());
 
   const res = await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
   expect(res.status).toBe(200); // fetch follows the 303 redirect by default
-  const after = yourCountFrom(await res.text());
+  const after = tapCountFrom(await res.text());
 
   expect(after).toBe(before + 1);
 });
