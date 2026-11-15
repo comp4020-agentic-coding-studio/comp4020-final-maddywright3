@@ -11,6 +11,32 @@ export const DECK_TITLES: Record<DeckId, string> = {
   "week-6": "Week 6: Evidence of practice",
 };
 
+// The deck's short human name, for wherever a slide is named to a person:
+// "Week 4, slide 6". The full title is for the deck menu.
+export const DECK_SHORT_NAMES: Record<DeckId, string> = {
+  "week-4": "Week 4",
+  "week-6": "Week 6",
+};
+
+export interface SlideNameOptions {
+  // The deck's slide count, for "Week 4, slide 6 of 10".
+  of?: number;
+  // Whether this is the live slide: adds "(live)".
+  live?: boolean;
+}
+
+// How every page names a slide. A demo slide names its deck, because the
+// demo has two and "Slide 6" alone doesn't say which; a created lecture has
+// no deck, so it's just "Slide 6". The page scripts use the same wording
+// (SLIDE_NAME_CLIENT_JS in src/server.ts), so a live update never changes
+// how a slide is named.
+export function slideName(deck: string | null, slide: number, options: SlideNameOptions = {}): string {
+  const short = deck !== null && isDeckId(deck) ? DECK_SHORT_NAMES[deck] : undefined;
+  const name = short !== undefined ? `${short}, slide ${slide}` : `Slide ${slide}`;
+  const of = options.of !== undefined ? ` of ${options.of}` : "";
+  return `${name}${of}${options.live ? " (live)" : ""}`;
+}
+
 interface Deck {
   creditHtml: string;
   slides: string[];

@@ -377,7 +377,7 @@ it(
       expect(visibleSlide(week4Html, "week-4")).toBe(2);
       expect(liveMarker(week4Html)).toBe("Live");
       expect(liveMarker(await demoPage("/l/demo?deck=week-4&slide=1", cookieB))).toBe(
-        "You're on slide 1. The lecture is on slide 2.",
+        "You're on Week 4, slide 1. The lecture is on Week 4, slide 2.",
       );
 
       // Nobody is watching week-6 yet: a page render shows its slide 1, and
@@ -428,7 +428,7 @@ it("the live marker says Live on an unwatched deck's slide 1, and where the lect
   const cookie = await newBrowserCookie("demo");
   expect(liveMarker(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Live");
   expect(liveMarker(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe(
-    "You're on slide 3. The lecture is on slide 1.",
+    "You're on Week 6, slide 3. The lecture is on Week 6, slide 1.",
   );
   // A created lecture has no clock of its own to be off, so no marker.
   const lecture = await createLectureAndLogIn("Live marker test");
@@ -635,4 +635,76 @@ it("no gated field (live, total, or any bar below its own threshold) appears bel
   } finally {
     await stream.close();
   }
+});
+
+// "Slide 6" alone didn't say which of the demo's two decks the lecturer
+// view meant (docs/feedback/finish.md). Every place a demo slide is named
+// to a person names its deck, and "(live)" marks the live slide; a created
+// lecture has no deck, so it stays "Slide N".
+// The page minus its inline scripts: what the server rendered for a person
+// to read. The scripts carry the deck names for live updates, so a raw
+// search of the HTML would find them on every page.
+function renderedMarkup(html: string): string {
+  return html.replace(/<script>[\s\S]*?<\/script>/g, "");
+}
+
+function slideLabel(html: string): string | undefined {
+  return html.match(/<p id="slide-label">([^<]*)<\/p>/)?.[1];
+}
+
+async function tapReasonNote(lectureId: string, cookie: string, deck: string | null, slide: number, text: string) {
+  const deckField: Record<string, string> = deck !== null ? { deck } : {};
+  const post = (path: string, body: Record<string, string>) =>
+    fetch(new URL(`/l/${lectureId}/${path}`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(body),
+      redirect: "manual",
+    });
+  await post("tap", { ...deckField, slide: String(slide) });
+  await post("reason", { reason: "Notation" });
+  await post("note", { ...deckField, slide: String(slide), text });
+}
+
+it("the demo's student page names the deck and slide, with (live) only on the live slide", async () => {
+  const cookie = await newBrowserCookie("demo");
+  // Nobody is watching week-6, so its live slide is 1.
+  expect(slideLabel(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Week 6, slide 1 of 9 (live)");
+  expect(slideLabel(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe("Week 6, slide 3 of 9");
+});
+
+it("the demo's lecturer view names the deck on its current slide, bars, reasons and notes", async () => {
+  const cookies = [await newBrowserCookie("demo"), await newBrowserCookie("demo")];
+  for (const [i, cookie] of cookies.entries()) {
+    await tapReasonNote("demo", cookie, "week-6", 9, `deck naming note ${i}`);
+  }
+  const html = await demoPage("/l/demo/lecturer", await demoLecturerCookie());
+  expect(slideLabel(html)).toMatch(/^Week 4, slide \d+ \(live\)$/);
+  expect(html).toContain("<tr><td>Week 6, slide 9</td><td>");
+  expect(html).toContain("<tr><td>Week 6, slide 9</td><td>Notation</td><td>");
+  expect(html).toContain('<p class="note-slide">Week 6, slide 9</p>');
+  expect(html).not.toContain("week-6 / slide");
+
+  // The student page's bars name the deck too.
+  const studentHtml = await demoPage("/l/demo", cookies[0]);
+  expect(studentHtml).toContain("<tr><td>Week 6, slide 9</td><td>");
+});
+
+it("a created lecture has no deck: its pages say Slide N, with (live) on the current slide", async () => {
+  const lecture = await createLectureAndLogIn("Slide naming test");
+  const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
+  for (const [i, cookie] of cookies.entries()) {
+    await tapReasonNote(lecture.id, cookie, null, 1, `created lecture note ${i}`);
+  }
+
+  const lecturerHtml = await demoPage(`/l/${lecture.id}/lecturer`, lecture.lecturerCookie);
+  expect(slideLabel(lecturerHtml)).toBe("Slide 1 (live)");
+  expect(lecturerHtml).toContain("<tr><td>Slide 1</td><td>5</td></tr>");
+  expect(lecturerHtml).toContain("<tr><td>Slide 1</td><td>Notation</td><td>5</td></tr>");
+  expect(renderedMarkup(lecturerHtml)).not.toMatch(/Week \d/);
+
+  const studentHtml = await demoPage(`/l/${lecture.id}`, cookies[0]);
+  expect(slideLabel(studentHtml)).toBe("Slide 1 (live)");
+  expect(studentHtml).toContain("<tr><td>Slide 1</td><td>5</td></tr>");
+  expect(renderedMarkup(studentHtml)).not.toMatch(/Week \d/);
 });

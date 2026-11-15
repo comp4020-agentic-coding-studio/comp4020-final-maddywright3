@@ -51,6 +51,7 @@ import {
 import type { Bar } from "./realtime.ts";
 import {
   DECK_IDS,
+  DECK_SHORT_NAMES,
   DECK_TITLES,
   LIVE_DECK,
   currentSlideIndex,
@@ -59,6 +60,7 @@ import {
   deckSlides,
   isDeckId,
   isValidSlide,
+  slideName,
 } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
@@ -252,8 +254,22 @@ const GAUGE_CLIENT_JS = `
         }
 `;
 
+// The browser half of slideName (src/slides.ts), shared by the student and
+// lecturer scripts, so a slide is named the same way before and after a
+// live update.
+const SLIDE_NAME_CLIENT_JS = `
+        var deckShortNames = ${JSON.stringify(DECK_SHORT_NAMES)};
+        function slideName(deck, slide, options) {
+          options = options || {};
+          var short = deck ? deckShortNames[deck] : undefined;
+          var name = short ? short + ", slide " + slide : "Slide " + slide;
+          var of = options.of !== undefined ? " of " + options.of : "";
+          return name + of + (options.live ? " (live)" : "");
+        }
+`;
+
 function barLabel(bar: Bar): string {
-  return bar.deck !== null ? `${bar.deck} / slide ${bar.slide}` : `Slide ${bar.slide}`;
+  return slideName(bar.deck, bar.slide);
 }
 
 // Bars are rendered twice: an inline SVG chart (viewBox-based, so it scales
@@ -317,9 +333,12 @@ function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: nu
   return `<div id="slides">\n${deckDivs}\n</div>`;
 }
 
-function slideProgressLabel(lectureId: string, deck: DeckId, slide: number): string {
-  const total = lectureId === "demo" ? ` of ${deckSlideCount(deck)}` : "";
-  return `<p id="slide-label">Slide ${slide}${total}</p>`;
+function slideProgressLabel(lectureId: string, deck: DeckId, slide: number, liveSlide: number): string {
+  const name =
+    lectureId === "demo"
+      ? slideName(deck, slide, { of: deckSlideCount(deck), live: slide === liveSlide })
+      : slideName(null, slide, { live: slide === liveSlide });
+  return `<p id="slide-label">${escapeHtml(name)}</p>`;
 }
 
 // A plain <select>, submitting via its own tiny no-JS form — picking a deck
@@ -386,10 +405,10 @@ function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number
 // rewrites the same text on browsing and on every stream frame. Plain text,
 // not aria-live: the clock moves every 40s, and announcing that each time
 // would chatter.
-function liveMarkerText(viewedSlide: number, liveSlide: number): string {
+function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): string {
   return viewedSlide === liveSlide
     ? "Live"
-    : `You're on slide ${viewedSlide}. The lecture is on slide ${liveSlide}.`;
+    : `You're on ${slideName(deck, viewedSlide)}. The lecture is on ${slideName(deck, liveSlide)}.`;
 }
 
 // Reason buttons appear after tapping, while the caller's own tap is live.
@@ -530,10 +549,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
       <div class="slide-col">
         <div class="slide-bar">
-          ${slideProgressLabel(id, viewedDeck, viewedSlide)}
+          ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
           ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
         </div>
-        ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedSlide, liveSlide))}</p>` : ""}
+        ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
         ${slideSectionHtml(id, viewedDeck, viewedSlide)}
       </div>
       <div class="gauge-panel">
@@ -566,6 +585,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
         )};
 ${GAUGE_CLIENT_JS}
+${SLIDE_NAME_CLIENT_JS}
         var form = document.getElementById("tap-form");
         var button = document.getElementById("tap-button");
         var feedback = document.getElementById("tap-feedback");
@@ -599,12 +619,19 @@ ${GAUGE_CLIENT_JS}
           return deckSlideCounts ? deckSlideCounts[deck] : undefined;
         }
 
+        // The label says "(live)" only while this viewer is on the live
+        // slide, so it's rewritten whenever either one moves.
         function updateLiveState() {
           var onLive = viewedSlide === liveSlide;
+          var labelDeck = isDemo ? viewedDeck : null;
+          var label = document.getElementById("slide-label");
+          if (label) {
+            label.textContent = slideName(labelDeck, viewedSlide, { of: maxSlideFor(viewedDeck), live: onLive });
+          }
           if (liveMarker) {
             liveMarker.textContent = onLive
               ? "Live"
-              : "You're on slide " + viewedSlide + ". The lecture is on slide " + liveSlide + ".";
+              : "You're on " + slideName(labelDeck, viewedSlide) + ". The lecture is on " + slideName(labelDeck, liveSlide) + ".";
           }
           var backLink = document.getElementById("back-to-live-link");
           if (backLink) {
@@ -628,10 +655,6 @@ ${GAUGE_CLIENT_JS}
             slides[i].hidden = Number(slides[i].dataset.slide) !== slide;
           }
           var maxSlide = maxSlideFor(deck);
-          var label = document.getElementById("slide-label");
-          if (label) {
-            label.textContent = "Slide " + slide + (maxSlide ? " of " + maxSlide : "");
-          }
           var prevLink = document.getElementById("slide-prev-link");
           var nextLink = document.getElementById("slide-next-link");
           if (prevLink) {
@@ -733,7 +756,7 @@ ${GAUGE_CLIENT_JS}
           svg.setAttribute("role", "img");
           svg.setAttribute("aria-label", "Distinct people lost, per slide");
           sorted.forEach(function (bar, i) {
-            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var label = slideName(bar.deck, bar.slide);
             var height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
             var x = gap + i * (barWidth + gap);
             var y = chartHeight - height - 20;
@@ -761,7 +784,7 @@ ${GAUGE_CLIENT_JS}
           thead.innerHTML = "<tr><th>Slide</th><th>People lost here</th></tr>";
           var tbody = document.createElement("tbody");
           sorted.forEach(function (bar) {
-            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var label = slideName(bar.deck, bar.slide);
             var tr = document.createElement("tr");
             var tdLabel = document.createElement("td");
             tdLabel.textContent = label;
@@ -1396,7 +1419,7 @@ function reasonCountsHtml(reasonCounts: DashboardReasonCount[]): string {
   );
   const rows = sorted
     .map((entry) => {
-      const label = entry.deck !== null ? `${entry.deck} / slide ${entry.slide}` : `Slide ${entry.slide}`;
+      const label = slideName(entry.deck, entry.slide);
       return `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(entry.reason)}</td><td>${entry.count}</td></tr>`;
     })
     .join("\n");
@@ -1423,7 +1446,7 @@ function noteItemsHtml(lectureId: string, notes: DashboardNote[]): string {
   const base = `/l/${encodeURIComponent(lectureId)}`;
   return sorted
     .map((note) => {
-      const label = note.deck !== null ? `${note.deck} / slide ${note.slide}` : `Slide ${note.slide}`;
+      const label = slideName(note.deck, note.slide);
       return `<li class="note" data-note-id="${note.id}">
         <p class="note-slide">${escapeHtml(label)}</p>
         <p class="note-text">${escapeHtml(note.text)}</p>
@@ -1518,11 +1541,14 @@ function lecturerDashboard(
 
   // The demo's slide is clock-driven (ADR 004): there's nothing for a
   // lecturer to control, so no Previous/Next controls are rendered for it.
+  // The lecturer's current slide is always the live one: the demo's is
+  // LIVE_DECK's clock, a created lecture's is wherever Next/Prev left it.
+  const slideLabelHtml = `<p id="slide-label">${escapeHtml(slideName(id === "demo" ? LIVE_DECK : null, state.slide, { live: true }))}</p>`;
   const slideControlsHtml =
     id === "demo"
-      ? `<p id="slide-label">Slide ${state.slide}</p>`
+      ? slideLabelHtml
       : `
-    <p id="slide-label">Slide ${state.slide}</p>
+    ${slideLabelHtml}
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
     </form>
@@ -1558,6 +1584,7 @@ ${tapCountHtml}
         var nowDeck = ${JSON.stringify(nowKey.deck)};
         var lectureBase = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
 ${GAUGE_CLIENT_JS}
+${SLIDE_NAME_CLIENT_JS}
         var connectionStatus = document.getElementById("connection-status");
 
         function renderBars(bars) {
@@ -1580,7 +1607,7 @@ ${GAUGE_CLIENT_JS}
           svg.setAttribute("role", "img");
           svg.setAttribute("aria-label", "Distinct people lost, per slide");
           sorted.forEach(function (bar, i) {
-            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var label = slideName(bar.deck, bar.slide);
             var height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
             var x = gap + i * (barWidth + gap);
             var y = chartHeight - height - 20;
@@ -1608,7 +1635,7 @@ ${GAUGE_CLIENT_JS}
           thead.innerHTML = "<tr><th>Slide</th><th>People lost here</th></tr>";
           var tbody = document.createElement("tbody");
           sorted.forEach(function (bar) {
-            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var label = slideName(bar.deck, bar.slide);
             var tr = document.createElement("tr");
             var tdLabel = document.createElement("td");
             tdLabel.textContent = label;
@@ -1653,7 +1680,7 @@ ${GAUGE_CLIENT_JS}
           thead.innerHTML = "<tr><th>Slide</th><th>Reason</th><th>Count</th></tr>";
           var tbody = document.createElement("tbody");
           sorted.forEach(function (entry) {
-            var label = entry.deck ? entry.deck + " / slide " + entry.slide : "Slide " + entry.slide;
+            var label = slideName(entry.deck, entry.slide);
             var tr = document.createElement("tr");
             var tdLabel = document.createElement("td");
             tdLabel.textContent = label;
@@ -1698,7 +1725,7 @@ ${GAUGE_CLIENT_JS}
           list.id = listId;
           list.className = "notes-list";
           sorted.forEach(function (note) {
-            var label = note.deck ? note.deck + " / slide " + note.slide : "Slide " + note.slide;
+            var label = slideName(note.deck, note.slide);
             var li = document.createElement("li");
             li.className = "note";
             li.dataset.noteId = String(note.id);
@@ -1827,7 +1854,7 @@ ${GAUGE_CLIENT_JS}
 
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
-          if (slideLabel) setText(slideLabel, "Slide " + state.slide);
+          if (slideLabel) setText(slideLabel, slideName(nowDeck, state.slide, { live: true }));
           // renderGauge (shared with the student page) only touches the
           // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
