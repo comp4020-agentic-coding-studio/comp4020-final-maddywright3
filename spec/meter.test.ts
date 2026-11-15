@@ -13,27 +13,58 @@ const tapCountFrom = (html: string): number => {
   return Number(match[1]);
 };
 
+// Below demo's min_present (2), "Total taps" isn't rendered at all — see the
+// privacy test in spec/identity.test.ts — so these tests need enough
+// otherwise-unused presence connections open to cross that threshold before
+// they can read it.
+async function openPresenceConnection(lectureId: string): Promise<() => void> {
+  const cookie = await newBrowserCookie(lectureId);
+  const controller = new AbortController();
+  const res = await fetch(new URL(`/l/${lectureId}/events`, baseUrl), {
+    signal: controller.signal,
+    headers: { cookie },
+  });
+  const reader = res.body!.getReader();
+  await reader.read(); // wait for the initial frame, so presence is registered
+  return () => controller.abort();
+}
+
+async function openPresenceConnections(lectureId: string, count: number): Promise<() => void> {
+  const closers = await Promise.all(Array.from({ length: count }, () => openPresenceConnection(lectureId)));
+  return () => closers.forEach((close) => close());
+}
+
 it("/l/demo answers 200 and shows a tap count", async () => {
-  const res = await fetch(new URL("/l/demo", baseUrl));
-  expect(res.status).toBe(200);
-  const html = await res.text();
-  expect(tapCountFrom(html)).toBeGreaterThanOrEqual(0);
+  const close = await openPresenceConnections("demo", 2); // demo's min_present is 2
+  try {
+    const res = await fetch(new URL("/l/demo", baseUrl));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(tapCountFrom(html)).toBeGreaterThanOrEqual(0);
+  } finally {
+    close();
+  }
 });
 
 it("posting a tap to /l/demo increases the count by one", async () => {
-  // A fresh browser identity each run: C10 dedupes repeat taps from the same
-  // browser within 60s, so reusing a cookie across test runs could make this
-  // flaky depending on timing. Spec files run one at a time (see
-  // vitest.config.ts), so the shared total is stable to assert an exact
-  // delta on again.
-  const cookie = await newBrowserCookie("demo");
-  const before = tapCountFrom(await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text());
+  const close = await openPresenceConnections("demo", 2); // demo's min_present is 2
+  try {
+    // A fresh browser identity each run: C10 dedupes repeat taps from the same
+    // browser within 60s, so reusing a cookie across test runs could make this
+    // flaky depending on timing. Spec files run one at a time (see
+    // vitest.config.ts), so the shared total is stable to assert an exact
+    // delta on again.
+    const cookie = await newBrowserCookie("demo");
+    const before = tapCountFrom(await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text());
 
-  const res = await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
-  expect(res.status).toBe(200); // fetch follows the 303 redirect by default
-  const after = tapCountFrom(await res.text());
+    const res = await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+    expect(res.status).toBe(200); // fetch follows the 303 redirect by default
+    const after = tapCountFrom(await res.text());
 
-  expect(after).toBe(before + 1);
+    expect(after).toBe(before + 1);
+  } finally {
+    close();
+  }
 });
 
 it("/l/does-not-exist answers 404", async () => {

@@ -316,6 +316,16 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
 
 it("the per-minute timeline shows Australia/Sydney time", async () => {
   const cookie = await newBrowserCookie("demo");
+  // The timeline is only sent at/above min_present (2) — see the privacy
+  // test above — so two otherwise-unused presence connections need to be
+  // open before the lecturer dashboard will render it at all.
+  const otherCookieA = await newBrowserCookie("demo");
+  const otherCookieB = await newBrowserCookie("demo");
+  const otherA = await trackedStream("/l/demo/events", otherCookieA);
+  const otherB = await trackedStream("/l/demo/events", otherCookieB);
+  await otherA.next();
+  await otherB.next();
+
   const tapTime = new Date();
   await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
 

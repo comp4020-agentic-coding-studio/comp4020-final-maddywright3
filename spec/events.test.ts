@@ -5,9 +5,9 @@ const baseUrl = inject("baseUrl");
 
 interface MeterState {
   present: number;
-  live: number;
   shown: boolean;
-  totalTaps: number;
+  live?: number;
+  totalTaps?: number;
   yourTapCount: number;
   youAreCounted: boolean;
 }
@@ -92,30 +92,41 @@ class SseStream {
   }
 }
 
+// demo's min_present is 2: live/totalTaps are only sent once present reaches
+// that threshold (below it, the server sends neither at all — see the
+// privacy test in spec/identity.test.ts), so these tests open a second,
+// otherwise-unused stream just to cross the threshold before asserting on
+// either field.
 it("a tap shows up on an open /events stream within 1 second", async () => {
   const cookie = await newBrowserCookie("demo");
+  const otherCookie = await newBrowserCookie("demo");
   const stream = await SseStream.open("/l/demo/events", cookie);
+  const other = await SseStream.open("/l/demo/events", otherCookie);
   try {
-    const before = await stream.next();
+    const before = await stream.waitFor((s) => s.shown);
     await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
-    const after = await stream.waitFor((s) => s.live >= before.live + 1, 1000);
-    expect(after.live).toBeGreaterThanOrEqual(before.live + 1);
+    const after = await stream.waitFor((s) => s.shown && s.live! >= before.live! + 1, 1000);
+    expect(after.live).toBeGreaterThanOrEqual(before.live! + 1);
   } finally {
     await stream.close();
+    await other.close();
   }
 });
 
 it("the total taps count goes up on an open stream after a tap", async () => {
   const streamCookie = await newBrowserCookie("demo");
   const tapCookie = await newBrowserCookie("demo");
+  const otherCookie = await newBrowserCookie("demo");
   const stream = await SseStream.open("/l/demo/events", streamCookie);
+  const other = await SseStream.open("/l/demo/events", otherCookie);
   try {
-    const before = await stream.next();
+    const before = await stream.waitFor((s) => s.shown);
     await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie: tapCookie } });
-    const after = await stream.waitFor((s) => s.totalTaps > before.totalTaps, 1000);
-    expect(after.totalTaps).toBe(before.totalTaps + 1);
+    const after = await stream.waitFor((s) => s.shown && s.totalTaps! > before.totalTaps!, 1000);
+    expect(after.totalTaps).toBe(before.totalTaps! + 1);
   } finally {
     await stream.close();
+    await other.close();
   }
 });
 
@@ -165,17 +176,20 @@ it(
   "a tap fades out of `live` 60 seconds after it was made",
   async () => {
     const cookie = await newBrowserCookie("demo");
+    const otherCookie = await newBrowserCookie("demo");
     const stream = await SseStream.open("/l/demo/events", cookie);
+    const other = await SseStream.open("/l/demo/events", otherCookie);
     try {
+      await stream.waitFor((s) => s.shown);
       await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
-      const afterTap = await stream.next(1000);
+      const afterTap = await stream.waitFor((s) => s.shown, 1000);
       expect(afterTap.live).toBeGreaterThanOrEqual(1);
 
       const deadline = Date.now() + 65_000;
       let sawFade = false;
       while (Date.now() < deadline) {
         const state = await stream.next(65_000);
-        if (state.live < afterTap.live) {
+        if (state.shown && state.live! < afterTap.live!) {
           sawFade = true;
           break;
         }
@@ -183,6 +197,7 @@ it(
       expect(sawFade).toBe(true);
     } finally {
       await stream.close();
+      await other.close();
     }
   },
   70_000,
