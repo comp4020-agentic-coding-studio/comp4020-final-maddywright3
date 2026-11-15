@@ -778,6 +778,10 @@ ${SLIDE_NAME_CLIENT_JS}
           var active = document.activeElement;
           var tag = active && active.tagName;
           if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+          // A created lecture has no slides here to browse: its slide is the
+          // lecturer's, and the arrows mustn't quietly change what a tap
+          // records.
+          if (!isDemo) return;
           var maxSlide = maxSlideFor(viewedDeck);
           if (event.key === "ArrowLeft" && viewedSlide > 1) {
             landOnLive = false;
@@ -985,6 +989,12 @@ ${SLIDE_NAME_CLIENT_JS}
             liveSlide = state.slide;
             if (landOnLive && isDemo) {
               landOnLive = false;
+              showSlide(viewedDeck, liveSlide);
+            } else if (!isDemo && viewedSlide !== liveSlide) {
+              // A created lecture's slide is wherever the lecturer's Next or
+              // Previous left it, and there's nothing here to browse, so the
+              // page follows: the label, the slide a tap records, and the
+              // tap controls for that slide.
               showSlide(viewedDeck, liveSlide);
             }
             updateLiveState();
