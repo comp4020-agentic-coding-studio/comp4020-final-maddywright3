@@ -244,6 +244,10 @@ async function handleTap(id: string, req: Request): Promise<Response> {
   });
 }
 
+// Student-only: a lecturer's own bid+lsess cookies must still get student
+// state and count as present here, since this is the route a student page
+// connects to — lecturer state lives on its own route (handleLecturerEvents)
+// instead of being chosen by which cookies happen to be present.
 function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): void {
   const lecture = getLecture(id);
   if (!lecture) {
@@ -254,23 +258,6 @@ function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): vo
 
   const cookieHeader = req.headers.cookie;
   const browserId = validateBrowserId(cookieHeader);
-
-  if (validateLecturerSession(id, cookieHeader)) {
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    });
-    addLecturerConnection(id, res);
-    logAction("stream_open", id, browserId);
-    broadcastToLecturer(id);
-    req.on("close", () => {
-      removeLecturerConnection(id, res);
-      logAction("stream_close", id, browserId);
-    });
-    return;
-  }
-
   if (!browserId) {
     res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
     res.end("Forbidden");
@@ -292,6 +279,38 @@ function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): vo
     removeConnection(id, browserId, res);
     logAction("stream_close", id, browserId);
     broadcast(id);
+  });
+}
+
+function handleLecturerEvents(id: string, req: IncomingMessage, res: ServerResponse): void {
+  const lecture = getLecture(id);
+  if (!lecture) {
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
+
+  const cookieHeader = req.headers.cookie;
+  if (!validateLecturerSession(id, cookieHeader)) {
+    res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Forbidden");
+    return;
+  }
+
+  const browserId = validateBrowserId(cookieHeader);
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+
+  addLecturerConnection(id, res);
+  logAction("stream_open", id, browserId);
+  broadcastToLecturer(id);
+
+  req.on("close", () => {
+    removeLecturerConnection(id, res);
+    logAction("stream_close", id, browserId);
   });
 }
 
@@ -361,7 +380,7 @@ ${rows}
           });
         }
 
-        var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/events`)});
+        var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
         source.onmessage = function (event) {
           render(JSON.parse(event.data));
         };
@@ -448,7 +467,7 @@ async function handleLecturerPost(id: string, req: Request): Promise<Response> {
     serializeCookie(LECTURER_COOKIE, token, {
       httpOnly: true,
       sameSite: "Strict",
-      path: `/l/${encodeURIComponent(id)}`,
+      path: `/l/${encodeURIComponent(id)}/lecturer`,
       secure: isHttps(req),
     }),
   );
@@ -578,6 +597,12 @@ function readBody(req: IncomingMessage): Promise<string> {
 const server = createServer(async (req, res) => {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
   const { pathname } = new URL(url);
+
+  const lecturerEventsMatch = req.method === "GET" && pathname.match(/^\/l\/([^/]+)\/lecturer\/events$/);
+  if (lecturerEventsMatch) {
+    handleLecturerEvents(decodeURIComponent(lecturerEventsMatch[1]), req, res);
+    return;
+  }
 
   const eventsMatch = req.method === "GET" && pathname.match(/^\/l\/([^/]+)\/events$/);
   if (eventsMatch) {

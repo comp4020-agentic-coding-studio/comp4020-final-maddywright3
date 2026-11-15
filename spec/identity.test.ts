@@ -209,6 +209,41 @@ it("no student page, lecturer page, or stream ever contains a browser ID other t
   expect(dashboardHtml).not.toContain(bidB);
 });
 
+it("a browser holding both cookies gets student state on /l/:id/events and counts as present", async () => {
+  const cookie = await newBrowserCookie("demo");
+
+  const rightCode = await fetch(new URL("/l/demo/lecturer", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "code=DEMO",
+    redirect: "manual",
+  });
+  const lsessCookie = rightCode.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("lsess="))
+    ?.split(";")[0];
+  expect(lsessCookie).toBeDefined();
+  const bothCookies = `${cookie}; ${lsessCookie}`;
+
+  // A fresh second browser to measure "present" against.
+  const otherCookie = await newBrowserCookie("demo");
+  const other = await trackedStream("/l/demo/events", otherCookie);
+  const initial = await other.next();
+
+  // The lecturer's own browser opens the STUDENT stream (/l/demo/events,
+  // not /l/demo/lecturer/events) while also holding a valid lsess cookie.
+  // It must get student state (yourTapCount/youAreCounted, not a timeline)
+  // and must count as present — the route decides the state, not whichever
+  // cookies happen to be on the request.
+  const studentStream = await trackedStream("/l/demo/events", bothCookies);
+  const studentFrame = await studentStream.next();
+  expect(studentFrame).toHaveProperty("youAreCounted");
+  expect(studentFrame).not.toHaveProperty("timeline");
+
+  const updated = await other.waitFor((s) => s.present === initial.present + 1);
+  expect(updated.present).toBe(initial.present + 1);
+});
+
 it("the per-minute timeline shows Australia/Sydney time", async () => {
   const cookie = await newBrowserCookie("demo");
   const tapTime = new Date();
