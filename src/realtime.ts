@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { getLecture, hasLiveTap, liveTapInfo, perMinuteTimeline, tapCount, yourTapCount } from "./db.ts";
+import { currentSlideIndex } from "./slides.ts";
 
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -8,11 +9,14 @@ const HEARTBEAT_MS = 20_000;
 // object at all (not just zeroed or hidden on screen) — the point of
 // "safety in numbers" is that a tap below threshold leaves no trace
 // anywhere a request can see, not just that the gauge text looks blank.
+// `slide` is ungated on both types — slide position isn't privacy-sensitive,
+// unlike tap counts.
 export type MeterState =
-  | { present: number; shown: false; yourTapCount: number; youAreCounted: boolean }
+  | { present: number; shown: false; slide: number; yourTapCount: number; youAreCounted: boolean }
   | {
       present: number;
       shown: true;
+      slide: number;
       live: number;
       totalTaps: number;
       yourTapCount: number;
@@ -20,8 +24,15 @@ export type MeterState =
     };
 
 export type LecturerState =
-  | { present: number; shown: false }
-  | { present: number; shown: true; live: number; totalTaps: number; timeline: { minute: string; count: number }[] };
+  | { present: number; shown: false; slide: number }
+  | {
+      present: number;
+      shown: true;
+      slide: number;
+      live: number;
+      totalTaps: number;
+      timeline: { minute: string; count: number }[];
+    };
 
 // Student/presence connections, keyed by lecture then by browser, so
 // "present" counts unique browsers rather than open tabs or connections.
@@ -88,13 +99,14 @@ export function computeState(lectureId: string, browserId: string): MeterState |
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
+  const slide = currentSlideIndex(lecture);
   const yours = {
     yourTapCount: yourTapCount(lectureId, browserId),
     youAreCounted: hasLiveTap(lectureId, browserId, since),
   };
-  if (!shown) return { present, shown, ...yours };
+  if (!shown) return { present, shown, slide, ...yours };
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, live, totalTaps: tapCount(lectureId), ...yours };
+  return { present, shown, slide, live, totalTaps: tapCount(lectureId), ...yours };
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
@@ -102,10 +114,18 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   if (!lecture) return undefined;
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
-  if (!shown) return { present, shown };
+  const slide = currentSlideIndex(lecture);
+  if (!shown) return { present, shown, slide };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, live, totalTaps: tapCount(lectureId), timeline: perMinuteTimeline(lectureId) };
+  return {
+    present,
+    shown,
+    slide,
+    live,
+    totalTaps: tapCount(lectureId),
+    timeline: perMinuteTimeline(lectureId),
+  };
 }
 
 export function broadcast(lectureId: string): void {
