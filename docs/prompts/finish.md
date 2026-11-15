@@ -314,3 +314,94 @@ move anyone else; a second tap on the same slide is ignored, a tap on another sl
 counts, and two parallel taps on one slide count once. Playwright once the UI branch
 has merged: the dashboard and timeline at both viewports, keyboard only, no overflow.
 Commit in small steps with messages saying why.
+
+## Lecture features, round 2
+
+After one tap per slide, these replace the rest of your plan where they overlap
+(timeline, dashboard, after "I get it now"). Save this message word for word to
+docs/prompts/finish.md under "## Lecture features, round 2" (its own commit). Write
+docs/adr/006-runs-timing-and-your-own-lecture.md covering items 1, 2, 5 and 6 with
+options and costs (its own commit), and add the CLAUDE.md rules listed at the end
+(its own commit). Show me the plan, then wait for go.
+
+The colour-and-layout agent owns /style.css and the page shell. Use its tokens
+(--lost, --accent, --clicked, --sky, --ink, --ink-muted, --line, --surface) through
+CSS classes, and fill its slots graph-lost, graph-reasons, graph-helped,
+graph-resolved and activity-log. Don't restyle pages. No chart library, no new
+dependencies.
+
+1. Condensed demo timing
+   - Each demo deck runs about 5 minutes in total, standing in for a 60-minute lecture
+     condensed 12x. Give each slide a duration in seconds in the deck file, weighted by
+     how much it covers (dense slides longer), summing to about 300.
+   - Show "Lecture time 1:20 / 5:00" and, beside it, "Condensed 12x from a 60-minute
+     lecture (real time 16:00)".
+   - Timeline segments are sized by duration and labelled with their start time.
+   - The live window for demo taps is 20 seconds. /new lectures keep 60. Tests cover both,
+     and the README-enforced fade test must still run in full.
+
+2. Reasons and "what helped" lock once sent
+   - Choosing a reason marks it selected (aria-pressed) and dims the rest. Once sent,
+     every reason button for that slide is disabled until you're on another slide.
+     The server rejects a second reason for the same (browser, deck, slide).
+   - After "I get it now": show "Glad you've got it now." and ask "What helped your
+     understanding?" with a fixed list: The next slide, Re-reading it, The example,
+     Someone explained it, Worked it out myself. It locks once sent, the same way.
+   - Change the old test that let a reason be changed into one that checks it locks.
+
+3. Lecturer dashboard (aggregates only, every number gated as CLAUDE.md says)
+   - Stat tiles: people here, lost right now, distinct people lost this run, share
+     who said "I get it now", hardest slide.
+   - Four SVG graphs, each with a table alternative and its threshold message when empty:
+     graph-lost: distinct people lost per slide.
+     graph-reasons: why they were lost, stacked per slide.
+     graph-helped: what helped, per slide.
+     graph-resolved: still lost against "I get it now" per slide.
+   - Notes grouped by slide, filterable by deck and slide, each with Hide.
+
+4. Activity log (never per action)
+   - A live, filterable (deck, slide) log. A line is added only when a slide's count
+     crosses a new multiple of min_present, e.g. "Week 4, slide 5: 3 more people lost,
+     mostly Missed a step", "2 new notes on slide 5", "4 people said what helped on
+     slide 5". No times finer than the slide, no student labels.
+   - Worked out from stored data, so it survives restarts. Students never see it.
+
+5. Reset as a fresh run, never a delete
+   - A lecturer-only "Start a fresh run" button with a confirmation page. It creates a
+     new run. Taps, reasons, what helped and notes carry a run id, and everything live
+     uses the current run. Earlier runs stay viewable read-only in the dashboard
+     through a run picker.
+   - The demo can't be reset (403, with a message on the page: "The shared demo keeps
+     its history. Create your own lecture to try a fresh run.").
+   - The UNIQUE index for one tap per slide includes the run id. The migration is safe
+     on existing rows (put them all in run 1).
+   - Log run_started. Tests: reset deletes no rows; the old run is still viewable;
+     a browser can tap the same slide again in a new run; resetting the demo is rejected.
+
+6. Create a lecture that explains itself
+   - /new opens with: "Run this beside your own slides. Students tap on the slide you're
+     on, and you see where the room got lost."
+   - Fields: title; number of slides (1 to 60); pacing, either "I'll press Next" or
+     "Timed" with total minutes (5 to 180) split evenly unless per-slide minutes are
+     given; optional slide text pasted as markdown separated by --- (max 50 KB); the
+     optional help link.
+   - Pasted slides: raw HTML is escaped, images are not rendered, links render as links.
+     Nothing loads from another site. If pasted slides are given, their count wins.
+   - Timed lectures start when the lecturer presses "Start lecture", not when the first
+     student arrives.
+   - Tests: a <script> in pasted slides comes back escaped; an image line loads nothing;
+     the slide count and timing limits reject; a timed lecture moves slides on its clock.
+
+7. Home link on every page (if the colour agent's header isn't merged yet, keep a plain
+   "Home" link and remove it once the header lands).
+
+CLAUDE.md rules to add:
+- "Reset never deletes. It starts a new run, and earlier runs stay viewable. The demo
+  can't be reset. (ADR 006: the demo's code is public, and markers check persistence.)"
+- "Every activity log line covers at least min_present actions. Never log or show a
+  single student's action to the lecturer. (ADR 006.)"
+- "Lecturer-supplied slide text is escaped. No raw HTML, no images, nothing loaded
+  from elsewhere."
+When both branches are done: merge whichever finishes first, rebase the other, run
+pnpm check twice, and show me the merged diff before merging. Commit in small steps.
+Ask before pushing or deploying.
