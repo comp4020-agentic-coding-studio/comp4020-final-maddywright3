@@ -79,6 +79,10 @@ const STYLE = `
     line-height: 1.5;
     overflow-wrap: break-word;
   }
+  :focus-visible {
+    outline: 3px solid #1a5fb4;
+    outline-offset: 2px;
+  }
   .tap-button {
     display: block;
     width: 100%;

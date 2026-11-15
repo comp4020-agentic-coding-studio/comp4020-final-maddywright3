@@ -152,3 +152,14 @@ it("a created lecture's lecturer dashboard (Previous/Next controls) has no axe v
   const violations = await checkAccessibility(html);
   expect(violations, describeViolations(violations)).toEqual([]);
 });
+
+// jsdom can't compute focus rings, so this checks the rule is shipped on
+// every page: without it, a reset or a browser default could leave keyboard
+// users with no visible focus on the tap button or reason buttons.
+it("every page styles :focus-visible with a visible outline", async () => {
+  const cookie = await newBrowserCookie("demo");
+  for (const path of ["/", "/readme/", "/l/demo", "/new", "/l/demo/lecturer"]) {
+    const html = await (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text();
+    expect(html, path).toMatch(/:focus-visible\s*\{[^}]*outline:\s*3px solid/);
+  }
+});
