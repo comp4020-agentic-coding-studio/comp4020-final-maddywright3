@@ -9,7 +9,9 @@ export type LogAction =
   | "stream_close"
   | "lecturer_login_ok"
   | "lecturer_login_failed"
-  | "lecture_created";
+  | "lecture_created"
+  | "slide_changed"
+  | "slide_change_rejected";
 
 // `who` is never the raw browser ID: a real ID is hashed (one-way, so repeat
 // activity from the same browser still correlates in the logs); a missing
