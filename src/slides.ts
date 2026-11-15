@@ -74,6 +74,14 @@ export function currentSlideIndex(lecture: Lecture): number {
   return lecture.id === "demo" ? liveSlideIndex(lecture) : lecture.current_slide;
 }
 
+// The deck currentSlideIndex's value belongs to: always LIVE_DECK for the
+// demo (its live slide is always on the live deck — browsing to week-6
+// doesn't move the live position, it only changes what one viewer is
+// looking at), null for a created lecture (no deck concept at all).
+export function currentDeck(lecture: Lecture): DeckId | null {
+  return lecture.id === "demo" ? LIVE_DECK : null;
+}
+
 // For the demo, milliseconds until its live slide advances on its own — so a
 // timer can be armed to push a broadcast right then, the same way a live
 // tap's 60s fade is scheduled rather than only recomputed when something
