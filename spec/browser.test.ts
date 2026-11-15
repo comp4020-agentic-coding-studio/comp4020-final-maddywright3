@@ -1,0 +1,276 @@
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { chromium } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
+import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
+
+// What jsdom can't see: real layout, colour contrast, keyboard focus, a
+// throttled connection, two people at once. Runs in a real Chromium.
+const baseUrl = inject("baseUrl");
+const origin = new URL(baseUrl).origin;
+const require = createRequire(import.meta.url);
+const axeSource = readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
+
+const VIEWPORTS = [
+  { name: "phone", width: 390, height: 844 },
+  { name: "desktop", width: 1920, height: 1080 },
+];
+const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/new", "/no-such-page"];
+
+let browser: Browser;
+beforeAll(async () => {
+  browser = await chromium.launch();
+});
+afterAll(async () => {
+  await browser?.close();
+});
+
+interface Watched {
+  context: BrowserContext;
+  page: Page;
+  problems: string[];
+}
+
+// Every console error, failed request and off-origin request is a test
+// failure, whatever the test is checking. A page can look fine and throw.
+async function openWatched(width: number, height: number, expectedNotFound?: string): Promise<Watched> {
+  const context = await browser.newContext({ viewport: { width, height } });
+  const page = await context.newPage();
+  const problems: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") problems.push(`console error: ${msg.text()}`);
+  });
+  page.on("pageerror", (err) => problems.push(`page error: ${err.message}`));
+  page.on("request", (req) => {
+    const url = new URL(req.url());
+    if ((url.protocol === "http:" || url.protocol === "https:") && url.origin !== origin) {
+      problems.push(`third-party request: ${req.url()}`);
+    }
+  });
+  page.on("requestfailed", (req) => {
+    // Leaving a page cancels its open event stream; that's the browser
+    // closing a stream on purpose, not a request that failed.
+    const aborted = req.failure()?.errorText === "net::ERR_ABORTED";
+    if (aborted && new URL(req.url()).pathname.endsWith("/events")) return;
+    problems.push(`failed request: ${req.url()} ${req.failure()?.errorText}`);
+  });
+  page.on("console", (msg) => {
+    // Chromium logs the document's own 404 as a console error; that status
+    // is the 404 page doing its job, checked separately below.
+    if (msg.type() === "error" && msg.location().url === expectedNotFound) {
+      const i = problems.lastIndexOf(`console error: ${msg.text()}`);
+      if (i !== -1) problems.splice(i, 1);
+    }
+  });
+  page.on("response", (res) => {
+    if (res.status() < 400) return;
+    if (res.url() === expectedNotFound && res.request().isNavigationRequest() && res.status() === 404) return;
+    problems.push(`HTTP ${res.status()}: ${res.url()}`);
+  });
+  return { context, page, problems };
+}
+
+async function logInAsDemoLecturer(context: BrowserContext): Promise<void> {
+  await context.request.get(new URL("/l/demo", baseUrl).toString());
+  const res = await context.request.post(new URL("/l/demo/lecturer", baseUrl).toString(), {
+    form: { code: "DEMO" },
+    maxRedirects: 0,
+  });
+  expect(res.status()).toBe(303);
+}
+
+async function axeViolations(page: Page): Promise<string[]> {
+  await page.addScriptTag({ content: axeSource });
+  const violations = await page.evaluate(async () => {
+    const axe = (window as unknown as { axe: { run: () => Promise<{ violations: { id: string; nodes: { html: string }[] }[] }> } }).axe;
+    const results = await axe.run();
+    return results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`);
+  });
+  return violations;
+}
+
+async function hasHorizontalScroll(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+}
+
+async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string; visible: boolean }> {
+  return page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return { tag: "body", text: "", visible: false };
+    const style = getComputedStyle(el);
+    const visible = el.matches(":focus-visible") && style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
+    return { tag: el.tagName, text: (el.textContent ?? "").trim(), visible };
+  });
+}
+
+// Tabs until the focused element matches, checking the focus ring is
+// visible at every stop on the way. Shift+Tab when the target is earlier in
+// the page, as a keyboard user would.
+async function tabTo(
+  page: Page,
+  matches: (f: { tag: string; text: string }) => boolean,
+  maxTabs = 60,
+  key: "Tab" | "Shift+Tab" = "Tab",
+): Promise<void> {
+  for (let i = 0; i < maxTabs; i++) {
+    await page.keyboard.press(key);
+    const focused = await focusedIsVisible(page);
+    expect(focused.visible, `focus not visible on ${focused.tag} "${focused.text}"`).toBe(true);
+    if (matches(focused)) return;
+  }
+  throw new Error("never reached the target by Tab");
+}
+
+async function yourTapCount(page: Page): Promise<number> {
+  const text = (await page.locator("#your-count").textContent()) ?? "";
+  return Number(text.match(/(\d+) time/)?.[1] ?? NaN);
+}
+
+describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
+  it.each(PAGES)("%s has no axe violations (contrast included), no horizontal scroll, and no errors", async (path) => {
+    const url = new URL(path, baseUrl).toString();
+    const w = await openWatched(width, height, path === "/no-such-page" ? url : undefined);
+    try {
+      if (path === "/l/demo/lecturer") await logInAsDemoLecturer(w.context);
+      const res = await w.page.goto(url);
+      expect(res?.status()).toBe(path === "/no-such-page" ? 404 : 200);
+      await w.page.waitForLoadState("networkidle").catch(() => {});
+      expect(await axeViolations(w.page)).toEqual([]);
+      expect(await hasHorizontalScroll(w.page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  it("keyboard only: tap, reason, note, I get it now, arrow keys, Back to live", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo", baseUrl).toString());
+      const label = page.locator("#slide-label");
+      const startLabel = await label.textContent();
+
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I'm lost");
+      await page.keyboard.press("Enter");
+      await page.locator("#reasons").waitFor();
+      // The tap's live update re-renders around the button: focus must
+      // still be somewhere visible, not dropped to <body>.
+      expect((await focusedIsVisible(page)).visible, "focus lost after the tap's live update").toBe(true);
+
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "Too fast");
+      await page.keyboard.press("Enter");
+      expect((await focusedIsVisible(page)).visible, "focus lost after picking a reason").toBe(true);
+
+      await tabTo(page, (f) => f.tag === "TEXTAREA");
+      await page.keyboard.type("the bit about the budget");
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "Send");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => page.locator("#note-status").textContent(), { timeout: 2000 }).toBe("Sent");
+      expect((await focusedIsVisible(page)).visible, "focus lost after sending the note").toBe(true);
+
+      // In the layout, "I get it now" sits beside the tap button, before the
+      // reasons and note, so from Send it's back up the page.
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I get it now", 60, "Shift+Tab");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => page.locator("#tap-button").textContent(), { timeout: 2000 }).toBe("I'm lost");
+      expect((await focusedIsVisible(page)).visible, "focus lost after I get it now").toBe(true);
+
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => label.textContent()).not.toBe(startLabel);
+      // Back to live is in the slide bar, above the tap bar.
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Back to live", 80, "Shift+Tab");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => label.textContent()).toBe(startLabel);
+
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 60_000);
+
+  it("two people: a tap in one browser reaches the other within a second", async () => {
+    const a = await openWatched(width, height);
+    const b = await openWatched(width, height);
+    try {
+      await a.page.goto(new URL("/l/demo", baseUrl).toString());
+      await b.page.goto(new URL("/l/demo", baseUrl).toString());
+      const lost = b.page.locator("#gauge-lost");
+      // Demo's min_present is 2, so with both here the count is shown.
+      await expect.poll(() => lost.textContent(), { timeout: 3000 }).not.toMatch(/^Waiting/);
+      const before = await lost.textContent();
+
+      await a.page.locator("#tap-button").click();
+      await expect.poll(() => lost.textContent(), { timeout: 1000, interval: 50 }).not.toBe(before);
+
+      expect([...a.problems, ...b.problems]).toEqual([]);
+    } finally {
+      await a.context.close();
+      await b.context.close();
+    }
+  }, 30_000);
+
+  it("Slow 4G: Sending... shows within 100 ms and the tap still counts", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo", baseUrl).toString());
+      await page.locator("#tap-button").waitFor();
+      const cdp = await w.context.newCDPSession(page);
+      // DevTools' "Slow 4G" preset.
+      await cdp.send("Network.emulateNetworkConditions", {
+        offline: false,
+        latency: 562.5,
+        downloadThroughput: (1.6 * 1024 * 1024 * 0.9) / 8,
+        uploadThroughput: (750 * 1024 * 0.9) / 8,
+      });
+      const before = await yourTapCount(page);
+
+      const msToSending = await page.evaluate(
+        () =>
+          new Promise<number>((resolve) => {
+            const button = document.getElementById("tap-button")!;
+            const start = performance.now();
+            const observer = new MutationObserver(() => {
+              if (button.textContent === "Sending...") {
+                observer.disconnect();
+                resolve(performance.now() - start);
+              }
+            });
+            observer.observe(button, { childList: true, characterData: true, subtree: true });
+            button.click();
+          }),
+      );
+      expect(msToSending).toBeLessThan(100);
+
+      await expect.poll(() => yourTapCount(page), { timeout: 15_000 }).toBe(before + 1);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 45_000);
+});
+
+it("resize mid-tap: tap at 1920x1080, shrink to 390x844 while Sending..., the tap counts and nothing overflows", async () => {
+  const w = await openWatched(1920, 1080);
+  const { page } = w;
+  try {
+    // Hold the tap request open so the resize lands while it's in flight.
+    await page.route("**/l/demo/tap", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await route.continue();
+    });
+    await page.goto(new URL("/l/demo", baseUrl).toString());
+    const before = await yourTapCount(page);
+
+    await page.locator("#tap-button").click();
+    await expect.poll(() => page.locator("#tap-button").textContent(), { timeout: 500, interval: 10 }).toBe("Sending...");
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await expect.poll(() => yourTapCount(page), { timeout: 5000 }).toBe(before + 1);
+    expect(await hasHorizontalScroll(page)).toBe(false);
+    expect(w.problems).toEqual([]);
+  } finally {
+    await w.context.close();
+  }
+}, 30_000);
