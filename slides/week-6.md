@@ -98,7 +98,6 @@ finishes
 ## One push, one GitHub Actions run
 
 <div class="diagram-actions-run">
-<style>.diagram-actions-run .actions-run{inline-size:100%;margin:0 auto}.diagram-actions-run svg{max-block-size:560px;inline-size:100%;display:block}.diagram-actions-run text{fill:#fff;font-family:inherit}.diagram-actions-run .title{font-size:30px;font-weight:600}.diagram-actions-run .label{font-size:22px}.diagram-actions-run .note{fill:#c9c2b6;font-size:20px}.diagram-actions-run .code{font-family:JetBrains Mono,SF Mono,Menlo,monospace;font-size:19px}.diagram-actions-run .window{fill:none;stroke-width:3px}.diagram-actions-run .window.you{stroke:#be830e}.diagram-actions-run .window.runner{stroke:#be4e0e}.diagram-actions-run .block{fill-opacity:.35}.diagram-actions-run .block.you{fill:#be830e}.diagram-actions-run .step{fill:#be4e0e}.diagram-actions-run .block.msg{fill:#0085ad;fill-opacity:.6}.diagram-actions-run .arrow{fill:none;stroke-width:4px;marker-end:url(#actions-run-head)}.diagram-actions-run .head{fill:#0085ad}.diagram-actions-run .arrow.msg{stroke:#0085ad}.diagram-actions-run text.msg{fill:#0085ad;font-weight:600}</style>
 <svg viewBox="0 0 1160 520" role="img" aria-labelledby="actions-run-title actions-run-desc"> <title id="actions-run-title">One push, one GitHub Actions run</title> <desc id="actions-run-desc">
 You run git push from your laptop. GitHub starts a fresh ubuntu-latest
       virtual machine with nothing of yours on it. The check job's steps run in

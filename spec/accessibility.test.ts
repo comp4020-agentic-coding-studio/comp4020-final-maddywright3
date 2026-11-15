@@ -155,11 +155,16 @@ it("a created lecture's lecturer dashboard (Previous/Next controls) has no axe v
 
 // jsdom can't compute focus rings, so this checks the rule is shipped on
 // every page: without it, a reset or a browser default could leave keyboard
-// users with no visible focus on the tap button or reason buttons.
+// users with no visible focus on the tap button or reason buttons. The CSS
+// moved from an inline <style> to /style.css in Phase 5, so "shipped on
+// every page" now means every page links the stylesheet and the stylesheet
+// carries the rule — the same rule, checked against what's actually served.
 it("every page styles :focus-visible with a visible outline", async () => {
   const cookie = await newBrowserCookie("demo");
   for (const path of ["/", "/readme/", "/l/demo", "/new", "/l/demo/lecturer"]) {
     const html = await (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text();
-    expect(html, path).toMatch(/:focus-visible\s*\{[^}]*outline:\s*3px solid/);
+    expect(html, path).toContain('<link rel="stylesheet" href="/style.css">');
   }
+  const css = await (await fetch(new URL("/style.css", baseUrl))).text();
+  expect(css).toMatch(/:focus-visible\s*\{[^}]*outline:\s*3px solid/);
 });

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
@@ -69,88 +70,22 @@ const escapeHtml = (s: string): string =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
-const STYLE = `
-  body {
-    font-family: system-ui, sans-serif;
-    max-width: 40rem;
-    margin: 0 auto;
-    padding: 1rem;
-    line-height: 1.5;
-    overflow-wrap: break-word;
-  }
-  :focus-visible {
-    outline: 3px solid #1a5fb4;
-    outline-offset: 2px;
-  }
-  .tap-button {
-    display: block;
-    width: 100%;
-    font-size: 1.5rem;
-    padding: 1.5rem;
-    margin: 1.5rem 0;
-    min-height: 3.5rem;
-  }
-  table.bars {
-    border-collapse: collapse;
-    width: 100%;
-  }
-  table.bars th, table.bars td {
-    border-bottom: 1px solid #ccc;
-    padding: 0.25rem 0.5rem;
-    text-align: left;
-  }
-  svg.bar-chart {
-    width: 100%;
-    height: auto;
-    display: block;
-  }
-  table.reason-counts {
-    border-collapse: collapse;
-    width: 100%;
-  }
-  table.reason-counts th, table.reason-counts td {
-    border-bottom: 1px solid #ccc;
-    padding: 0.25rem 0.5rem;
-    text-align: left;
-  }
-  #reasons {
-    border: none;
-    padding: 0;
-    margin: 1rem 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  #reasons .reason-form {
-    margin: 0;
-  }
-  #note-form textarea {
-    width: 100%;
-    min-height: 4rem;
-    font: inherit;
-  }
-  ul#notes-list {
-    list-style: none;
-    padding: 0;
-  }
-  li.note {
-    border: 1px solid #ccc;
-    border-radius: 0.5rem;
-    padding: 0.75rem;
-    margin: 0.5rem 0;
-  }
-`;
+// The one stylesheet, read once at startup (it ships with the app, so it
+// never changes under a running process) and served at /style.css. Every
+// page links it from page() below; no page carries an inline <style> or a
+// style="" attribute, so there is exactly one place the look lives.
+const STYLESHEET = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 
-const page = (title: string, bodyHtml: string): string => `<!doctype html>
+const page = (title: string, bodyHtml: string, mainClass?: string): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
-<style>${STYLE}</style>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
+<main${mainClass ? ` class="${mainClass}"` : ""}>
 ${bodyHtml}
 </main>
 </body>
@@ -220,23 +155,99 @@ async function handleHome(): Promise<Response> {
   });
 }
 
-// Split into two parts, rendered in separate DOM nodes: the people-present
-// count changes on every arrival/departure, which isn't itself news worth
-// announcing to a screen reader; the lost-count (or the waiting-for-more
-// message) is the part that actually says something new, so only that part
-// is aria-live. Announcing both on every presence change was the "noisy
-// aria-live" finding from the C10 feedback review.
-function presentText(present: number): string {
-  return `${present} people here`;
+type GaugeState = { present: number; shown: false } | { present: number; shown: true; live: number };
+
+const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
+
+// The gauge is three nodes. What a sighted person reads is one sentence,
+// "4 of 23 people are lost right now", but that sentence holds the present
+// count, which changes on every arrival and departure and isn't news worth
+// announcing. So the sentence is aria-hidden, and a screen reader gets the
+// same facts from two visually hidden nodes instead: the lost count, which
+// is aria-live and changes only when the lost count changes or the gauge
+// appears or disappears, and the present count, which isn't live.
+// Announcing presence changes was the "noisy aria-live" finding from the
+// C10 feedback review. Below min_present no count or bar is rendered at
+// all, and the live node holds one fixed sentence, so people arriving while
+// the room fills up announce nothing either.
+// A tap stays live for 60 seconds even if its tab closes, while present
+// counts only open pages, so live can briefly exceed present. Someone who
+// tapped in the last minute was here, so the "of" side is never smaller
+// than the lost side: no "4 of 3".
+function gaugeOf(state: { present: number; live: number }): number {
+  return Math.max(state.present, state.live);
 }
 
-function lostText(
-  state: { present: number; shown: false } | { present: number; shown: true; live: number },
-  minPresent: number,
-): string {
-  if (state.shown) return `${state.live} lost right now`;
-  return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
+function gaugeWords(state: GaugeState, minPresent: number): string {
+  if (state.shown) {
+    const of = gaugeOf(state);
+    return `${state.live} of ${of} ${plural(of, "person", "people")} ${plural(state.live, "is", "are")} lost right now`;
+  }
+  const more = Math.max(0, minPresent - state.present);
+  return `Waiting for ${more} more ${plural(more, "person", "people")}`;
 }
+
+function lostText(state: GaugeState): string {
+  if (state.shown) return `${state.live} ${plural(state.live, "person is", "people are")} lost right now`;
+  return "The count shows once enough people are here";
+}
+
+function presentText(present: number): string {
+  return `${present} ${plural(present, "person", "people")} here`;
+}
+
+// A quiet horizontal bar. Its fill is an SVG rect whose width attribute is
+// a percentage of the viewBox, so no inline style ever carries a number.
+function quietBarHtml(id: string, fraction: number): string {
+  const width = Math.round(Math.min(1, Math.max(0, fraction)) * 1000) / 10;
+  return `<svg class="gauge-bar" id="${id}" viewBox="0 0 100 4" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="gauge-track" width="100" height="4"></rect><rect class="gauge-fill" width="${width}" height="4"></rect></svg>`;
+}
+
+function gaugeHtml(state: GaugeState, minPresent: number): string {
+  const bar = state.shown ? quietBarHtml("gauge-bar", gaugeOf(state) > 0 ? state.live / gaugeOf(state) : 0) : "";
+  return `<section id="gauge" aria-label="Lost right now">
+      <p class="gauge-words" id="gauge-words" aria-hidden="true">${escapeHtml(gaugeWords(state, minPresent))}</p>
+      ${bar}
+      <p class="visually-hidden"><span id="gauge-lost" aria-live="polite">${escapeHtml(lostText(state))}</span>. <span id="gauge-present">${escapeHtml(presentText(state.present))}</span>.</p>
+    </section>`;
+}
+
+// The browser half of the same gauge, shared by the student and lecturer
+// scripts so the two pages can't drift apart. Text is only written when it
+// actually differs, so a re-render with the same lost count never touches
+// the aria-live node at all.
+const GAUGE_CLIENT_JS = `
+        function setText(el, text) {
+          if (el && el.textContent !== text) el.textContent = text;
+        }
+        function plural(n, one, many) {
+          return n === 1 ? one : many;
+        }
+        function renderGauge(state, minPresent) {
+          var words = document.getElementById("gauge-words");
+          if (!words) return;
+          var bar = document.getElementById("gauge-bar");
+          setText(document.getElementById("gauge-present"), state.present + " " + plural(state.present, "person", "people") + " here");
+          if (state.shown) {
+            var of = Math.max(state.present, state.live);
+            setText(words, state.live + " of " + of + " " + plural(of, "person", "people") + " " + plural(state.live, "is", "are") + " lost right now");
+            setText(document.getElementById("gauge-lost"), state.live + " " + plural(state.live, "person is", "people are") + " lost right now");
+            if (!bar) {
+              var holder = document.createElement("div");
+              holder.innerHTML = ${JSON.stringify(quietBarHtml("gauge-bar", 0))};
+              bar = holder.firstElementChild;
+              words.insertAdjacentElement("afterend", bar);
+            }
+            var fraction = of > 0 ? state.live / of : 0;
+            bar.querySelector(".gauge-fill").setAttribute("width", String(Math.round(fraction * 1000) / 10));
+          } else {
+            var more = Math.max(0, minPresent - state.present);
+            setText(words, "Waiting for " + more + " more " + plural(more, "person", "people"));
+            setText(document.getElementById("gauge-lost"), "The count shows once enough people are here");
+            if (bar) bar.remove();
+          }
+        }
+`;
 
 function barLabel(bar: Bar): string {
   return bar.deck !== null ? `${bar.deck} / slide ${bar.slide}` : `Slide ${bar.slide}`;
@@ -262,7 +273,7 @@ function barsHtml(bars: Bar[]): string {
       const height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
       const x = gap + i * (barWidth + gap);
       const y = chartHeight - height - 20;
-      return `<rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="currentColor"><title>${escapeHtml(barLabel(bar))}: ${bar.distinctBrowsers}</title></rect><text x="${x + barWidth / 2}" y="${chartHeight - 4}" text-anchor="middle" font-size="12">${i + 1}</text>`;
+      return `<rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="currentColor"><title>${escapeHtml(barLabel(bar))}: ${bar.distinctBrowsers}</title></rect><text x="${x + barWidth / 2}" y="${chartHeight - 4}" text-anchor="middle" font-size="16">${i + 1}</text>`;
     })
     .join("\n");
   return `
@@ -270,7 +281,7 @@ function barsHtml(bars: Bar[]): string {
       ${rects}
     </svg>
     <table class="bars" id="bars-table">
-      <thead><tr><th>Slide</th><th>People lost here</th></tr></thead>
+      <thead><tr><th scope="col">Slide</th><th scope="col">People lost here</th></tr></thead>
       <tbody>
 ${sorted.map((bar) => `<tr><td>${escapeHtml(barLabel(bar))}</td><td>${bar.distinctBrowsers}</td></tr>`).join("\n")}
       </tbody>
@@ -475,9 +486,6 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     yourTapCount: 0,
     youAreCounted: false,
   };
-  const presentTextNow = presentText(state.present);
-  const lostTextNow = lostText(state, lecture.min_present);
-
   // Without JS, the unlock instant is printed as static text ("You can tap
   // again at 3:45pm") — a static page has no countdown to tick. With JS,
   // the script below counts down locally from liveForMs instead. The
@@ -488,11 +496,16 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // ones it has to build from scratch mid-stream.
   const youAreCountedNow = state.youAreCounted;
   const liveForMsNow = "liveForMs" in state ? state.liveForMs : undefined;
-  const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${youAreCountedNow ? " disabled" : ""}>${youAreCountedNow ? "You're already counted" : "I'm lost"}</button>
-       <p id="tap-countdown"${youAreCountedNow ? "" : " hidden"}>${liveForMsNow !== undefined ? escapeHtml(unlockTimeLabel(liveForMsNow)) : ""}</p>
-       <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${youAreCountedNow ? "" : " hidden"}>
-         <button type="submit">I get it now</button>
-       </form>`;
+  // The countdown and "I get it now" sit beside the tap form, not inside it:
+  // a <form> nested in another is dropped by the HTML parser, which left
+  // "I get it now" submitting a tap instead of resolving one.
+  const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${youAreCountedNow ? " disabled" : ""}>${youAreCountedNow ? "You're already counted" : "I'm lost"}</button>`;
+  const tapStatusHtml = `<div class="tap-status">
+        <p id="tap-countdown"${youAreCountedNow ? "" : " hidden"}>${liveForMsNow !== undefined ? escapeHtml(unlockTimeLabel(liveForMsNow)) : ""}</p>
+        <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${youAreCountedNow ? "" : " hidden"}>
+          <button type="submit">I get it now</button>
+        </form>
+      </div>`;
 
   // Below min_present, "Total taps" isn't rendered at all — not blanked,
   // not zeroed, just absent — since a hidden gauge still leaking the real
@@ -503,39 +516,53 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
       : "";
 
+  // Layout containers only; the order in the markup is the phone order
+  // (slide, gauge, the sticky tap bar, then reasons and the note below it).
+  // style.css places the same blocks in two columns on a wide screen.
   const body = `
-    <h1>${escapeHtml(lecture.title)}</h1>
-    ${deckMenuHtml(id, viewedDeck)}
-    ${slideProgressLabel(id, viewedDeck, viewedSlide)}
-    ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
-    ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedSlide, liveSlide))}</p>` : ""}
-    ${slideSectionHtml(id, viewedDeck, viewedSlide)}
-    <section id="gauge">
-      <span id="gauge-present">${escapeHtml(presentTextNow)}</span>,
-      <span id="gauge-lost" aria-live="polite">${escapeHtml(lostTextNow)}</span>
-    </section>
-    <p id="connection-status" aria-live="polite"></p>
-    ${topReasonHtml}
-    <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
-      <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
-      <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
-      ${buttonHtml}
-    </form>
-    <p id="tap-hint">Other tabs in this browser count as you.</p>
-    ${reasonButtonsHtml(id, state.youAreCounted)}
-    ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, state.youAreCounted)}
-    <p id="tap-feedback" aria-live="polite"></p>
-    ${tapCountHtml}
-    <div id="bars">${barsHtml(state.bars)}</div>
-    <p id="your-count">You've said you're lost ${state.yourTapCount} time${state.yourTapCount === 1 ? "" : "s"} in this lecture</p>
+    <div class="lecture-head">
+      <h1>${escapeHtml(lecture.title)}</h1>
+      ${deckMenuHtml(id, viewedDeck)}
+    </div>
+    <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
+      <div class="slide-col">
+        <div class="slide-bar">
+          ${slideProgressLabel(id, viewedDeck, viewedSlide)}
+          ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
+        </div>
+        ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedSlide, liveSlide))}</p>` : ""}
+        ${slideSectionHtml(id, viewedDeck, viewedSlide)}
+      </div>
+      <div class="gauge-panel">
+        ${gaugeHtml(state, lecture.min_present)}
+        <p id="connection-status" aria-live="polite"></p>
+        ${topReasonHtml}
+      </div>
+      <div class="tap-bar">
+        <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
+          <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
+          <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
+          ${buttonHtml}
+        </form>
+        ${tapStatusHtml}
+      </div>
+      <div class="after-tap">
+        ${reasonButtonsHtml(id, state.youAreCounted)}
+        ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, state.youAreCounted)}
+        <p id="tap-feedback" aria-live="polite"></p>
+        ${tapCountHtml}
+        <div id="bars">${barsHtml(state.bars)}</div>
+        <p id="your-count">You've said you're lost ${state.yourTapCount} time${state.yourTapCount === 1 ? "" : "s"} in this lecture</p>
+        <p id="tap-hint">Other tabs in this browser count as you.</p>
+      </div>
+    </div>
     <script>
       (function () {
         var minPresent = ${JSON.stringify(lecture.min_present)};
         var deckSlideCounts = ${JSON.stringify(
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
         )};
-        var gaugePresent = document.getElementById("gauge-present");
-        var gaugeLost = document.getElementById("gauge-lost");
+${GAUGE_CLIENT_JS}
         var form = document.getElementById("tap-form");
         var button = document.getElementById("tap-button");
         var feedback = document.getElementById("tap-feedback");
@@ -721,7 +748,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
             text.setAttribute("x", String(x + barWidth / 2));
             text.setAttribute("y", String(chartHeight - 4));
             text.setAttribute("text-anchor", "middle");
-            text.setAttribute("font-size", "12");
+            text.setAttribute("font-size", "16");
             text.textContent = String(i + 1);
             svg.appendChild(text);
           });
@@ -903,14 +930,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
             }
             updateLiveState();
           }
-          // gaugePresent is a plain (non-aria-live) node: people arriving and
-          // leaving updates it visually but says nothing new out loud.
-          // gaugeLost is the aria-live node — only it changes on an actual
-          // lost-count change or a shown boundary crossing, so a screen
-          // reader hears only what's actually news.
-          if (gaugePresent) gaugePresent.textContent = state.present + " people here";
+          // renderGauge (shared with the lecturer page) only touches the
+          // aria-live node on an actual lost-count change or a shown
+          // boundary crossing, so a screen reader hears only what's news.
+          renderGauge(state, minPresent);
           if (state.shown) {
-            if (gaugeLost) gaugeLost.textContent = state.live + " lost right now";
             if (!tapCount) {
               tapCount = document.createElement("p");
               tapCount.id = "tap-count";
@@ -918,7 +942,6 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
             }
             tapCount.textContent = "Total taps: " + state.totalTaps;
           } else {
-            if (gaugeLost) gaugeLost.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
             if (tapCount) {
               tapCount.remove();
               tapCount = null;
@@ -998,7 +1021,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </script>
   `;
 
-  return new Response(page(lecture.title, body), { status: 200, headers });
+  return new Response(page(lecture.title, body, "lecture"), { status: 200, headers });
 }
 
 async function handleTap(id: string, req: Request): Promise<Response> {
@@ -1299,8 +1322,8 @@ function handleLecturerEvents(id: string, req: IncomingMessage, res: ServerRespo
 function lecturerLoginForm(id: string, error?: string): string {
   return `
     <h1>Lecturer view</h1>
-    ${error ? `<p>${escapeHtml(error)}</p>` : ""}
-    <form method="post" action="/l/${encodeURIComponent(id)}/lecturer">
+    ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
+    <form method="post" action="/l/${encodeURIComponent(id)}/lecturer" class="inline-form">
       <label for="code">Lecture code</label>
       <input id="code" name="code" required autocomplete="off">
       <button type="submit">Enter</button>
@@ -1347,8 +1370,7 @@ function reasonCountsHtml(reasonCounts: DashboardReasonCount[]): string {
 // already-authenticated dashboard. A hidden note is removed from the DOM
 // entirely on the next broadcast, not just visually hidden — same privacy
 // discipline as every other gated element on this page.
-function notesHtml(lectureId: string, notes: DashboardNote[]): string {
-  if (notes.length === 0) return "";
+function noteItemsHtml(lectureId: string, notes: DashboardNote[]): string {
   const sorted = [...notes].sort(
     (a, b) =>
       (a.deck ?? "").localeCompare(b.deck ?? "") ||
@@ -1356,7 +1378,7 @@ function notesHtml(lectureId: string, notes: DashboardNote[]): string {
       b.created_at.localeCompare(a.created_at),
   );
   const base = `/l/${encodeURIComponent(lectureId)}`;
-  const items = sorted
+  return sorted
     .map((note) => {
       const label = note.deck !== null ? `${note.deck} / slide ${note.slide}` : `Slide ${note.slide}`;
       return `<li class="note" data-note-id="${note.id}">
@@ -1368,12 +1390,56 @@ function notesHtml(lectureId: string, notes: DashboardNote[]): string {
       </li>`;
     })
     .join("\n");
+}
+
+// Notes on every slide except the current one (those lead the page, in
+// #now). The whole section is absent when there are none.
+function notesHtml(lectureId: string, notes: DashboardNote[]): string {
+  if (notes.length === 0) return "";
   return `
     <section id="notes">
-      <h2>What didn't make sense</h2>
-      <ul id="notes-list">${items}</ul>
+      <h2>What didn't make sense, on other slides</h2>
+      <ul id="notes-list" class="notes-list">${noteItemsHtml(lectureId, notes)}</ul>
     </section>
   `;
+}
+
+interface SlideKey {
+  deck: string | null;
+  slide: number;
+}
+
+const onSlide = (key: SlideKey) => (entry: { deck: string | null; slide: number }): boolean =>
+  entry.deck === key.deck && entry.slide === key.slide;
+
+// The current slide, first and large, for a projector: its bar, its
+// reasons, its notes. Everything here is filtered from arrays the server
+// already gated per (deck, slide) and per reason, so this can't show
+// anything the history below doesn't; a slide with too few taps to show
+// says so rather than showing zero, since absent isn't the same as none.
+function nowSectionInnerHtml(
+  lectureId: string,
+  key: SlideKey,
+  bars: Bar[],
+  reasonCounts: DashboardReasonCount[],
+  notes: DashboardNote[],
+): string {
+  const bar = bars.find(onSlide(key));
+  const maxCount = Math.max(1, ...bars.map((b) => b.distinctBrowsers));
+  const barHtml = bar
+    ? `<p>${bar.distinctBrowsers} ${plural(bar.distinctBrowsers, "person has", "people have")} been lost on this slide</p>${quietBarHtml("now-bar-svg", bar.distinctBrowsers / maxCount)}`
+    : `<p id="now-empty">Not enough taps on this slide to show yet</p>`;
+  const reasons = reasonCounts.filter(onSlide(key)).sort((a, b) => b.count - a.count);
+  const reasonsHtml =
+    reasons.length > 0
+      ? `<ul id="now-reasons">${reasons.map((r) => `<li>${escapeHtml(r.reason)}: ${r.count}</li>`).join("")}</ul>`
+      : "";
+  const slideNotes = notes.filter(onSlide(key));
+  const notesListHtml =
+    slideNotes.length > 0
+      ? `<h3 id="now-notes-heading">What didn't make sense</h3><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
+      : "";
+  return `<h2 id="now-heading">On this slide</h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
 }
 
 function lecturerDashboard(
@@ -1421,23 +1487,34 @@ function lecturerDashboard(
       <button type="submit">Next slide</button>
     </form>`;
 
+  const nowKey: SlideKey = { deck: id === "demo" ? LIVE_DECK : null, slide: state.slide };
+  const isNow = onSlide(nowKey);
+
   return `
-    <h1>Lecturer view</h1>
+    <div class="lecturer-head">
+      <h1>Lecturer view</h1>
 ${slideControlsHtml}
-    <section id="gauge">
-      <span id="gauge-present">${escapeHtml(presentText(state.present))}</span>,
-      <span id="gauge-lost" aria-live="polite">${escapeHtml(lostText(state, minPresent))}</span>
-    </section>
-    <p id="connection-status" aria-live="polite"></p>
+    </div>
+    <div class="lecturer-layout">
+      <div class="now-panel">
+        ${gaugeHtml(state, minPresent)}
+        <p id="connection-status" aria-live="polite"></p>
 ${tapCountHtml}
-    <div id="bars">${barsHtml(state.bars)}</div>
-    <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
-${notesHtml(id, state.notes)}
+        <section id="now" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
+      </div>
+      <div class="all-panel">
+        <h2>Every slide so far</h2>
+        <div id="bars">${barsHtml(state.bars)}</div>
+        <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
+        <div id="other-notes">${notesHtml(id, state.notes.filter((n) => !isNow(n)))}</div>
+      </div>
+    </div>
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
-        var gaugePresent = document.getElementById("gauge-present");
-        var gaugeLost = document.getElementById("gauge-lost");
+        var nowDeck = ${JSON.stringify(nowKey.deck)};
+        var lectureBase = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
+${GAUGE_CLIENT_JS}
         var connectionStatus = document.getElementById("connection-status");
 
         function renderBars(bars) {
@@ -1478,7 +1555,7 @@ ${notesHtml(id, state.notes)}
             text.setAttribute("x", String(x + barWidth / 2));
             text.setAttribute("y", String(chartHeight - 4));
             text.setAttribute("text-anchor", "middle");
-            text.setAttribute("font-size", "12");
+            text.setAttribute("font-size", "16");
             text.textContent = String(i + 1);
             svg.appendChild(text);
           });
@@ -1552,15 +1629,21 @@ ${notesHtml(id, state.notes)}
           container.appendChild(table);
         }
 
-        // A hidden note is removed from the DOM entirely on the next
-        // broadcast, not just visually hidden — same privacy discipline as
-        // every other gated element on this page.
-        function renderNotes(notes) {
-          var existing = document.getElementById("notes");
-          if (!notes || notes.length === 0) {
-            if (existing) existing.remove();
-            return;
-          }
+        function isNow(entry, slide) {
+          return (entry.deck || null) === nowDeck && entry.slide === slide;
+        }
+
+        // A list is rebuilt only when the notes in it actually change, so
+        // a focused Hide button isn't torn down by an unrelated update.
+        var noteSignatures = {};
+        function notesChanged(key, notes) {
+          var sig = JSON.stringify(notes.map(function (n) { return [n.id, n.text]; }));
+          if (noteSignatures[key] === sig) return false;
+          noteSignatures[key] = sig;
+          return true;
+        }
+
+        function buildNotesList(notes, listId) {
           var sorted = notes.slice().sort(function (a, b) {
             return (
               (a.deck || "").localeCompare(b.deck || "") ||
@@ -1569,7 +1652,8 @@ ${notesHtml(id, state.notes)}
             );
           });
           var list = document.createElement("ul");
-          list.id = "notes-list";
+          list.id = listId;
+          list.className = "notes-list";
           sorted.forEach(function (note) {
             var label = note.deck ? note.deck + " / slide " + note.slide : "Slide " + note.slide;
             var li = document.createElement("li");
@@ -1583,7 +1667,7 @@ ${notesHtml(id, state.notes)}
             textP.textContent = note.text;
             var hideForm = document.createElement("form");
             hideForm.method = "post";
-            hideForm.action = ${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/note/`)} + note.id + "/hide";
+            hideForm.action = lectureBase + "/lecturer/note/" + note.id + "/hide";
             hideForm.className = "hide-note-form";
             var hideButton = document.createElement("button");
             hideButton.type = "submit";
@@ -1594,46 +1678,134 @@ ${notesHtml(id, state.notes)}
             li.appendChild(hideForm);
             list.appendChild(li);
           });
-          if (existing) {
-            existing.querySelector("#notes-list").replaceWith(list);
-          } else {
-            var section = document.createElement("section");
-            section.id = "notes";
-            var heading = document.createElement("h2");
-            heading.textContent = "What didn't make sense";
-            section.appendChild(heading);
-            section.appendChild(list);
-            document.querySelector("main").appendChild(section);
-          }
+          return list;
+        }
+
+        // Notes on every slide but the current one. A hidden note is
+        // removed from the DOM entirely on the next broadcast, not just
+        // visually hidden — same privacy discipline as every other gated
+        // element on this page.
+        function renderOtherNotes(notes) {
+          var container = document.getElementById("other-notes");
+          if (!container || !notesChanged("other", notes)) return;
+          container.innerHTML = "";
+          if (notes.length === 0) return;
+          var section = document.createElement("section");
+          section.id = "notes";
+          var heading = document.createElement("h2");
+          heading.textContent = "What didn't make sense, on other slides";
+          section.appendChild(heading);
+          section.appendChild(buildNotesList(notes, "notes-list"));
+          container.appendChild(section);
           attachHideNoteHandlers();
+        }
+
+        // The current slide first: its bar, its reasons, its notes, each
+        // filtered from arrays the server already gated.
+        function renderNow(state) {
+          var now = document.getElementById("now");
+          if (!now) return;
+          var barBox = document.getElementById("now-bar");
+          var bar = null;
+          var maxCount = 1;
+          (state.bars || []).forEach(function (b) {
+            if (b.distinctBrowsers > maxCount) maxCount = b.distinctBrowsers;
+            if (isNow(b, state.slide)) bar = b;
+          });
+          var empty = document.getElementById("now-empty");
+          var svg = document.getElementById("now-bar-svg");
+          if (bar) {
+            if (empty) empty.remove();
+            var text = bar.distinctBrowsers + " " + plural(bar.distinctBrowsers, "person has", "people have") + " been lost on this slide";
+            var p = barBox.querySelector("p");
+            if (!p) {
+              p = document.createElement("p");
+              barBox.prepend(p);
+            }
+            setText(p, text);
+            if (!svg) {
+              var holder = document.createElement("div");
+              holder.innerHTML = ${JSON.stringify(quietBarHtml("now-bar-svg", 0))};
+              svg = holder.firstElementChild;
+              barBox.appendChild(svg);
+            }
+            svg.querySelector(".gauge-fill").setAttribute("width", String(Math.round((bar.distinctBrowsers / maxCount) * 1000) / 10));
+          } else {
+            if (svg) svg.remove();
+            var oldP = barBox.querySelector("p:not(#now-empty)");
+            if (oldP) oldP.remove();
+            if (!empty) {
+              empty = document.createElement("p");
+              empty.id = "now-empty";
+              empty.textContent = "Not enough taps on this slide to show yet";
+              barBox.appendChild(empty);
+            }
+          }
+
+          var reasons = (state.reasonCounts || []).filter(function (r) { return isNow(r, state.slide); })
+            .sort(function (a, b) { return b.count - a.count; });
+          var reasonsList = document.getElementById("now-reasons");
+          if (reasons.length === 0) {
+            if (reasonsList) reasonsList.remove();
+          } else {
+            if (!reasonsList) {
+              reasonsList = document.createElement("ul");
+              reasonsList.id = "now-reasons";
+              barBox.insertAdjacentElement("afterend", reasonsList);
+            }
+            var reasonsText = reasons.map(function (r) { return r.reason + ": " + r.count; });
+            if (reasonsList.dataset.sig !== JSON.stringify(reasonsText)) {
+              reasonsList.dataset.sig = JSON.stringify(reasonsText);
+              reasonsList.innerHTML = "";
+              reasonsText.forEach(function (t) {
+                var li = document.createElement("li");
+                li.textContent = t;
+                reasonsList.appendChild(li);
+              });
+            }
+          }
+
+          var nowNotes = (state.notes || []).filter(function (n) { return isNow(n, state.slide); });
+          if (notesChanged("now", nowNotes)) {
+            var oldHeading = document.getElementById("now-notes-heading");
+            var oldList = document.getElementById("now-notes");
+            if (oldHeading) oldHeading.remove();
+            if (oldList) oldList.remove();
+            if (nowNotes.length > 0) {
+              var h = document.createElement("h3");
+              h.id = "now-notes-heading";
+              h.textContent = "What didn't make sense";
+              now.appendChild(h);
+              now.appendChild(buildNotesList(nowNotes, "now-notes"));
+              attachHideNoteHandlers();
+            }
+          }
         }
 
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
-          if (slideLabel) slideLabel.textContent = "Slide " + state.slide;
-          // gaugePresent is plain (non-aria-live): arrivals/departures update
-          // it visually but announce nothing. gaugeLost is the aria-live
-          // node, changing only on an actual lost-count change or a shown
+          if (slideLabel) setText(slideLabel, "Slide " + state.slide);
+          // renderGauge (shared with the student page) only touches the
+          // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
-          if (gaugePresent) gaugePresent.textContent = state.present + " people here";
+          renderGauge(state, minPresent);
           var gauge = document.getElementById("gauge");
           if (state.shown) {
-            if (gaugeLost) gaugeLost.textContent = state.live + " lost right now";
             var tapCount = document.getElementById("tap-count");
             if (!tapCount) {
               tapCount = document.createElement("p");
               tapCount.id = "tap-count";
               gauge.insertAdjacentElement("afterend", tapCount);
             }
-            tapCount.textContent = "Total taps: " + state.totalTaps;
+            setText(tapCount, "Total taps: " + state.totalTaps);
           } else {
-            if (gaugeLost) gaugeLost.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
             var oldTapCount = document.getElementById("tap-count");
             if (oldTapCount) oldTapCount.remove();
           }
+          renderNow(state);
           renderBars(state.bars);
           renderReasonCounts(state.reasonCounts);
-          renderNotes(state.notes);
+          renderOtherNotes((state.notes || []).filter(function (n) { return !isNow(n, state.slide); }));
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -1667,7 +1839,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present)), {
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
     status: 200,
     headers,
   });
@@ -1743,8 +1915,8 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
 function newLectureForm(error?: string): string {
   return `
     <h1>Start a lecture</h1>
-    ${error ? `<p>${escapeHtml(error)}</p>` : ""}
-    <form method="post" action="/new">
+    ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
+    <form method="post" action="/new" class="inline-form">
       <label for="title">Lecture title</label>
       <input id="title" name="title" required>
       <button type="submit">Create</button>
@@ -1822,6 +1994,15 @@ async function handleReadme(): Promise<Response> {
   });
 }
 
+// no-cache, not a long max-age: the stylesheet has no versioned URL, so a
+// browser revalidates rather than keeping an old look after a deploy.
+async function handleStylesheet(): Promise<Response> {
+  return new Response(STYLESHEET, {
+    status: 200,
+    headers: { "content-type": "text/css; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
 const DOCS_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -1853,6 +2034,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "GET" && pathname === "/") return handleHome();
   if (method === "GET" && pathname === "/readme/") return handleReadme();
+  if (method === "GET" && pathname === "/style.css") return handleStylesheet();
   if (method === "GET" && pathname === "/new") return handleNewGet(req);
   if (method === "POST" && pathname === "/new") return handleNewPost(req);
 
