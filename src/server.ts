@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
-import { createLecture, getLecture, tapIfNotRecentlyTapped } from "./db.ts";
+import { createLecture, getLecture, setCurrentSlide, tapIfNotRecentlyTapped } from "./db.ts";
 import {
   BROWSER_COOKIE,
   LECTURER_COOKIE,
@@ -32,6 +32,7 @@ import {
   scheduleFade,
   startHeartbeat,
 } from "./realtime.ts";
+import { currentSlideIndex, demoSlides, resolveTapSlide } from "./slides.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const BROWSER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
@@ -131,6 +132,24 @@ function gaugeMessage(
   return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
 }
 
+// The demo lecture has its own deck, rendered entirely server-side so a
+// no-JS visitor sees whatever slide was current at page load — the script
+// below only toggles `hidden`, it never fetches slide content. A created
+// (/new) lecture has no deck of its own, just a number the lecturer advances.
+function slideSectionHtml(lectureId: string, currentSlide: number): string {
+  if (lectureId !== "demo") {
+    return `<section id="slide-label"><p>Slide ${currentSlide}</p></section>`;
+  }
+  const sections = demoSlides
+    .map((html, i) => {
+      const slideNumber = i + 1;
+      const hidden = slideNumber === currentSlide ? "" : " hidden";
+      return `<section class="slide" data-slide="${slideNumber}"${hidden}>${html}</section>`;
+    })
+    .join("\n");
+  return `<div id="slides">\n${sections}\n</div>`;
+}
+
 async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -138,9 +157,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
   logAction("page_view", id, browserId);
 
+  const currentSlide = currentSlideIndex(lecture);
   const state = computeState(id, browserId) ?? {
     present: 0,
     shown: false as const,
+    slide: currentSlide,
     yourTapCount: 0,
     youAreCounted: false,
   };
@@ -157,8 +178,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
 
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
+    ${slideSectionHtml(id, currentSlide)}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
     <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
+      <input type="hidden" name="slide" id="slide-input" value="${currentSlide}">
       ${buttonHtml}
     </form>
     <p id="tap-feedback" aria-live="polite"></p>
@@ -173,8 +196,20 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var feedback = document.getElementById("tap-feedback");
         var tapCount = document.getElementById("tap-count");
         var yourCount = document.getElementById("your-count");
+        var slideInput = document.getElementById("slide-input");
+
+        function renderSlide(slide) {
+          if (slideInput) slideInput.value = String(slide);
+          var slides = document.querySelectorAll("#slides .slide");
+          for (var i = 0; i < slides.length; i++) {
+            slides[i].hidden = Number(slides[i].dataset.slide) !== slide;
+          }
+          var label = document.getElementById("slide-label");
+          if (label) label.querySelector("p").textContent = "Slide " + slide;
+        }
 
         function render(state) {
+          renderSlide(state.slide);
           if (state.shown) {
             gauge.textContent = state.present + " people here, " + state.live + " lost right now";
             if (!tapCount) {
@@ -210,7 +245,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           feedback.textContent = "";
           button.disabled = true;
           button.textContent = "Sending...";
-          fetch(form.action, { method: "POST" })
+          fetch(form.action, { method: "POST", body: new URLSearchParams({ slide: slideInput ? slideInput.value : "" }) })
             .then(function (res) {
               if (!res.ok) throw new Error("tap failed");
               button.textContent = "You're counted";
@@ -255,8 +290,14 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     });
   }
 
+  const body = await req.text();
+  const submittedSlideRaw = new URLSearchParams(body).get("slide");
+  const submittedSlideNumber = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
+  const submittedSlide = Number.isFinite(submittedSlideNumber) ? submittedSlideNumber : undefined;
+  const slide = resolveTapSlide(lecture, submittedSlide);
+
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  const inserted = tapIfNotRecentlyTapped(id, browserId, since);
+  const inserted = tapIfNotRecentlyTapped(id, browserId, since, slide);
   if (inserted) {
     broadcast(id);
     scheduleFade(id);
@@ -356,8 +397,15 @@ function lecturerLoginForm(id: string, error?: string): string {
 function lecturerDashboard(
   id: string,
   state:
-    | { present: number; shown: false }
-    | { present: number; shown: true; live: number; totalTaps: number; timeline: { minute: string; count: number }[] },
+    | { present: number; shown: false; slide: number }
+    | {
+        present: number;
+        shown: true;
+        slide: number;
+        live: number;
+        totalTaps: number;
+        timeline: { minute: string; count: number }[];
+      },
   minPresent: number,
 ): string {
   const formatter = new Intl.DateTimeFormat("en-AU", {
@@ -384,8 +432,23 @@ ${state.timeline
     </table>`
     : "";
 
+  // The demo's slide is clock-driven (ADR 004): there's nothing for a
+  // lecturer to control, so no Previous/Next controls are rendered for it.
+  const slideControlsHtml =
+    id === "demo"
+      ? `<p id="slide-label">Slide ${state.slide}</p>`
+      : `
+    <p id="slide-label">Slide ${state.slide}</p>
+    <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
+      <button type="submit">Previous slide</button>
+    </form>
+    <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/next" id="slide-next-form">
+      <button type="submit">Next slide</button>
+    </form>`;
+
   return `
     <h1>Lecturer view</h1>
+${slideControlsHtml}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
 ${extrasHtml}
     <script>
@@ -395,6 +458,8 @@ ${extrasHtml}
         var formatter = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Sydney", dateStyle: "short", timeStyle: "short" });
 
         function render(state) {
+          var slideLabel = document.getElementById("slide-label");
+          if (slideLabel) slideLabel.textContent = "Slide " + state.slide;
           if (state.shown) {
             gauge.textContent = state.present + " people here, " + state.live + " lost right now";
             var tapCount = document.getElementById("tap-count");
@@ -465,7 +530,11 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
   }
 
-  const state = computeLecturerState(id) ?? { present: 0, shown: false as const };
+  const state = computeLecturerState(id) ?? {
+    present: 0,
+    shown: false as const,
+    slide: currentSlideIndex(lecture),
+  };
   return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present)), {
     status: 200,
     headers,
@@ -521,6 +590,36 @@ async function handleLecturerPost(id: string, req: Request): Promise<Response> {
   logAction("lecturer_login_ok", id, browserId);
   headers.set("location", `/l/${encodeURIComponent(id)}/lecturer`);
   return new Response(null, { status: 303, headers });
+}
+
+// Shared by Previous and Next: both need a lecturer session, both reject the
+// demo (its slide is clock-driven, not lecturer-editable), and both just
+// differ in which direction they move the slide number.
+async function handleSlideChange(id: string, req: Request, direction: 1 | -1): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+
+  if (id === "demo" || !validateLecturerSession(id, cookieHeader)) {
+    logAction("slide_change_rejected", id, browserId);
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const newSlide = Math.max(1, lecture.current_slide + direction);
+  setCurrentSlide(id, newSlide, lecture.current_slide);
+  logAction("slide_changed", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}/lecturer` },
+  });
 }
 
 function newLectureForm(error?: string): string {
@@ -621,6 +720,20 @@ async function route(req: Request): Promise<Response> {
     if (id === undefined) return notFoundResponse();
     if (method === "GET") return handleLecturerGet(id, req);
     if (method === "POST") return handleLecturerPost(id, req);
+  }
+
+  const slideNextMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/slide\/next$/);
+  if (method === "POST" && slideNextMatch) {
+    const id = safeDecode(slideNextMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleSlideChange(id, req, 1);
+  }
+
+  const slidePrevMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/slide\/prev$/);
+  if (method === "POST" && slidePrevMatch) {
+    const id = safeDecode(slidePrevMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleSlideChange(id, req, -1);
   }
 
   const lectureMatch = pathname.match(/^\/l\/([^/]+)$/);
