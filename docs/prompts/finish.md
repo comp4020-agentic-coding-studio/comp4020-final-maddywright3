@@ -161,3 +161,64 @@ person arrives:
 Add a line to the ADR 004 amendment: the shared clock now starts when the first
 person arrives, so a visitor never lands mid-lecture in an empty room.
 Commit in small steps. Ask before pushing or deploying.
+
+## Phase 5, completed
+
+Phase 5 isn't finished. The HD bar for the artefact is "holds up under use it wasn't
+designed for: the keyboard, a resize mid-interaction, a slow connection", and the
+README claims "it's calm", which only the look of the page can show. jsdom can't
+check contrast, layout, keyboard flow or throttling. Save this message word for word
+to docs/prompts/finish.md under "## Phase 5, completed" (its own commit).
+
+1. Ask me before adding Playwright as a dev dependency. Keep axe-core, and run axe
+   through Playwright in Chromium too so contrast is checked. Add a CI step that
+   installs Chromium. Keep every shipped CI step as it is, and show me the workflow
+   diff before committing.
+
+2. BEFORE changing any styles, take screenshots of /l/demo and the lecturer view
+   (logged in with DEMO) at 390x844 and 1920x1080 into docs/screenshots/before/.
+   Its own commit.
+
+3. Playwright tests, at both viewports, against /, /readme/, /l/demo,
+   /l/demo/lecturer, /new and the 404 page:
+   - axe finds no violations, contrast included
+   - no horizontal scroll (scrollWidth <= clientWidth)
+   - the console logs no errors and no failed requests
+   - every request goes to the page's own origin (no third parties)
+   - keyboard only: Tab to "I'm lost", Enter, pick a reason, write and send a note,
+     "I get it now", arrow keys to change slide, "Back to live". Focus is always
+     visible and never lost after a live update
+   - resize mid-tap: tap at 1920x1080, resize to 390x844 while "Sending..." shows,
+     the tap still counts and nothing overflows
+   - Slow 4G (CDP throttling): "Sending..." appears within 100 ms and the tap counts
+   - two browser contexts: a tap in one appears in the other within a second
+
+4. A calm UI:
+   - One stylesheet at /style.css with design tokens as CSS custom properties
+     (colours, spacing, type scale). No inline styles left.
+   - System font stack, no web fonts. Fluid type with clamp(), body at least 1rem,
+     lines about 65ch at most.
+   - A muted palette with one accent. No red or warning colours for "lost": being
+     lost is normal, not an alarm. Contrast at least 4.5:1.
+   - Light and dark themes with prefers-color-scheme.
+   - Only short transitions, none with prefers-reduced-motion. Numbers change in
+     place, no flashing or counting up.
+   - Phone: the slide on top, "I'm lost" in a sticky bar at the bottom within thumb
+     reach, at least 48px tall. Reasons and the note open below it after a tap.
+   - Desktop: the slide on the left at about two thirds of the width, with the
+     gauge, your own tap and the bars on the right.
+   - The gauge as a quiet horizontal bar with words beside it, like
+     "4 of 23 people are lost right now".
+   - A clear marker: "Live", or "You're on slide 3. The lecture is on slide 6."
+   - Lecturer view readable on a projector: large type, the current slide's bar
+     and notes first.
+   - /readme/, /new and the 404 page use the same styles.
+
+5. Take the same screenshots into docs/screenshots/after/. Its own commit.
+
+6. Run pnpm load locally and report min, median and max time for every stream to
+   see live reach 50, plus peak memory. Then ask me before running it once against
+   the deployed app, and report the same numbers. Put both runs in the commit message.
+
+Commit in small steps with messages saying why. Ask before any dependency, CI change,
+deploy, push or tag.
