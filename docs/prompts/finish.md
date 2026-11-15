@@ -138,3 +138,26 @@ The README's second job (Week 12)
   in two fresh Chrome profiles, and tell me which steps needed changes.
 
 Ask before any dependency, CI change, deploy, push or tag.
+
+## Slide 1 on entry
+
+Right now the demo decks land on slide 5 or 7, because the shared clock runs from
+the lecture's created_at. Change it so a deck starts at slide 1 when the first
+person arrives:
+- Keep a start time per (lecture, deck). When a stream opens on a deck nobody else
+  is watching, set the start time to now, so that viewer is on slide 1.
+- A page render for a deck nobody is watching shows slide 1.
+- Anyone joining while someone else is watching gets the current live slide, the
+  same as everyone already there.
+- When the last viewer leaves, the next arrival starts again at slide 1. That
+  includes refreshing while alone.
+- Lecturer viewers don't count as watching. /new lectures are unchanged (the
+  lecturer drives them).
+- The start time can live in memory. A restart means nobody is watching, so slide 1
+  is right. Add it to docs/state.md.
+- Tests: the first viewer of an empty deck gets slide 1; a second viewer who joins
+  later gets the same slide as the first; after every viewer closes, the next one
+  gets slide 1; watching one deck doesn't restart the other.
+Add a line to the ADR 004 amendment: the shared clock now starts when the first
+person arrives, so a visitor never lands mid-lecture in an empty room.
+Commit in small steps. Ask before pushing or deploying.
