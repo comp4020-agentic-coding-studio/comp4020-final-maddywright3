@@ -5,7 +5,7 @@ A button for the moment you stop following a lecture. Nobody sees who pressed it
 ## Try it
 
 1. Open [/l/demo](/l/demo) in Chrome and again in an incognito window. Each window is one person, and the demo needs two.
-2. Press "I'm lost" in one. Both update within a second. A tap counts for 60 seconds.
+2. Press "I'm lost" in one. Both update within a second. A tap counts for 20 seconds in the demo.
 3. With both still open, open [/l/demo/lecturer](/l/demo/lecturer) in a new tab and enter DEMO. The lecturer isn't counted as a person.
 4. [Start your own lecture](/new). A real lecture waits for five people.
 
@@ -31,8 +31,8 @@ One tap on its own is a confession. Twenty in the same minute is a fact about th
 |---|---|---|
 | No tap data below the threshold | spec/ test on the data | live |
 | A tap reaches every page within a second | spec/events.test.ts | live |
-| A tap fades after 60 seconds | test, run in full | live |
-| One live tap per browser | spec/identity.test.ts | live |
+| A tap fades after 60 seconds, or 20 in the demo | test, run in full | live |
+| One "I'm lost" per browser per slide; tabs count once | spec/identity.test.ts | live |
 | No response holds another browser's ID | spec/identity.test.ts | live |
 | Lecturer view needs the code | spec/identity.test.ts | live |
 | Logs hold only a hashed pseudonym | CLAUDE.md rule, read in flyctl logs | judged |
