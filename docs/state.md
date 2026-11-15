@@ -34,6 +34,13 @@ brief reconnect.
   themselves (below), and armed again when the next viewer starts one. It
   only *pushes* the change; the live slide is always computed from the
   deck's start time, whether or not a timer is running.
+- **broadcast throttles** — two `Map<lectureId, {lastSentAt, trailing}>`
+  inside `makeThrottle`, one for student broadcasts and one for lecturer
+  broadcasts (ADR 005). Each holds when that lecture last sent and, during a
+  burst, the one pending 50ms trailing send. An entry is dropped once its
+  window passes with nothing pending. Lost on restart, along with every
+  pending send: harmless, because every open stream is gone too and each
+  reconnect gets a fresh first frame computed from the database.
 
 ## `src/slides.ts`
 
