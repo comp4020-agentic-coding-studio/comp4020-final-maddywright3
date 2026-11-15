@@ -252,3 +252,37 @@ it("liveForMs never appears in another browser's payload", async () => {
     await streamB.close();
   }
 });
+
+// Without JS, each reason button and "I get it now" is a full page POST, and
+// the redirect decides which slide the next page shows. Redirecting to a
+// bare /l/demo lands on week-4's live slide, so the note form there carries
+// that deck and slide, not the ones the student tapped. Their note is then
+// gated with a different slide's notes, and the lecturer sees reasons on one
+// slide and the note on another.
+it("without JS, choosing a reason or I get it now returns to the deck and slide that was tapped", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const tapRes = await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "deck=week-6&slide=4",
+    redirect: "manual",
+  });
+  expect(tapRes.headers.get("location")).toBe("/l/demo?deck=week-6&slide=4");
+
+  const reasonRes = await fetch(new URL("/l/demo/reason", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "reason=Notation",
+    redirect: "manual",
+  });
+  expect(reasonRes.status).toBe(303);
+  expect(reasonRes.headers.get("location")).toBe("/l/demo?deck=week-6&slide=4");
+
+  const resolveRes = await fetch(new URL("/l/demo/resolve", baseUrl), {
+    method: "POST",
+    headers: { cookie },
+    redirect: "manual",
+  });
+  expect(resolveRes.status).toBe(303);
+  expect(resolveRes.headers.get("location")).toBe("/l/demo?deck=week-6&slide=4");
+});
