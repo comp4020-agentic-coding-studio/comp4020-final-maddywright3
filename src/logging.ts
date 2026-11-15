@@ -22,8 +22,10 @@ export type LogAction =
 // `who` is never the raw browser ID: a real ID is hashed (one-way, so repeat
 // activity from the same browser still correlates in the logs); a missing
 // cookie is the sentinel "no-cookie" rather than sha256(""), which is a
-// fixed, real-looking hash that could be mistaken for genuine data.
-function who(browserId: string | undefined): string {
+// fixed, real-looking hash that could be mistaken for genuine data. Exported
+// so the top-level error handler can use the same hashing for its own `who`
+// field, rather than a second implementation drifting from this one.
+export function who(browserId: string | undefined): string {
   if (!browserId) return "no-cookie";
   return createHash("sha256").update(browserId).digest("hex").slice(0, 8);
 }
