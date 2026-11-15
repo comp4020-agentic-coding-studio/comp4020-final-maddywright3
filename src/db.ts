@@ -36,9 +36,22 @@ if (!lectureColumns.some((c) => c.name === "code_salt")) {
   db.exec("ALTER TABLE lectures ADD COLUMN code_salt TEXT");
 }
 
+if (!lectureColumns.some((c) => c.name === "current_slide")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN current_slide INTEGER NOT NULL DEFAULT 1");
+}
+if (!lectureColumns.some((c) => c.name === "previous_slide")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN previous_slide INTEGER");
+}
+if (!lectureColumns.some((c) => c.name === "slide_changed_at")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN slide_changed_at TEXT");
+}
+
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
   db.exec("ALTER TABLE taps ADD COLUMN browser_id TEXT");
+}
+if (!tapColumns.some((c) => c.name === "slide")) {
+  db.exec("ALTER TABLE taps ADD COLUMN slide INTEGER");
 }
 
 db.exec(`
@@ -75,6 +88,9 @@ export interface Lecture {
   min_present: number;
   code_hash: string | null;
   code_salt: string | null;
+  current_slide: number;
+  previous_slide: number | null;
+  slide_changed_at: string | null;
 }
 
 export interface Tap {
@@ -82,6 +98,7 @@ export interface Tap {
   lecture_id: string;
   created_at: string;
   browser_id: string | null;
+  slide: number | null;
 }
 
 export function getLecture(id: string): Lecture | undefined {
@@ -119,17 +136,22 @@ export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
 // separate SELECT-then-INSERT, so a browser can't double-count a tap no
 // matter how the handler around it changes later. Returns whether a row was
 // actually inserted.
-export function tapIfNotRecentlyTapped(lectureId: string, browserId: string, sinceIso: string): boolean {
+export function tapIfNotRecentlyTapped(
+  lectureId: string,
+  browserId: string,
+  sinceIso: string,
+  slide: number,
+): boolean {
   const nowIso = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO taps (lecture_id, created_at, browser_id)
-       SELECT ?, ?, ?
+      `INSERT INTO taps (lecture_id, created_at, browser_id, slide)
+       SELECT ?, ?, ?, ?
        WHERE NOT EXISTS (
          SELECT 1 FROM taps WHERE lecture_id = ? AND browser_id = ? AND created_at >= ?
        )`,
     )
-    .run(lectureId, nowIso, browserId, lectureId, browserId, sinceIso);
+    .run(lectureId, nowIso, browserId, slide, lectureId, browserId, sinceIso);
   return result.changes > 0;
 }
 
@@ -188,4 +210,13 @@ export function lecturerSessionValid(token: string, lectureId: string): boolean 
     .prepare("SELECT 1 FROM lecturer_sessions WHERE token = ? AND lecture_id = ?")
     .get(token, lectureId);
   return row !== undefined;
+}
+
+// Records what the slide *was* (previous_slide) and *when* it changed
+// (slide_changed_at), not just the new value — a tap already in flight when
+// the lecturer advances needs both to be attributed correctly.
+export function setCurrentSlide(lectureId: string, newSlide: number, oldSlide: number): void {
+  db.prepare(
+    "UPDATE lectures SET current_slide = ?, previous_slide = ?, slide_changed_at = ? WHERE id = ?",
+  ).run(newSlide, oldSlide, new Date().toISOString(), lectureId);
 }
