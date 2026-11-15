@@ -36,9 +36,9 @@ const DECKS: Record<DeckId, Deck> = {
   "week-6": loadDeck("week-6"),
 };
 
-// "week-4" is the one deck with a shared clock (the demo's "live" slide);
-// "week-6" has no live concept at all, same as a created lecture has no deck
-// content — it's only ever browsed, never advancing on its own.
+// The deck a bare /l/demo (or a student stream with no or an invalid
+// ?deck=) shows, and the one whose live slide the lecturer view reports.
+// Only a default: every demo deck has its own independent clock (below).
 export const LIVE_DECK: DeckId = "week-4";
 
 export function isDeckId(value: string): value is DeckId {
@@ -57,42 +57,61 @@ export function deckSlideCount(deckId: DeckId): number {
   return DECKS[deckId].slides.length;
 }
 
-// A pure function of the lecture's creation time and the wall clock: every
-// visitor computing this from the same created_at lands on the same slide,
-// with nothing stored anywhere — that's the "shared clock". 1-based, like
+// When each (lecture, deck)'s shared clock started. src/realtime.ts sets it
+// when a student stream opens on a deck nobody is watching, and deletes it
+// when that deck's last viewer leaves. No entry means nobody is watching,
+// so the live slide is 1: the next arrival starts the deck from the top
+// instead of landing mid-lecture in an empty room. In memory only (see
+// docs/state.md) — a restart means nobody is watching, so losing this map
+// gives exactly the right answer.
+const deckStarts = new Map<string, number>();
+
+function clockKey(lectureId: string, deck: DeckId): string {
+  return `${lectureId}:${deck}`;
+}
+
+export function startDeckClock(lectureId: string, deck: DeckId): void {
+  deckStarts.set(clockKey(lectureId, deck), Date.now());
+}
+
+export function clearDeckClock(lectureId: string, deck: DeckId): void {
+  deckStarts.delete(clockKey(lectureId, deck));
+}
+
+function msSinceDeckStart(lectureId: string, deck: DeckId): number | undefined {
+  const start = deckStarts.get(clockKey(lectureId, deck));
+  return start === undefined ? undefined : Math.max(0, Date.now() - start);
+}
+
+// Every viewer of a deck computes this from the same start time, so they
+// all land on the same slide — that's the "shared clock". 1-based, like
 // lectures.current_slide, so a tap's `slide` value means the same thing
 // whether it came from the demo's clock or a lecturer's Next/Prev. Browsing
-// (below) never changes this — it only changes what a given viewer is
-// looking at, not the shared live slide "Back to live" returns to.
-export function liveSlideIndex(lecture: Lecture): number {
-  const elapsed = Date.now() - new Date(lecture.created_at).getTime();
-  const slideCount = deckSlideCount(LIVE_DECK);
-  return (Math.floor(Math.max(0, elapsed) / SLIDE_DURATION_MS) % slideCount) + 1;
+// never changes this — it only changes what a given viewer is looking at,
+// not the shared live slide "Back to live" returns to.
+export function liveSlideIndex(lectureId: string, deck: DeckId): number {
+  const elapsed = msSinceDeckStart(lectureId, deck);
+  if (elapsed === undefined) return 1;
+  return (Math.floor(elapsed / SLIDE_DURATION_MS) % deckSlideCount(deck)) + 1;
 }
 
-export function currentSlideIndex(lecture: Lecture): number {
-  return lecture.id === "demo" ? liveSlideIndex(lecture) : lecture.current_slide;
+// The demo's live slide on `deck` (LIVE_DECK unless named); a created
+// lecture's lecturer-driven current_slide, which has no deck at all.
+export function currentSlideIndex(lecture: Lecture, deck: DeckId = LIVE_DECK): number {
+  return lecture.id === "demo" ? liveSlideIndex(lecture.id, deck) : lecture.current_slide;
 }
 
-// The deck currentSlideIndex's value belongs to: always LIVE_DECK for the
-// demo (its live slide is always on the live deck — browsing to week-6
-// doesn't move the live position, it only changes what one viewer is
-// looking at), null for a created lecture (no deck concept at all).
-export function currentDeck(lecture: Lecture): DeckId | null {
-  return lecture.id === "demo" ? LIVE_DECK : null;
-}
-
-// For the demo, milliseconds until its live slide advances on its own — so a
-// timer can be armed to push a broadcast right then, the same way a live
-// tap's 60s fade is scheduled rather than only recomputed when something
-// else happens to trigger a broadcast. undefined for a lecturer-driven
-// lecture, where every slide change already broadcasts from the handler
-// that makes it.
-export function msUntilNextSlideChange(lecture: Lecture): number | undefined {
-  if (lecture.id !== "demo") return undefined;
-  const elapsed = Date.now() - new Date(lecture.created_at).getTime();
-  const intoCurrentSlide = Math.max(0, elapsed) % SLIDE_DURATION_MS;
-  return SLIDE_DURATION_MS - intoCurrentSlide;
+// For a running deck clock, milliseconds until its live slide advances on
+// its own — so a timer can be armed to push a broadcast right then, the same
+// way a live tap's 60s fade is scheduled rather than only recomputed when
+// something else happens to trigger a broadcast. undefined when the deck's
+// clock isn't running (nobody watching), and for a lecturer-driven lecture,
+// where every slide change already broadcasts from the handler that makes it.
+export function msUntilNextSlideChange(lectureId: string, deck: DeckId): number | undefined {
+  if (lectureId !== "demo") return undefined;
+  const elapsed = msSinceDeckStart(lectureId, deck);
+  if (elapsed === undefined) return undefined;
+  return SLIDE_DURATION_MS - (elapsed % SLIDE_DURATION_MS);
 }
 
 // A tap always records the slide (and deck) the viewer says they're looking

@@ -10,7 +10,9 @@ import {
   visibleNotesForSlide,
   yourTapCount,
 } from "./db.ts";
-import { currentDeck, currentSlideIndex, msUntilNextSlideChange } from "./slides.ts";
+import type { Lecture } from "./db.ts";
+import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
+import type { DeckId } from "./slides.ts";
 
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -49,10 +51,13 @@ export interface NoteEntry {
 // only appears while `youAreCounted` (the caller's own live tap), never
 // sent to anyone else's stream; `topReason` only appears once the current
 // slide's top reason has itself cleared its own (deck, slide, reason) gate.
+// `deck` (demo only) names the deck whose live slide `slide` is: each demo
+// stream watches one deck, and each deck runs its own clock.
 export type MeterState =
   | {
       present: number;
       shown: false;
+      deck?: DeckId;
       slide: number;
       bars: Bar[];
       yourTapCount: number;
@@ -63,6 +68,7 @@ export type MeterState =
   | {
       present: number;
       shown: true;
+      deck?: DeckId;
       slide: number;
       bars: Bar[];
       live: number;
@@ -137,14 +143,21 @@ function gatedNotes(lectureId: string, minPresent: number): NoteEntry[] {
 
 // Student/presence connections, keyed by lecture then by browser, so
 // "present" counts unique browsers rather than open tabs or connections.
-const connections = new Map<string, Map<string, Set<ServerResponse>>>();
+// Each stream remembers the deck it's watching (null for a created lecture,
+// which has no decks), so the same map answers both "how many people are
+// here" (distinct browsers, any deck) and "is anyone watching this deck"
+// (distinct browsers with a stream on it) — one source of truth, nothing
+// separate to drift out of step with it.
+const connections = new Map<string, Map<string, Map<ServerResponse, DeckId | null>>>();
 // Lecturer-observer connections: kept entirely separate so a lecturer (or a
-// grader) opening the dashboard never counts as a student in presence.
+// grader) opening the dashboard never counts as a student in presence, and
+// never counts as watching a deck (so never starts or holds a deck clock).
 const lecturerConnections = new Map<string, Set<ServerResponse>>();
 const fadeTimers = new Map<string, NodeJS.Timeout>();
+// Keyed `${lectureId}:${deck}`: one advance timer per running deck clock.
 const slideTimers = new Map<string, NodeJS.Timeout>();
 
-function browsersFor(lectureId: string): Map<string, Set<ServerResponse>> {
+function browsersFor(lectureId: string): Map<string, Map<ServerResponse, DeckId | null>> {
   let byBrowser = connections.get(lectureId);
   if (!byBrowser) {
     byBrowser = new Map();
@@ -153,25 +166,63 @@ function browsersFor(lectureId: string): Map<string, Set<ServerResponse>> {
   return byBrowser;
 }
 
-export function addConnection(lectureId: string, browserId: string, res: ServerResponse): void {
-  const byBrowser = browsersFor(lectureId);
-  let set = byBrowser.get(browserId);
-  if (!set) {
-    set = new Set();
-    byBrowser.set(browserId, set);
+function isWatched(lectureId: string, deck: DeckId): boolean {
+  const byBrowser = connections.get(lectureId);
+  if (!byBrowser) return false;
+  for (const streams of byBrowser.values()) {
+    for (const watching of streams.values()) {
+      if (watching === deck) return true;
+    }
   }
-  set.add(res);
+  return false;
 }
 
+function slideTimerKey(lectureId: string, deck: DeckId): string {
+  return `${lectureId}:${deck}`;
+}
+
+// A student stream opening on a deck nobody is watching starts that deck's
+// clock now, so this viewer is on slide 1 rather than mid-lecture in an
+// empty room; anyone already watching means the clock keeps running and
+// the newcomer joins wherever it is.
+export function addConnection(
+  lectureId: string,
+  browserId: string,
+  res: ServerResponse,
+  deck: DeckId | null,
+): void {
+  if (deck !== null && !isWatched(lectureId, deck)) {
+    startDeckClock(lectureId, deck);
+    scheduleSlideAdvance(lectureId, deck);
+  }
+  const byBrowser = browsersFor(lectureId);
+  let streams = byBrowser.get(browserId);
+  if (!streams) {
+    streams = new Map();
+    byBrowser.set(browserId, streams);
+  }
+  streams.set(res, deck);
+}
+
+// The last viewer of a deck leaving stops its clock, so the next arrival
+// (a refresh while alone included) starts it again from slide 1.
 export function removeConnection(lectureId: string, browserId: string, res: ServerResponse): void {
   const byBrowser = connections.get(lectureId);
   if (!byBrowser) return;
-  const set = byBrowser.get(browserId);
-  if (!set) return;
-  set.delete(res);
-  if (set.size === 0) {
+  const streams = byBrowser.get(browserId);
+  if (!streams) return;
+  const deck = streams.get(res);
+  if (deck === undefined) return;
+  streams.delete(res);
+  if (streams.size === 0) {
     byBrowser.delete(browserId);
     if (byBrowser.size === 0) connections.delete(lectureId);
+  }
+  if (deck !== null && !isWatched(lectureId, deck)) {
+    clearDeckClock(lectureId, deck);
+    const key = slideTimerKey(lectureId, deck);
+    clearTimeout(slideTimers.get(key));
+    slideTimers.delete(key);
   }
 }
 
@@ -195,15 +246,16 @@ export function presentCount(lectureId: string): number {
   return connections.get(lectureId)?.size ?? 0;
 }
 
-// The part of MeterState shared by every viewer of a given lecture at a
-// given moment — everything except the per-browser yourTapCount/
-// youAreCounted/liveForMs. Computed once per broadcast() call rather than
-// once per connected browser (the fix for the full per-browser recompute:
-// previously every field here, shared or not, was recomputed from scratch
-// for each browser in the broadcast loop).
+// The part of MeterState shared by every viewer of a given deck of a given
+// lecture at a given moment — everything except the per-browser
+// yourTapCount/youAreCounted/liveForMs. Computed once per deck per
+// broadcast() call rather than once per connected browser (the fix for the
+// full per-browser recompute: previously every field here, shared or not,
+// was recomputed from scratch for each browser in the broadcast loop).
 interface SharedMeterState {
   present: number;
   shown: boolean;
+  deck?: DeckId;
   slide: number;
   bars: Bar[];
   topReason?: string;
@@ -212,53 +264,74 @@ interface SharedMeterState {
   since: string;
 }
 
-function computeSharedState(lectureId: string): SharedMeterState | undefined {
-  const lecture = getLecture(lectureId);
-  if (!lecture) return undefined;
+// The per-browser part, computed once per browser per broadcast however
+// many decks (tabs) that browser has open.
+interface YourState {
+  yourTapCount: number;
+  youAreCounted: boolean;
+  liveForMs?: number;
+}
+
+function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterState {
+  const lectureId = lecture.id;
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
-  const slide = currentSlideIndex(lecture);
-  const deck = currentDeck(lecture);
+  const slide = deck !== null ? currentSlideIndex(lecture, deck) : currentSlideIndex(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
   const gatedReasons = gatedReasonCounts(lectureId, lecture.min_present);
   const topReason = topReasonFor(gatedReasons, deck, slide);
-  const base = { present, shown, slide, bars, since, ...(topReason !== undefined ? { topReason } : {}) };
+  const base = {
+    present,
+    shown,
+    ...(deck !== null ? { deck } : {}),
+    slide,
+    bars,
+    since,
+    ...(topReason !== undefined ? { topReason } : {}),
+  };
   if (!shown) return base;
   const { count: live } = liveTapInfo(lectureId, since);
   return { ...base, live, totalTaps: tapCount(lectureId) };
 }
 
-// Merges a browser's own fields onto an already-computed shared state —
-// the genuinely per-recipient part (yourTapCount, youAreCounted, liveForMs).
-function meterStateFor(shared: SharedMeterState, lectureId: string, browserId: string): MeterState {
-  const liveTap = liveTapFor(lectureId, browserId, shared.since);
-  const yours = {
+function yourStateFor(lectureId: string, browserId: string, since: string): YourState {
+  const liveTap = liveTapFor(lectureId, browserId, since);
+  return {
     yourTapCount: yourTapCount(lectureId, browserId),
     youAreCounted: liveTap !== undefined,
     ...(liveTap !== undefined
       ? { liveForMs: Math.max(0, new Date(liveTap.created_at).getTime() + LIVE_WINDOW_MS - Date.now()) }
       : {}),
   };
+}
+
+// Merges a browser's own fields onto an already-computed shared state.
+function meterStateFor(shared: SharedMeterState, yours: YourState): MeterState {
+  const deck = shared.deck !== undefined ? { deck: shared.deck } : {};
+  const topReason = shared.topReason !== undefined ? { topReason: shared.topReason } : {};
   if (!shared.shown) {
-    return { present: shared.present, shown: false, slide: shared.slide, bars: shared.bars, ...yours, ...(shared.topReason !== undefined ? { topReason: shared.topReason } : {}) };
+    return { present: shared.present, shown: false, ...deck, slide: shared.slide, bars: shared.bars, ...yours, ...topReason };
   }
   return {
     present: shared.present,
     shown: true,
+    ...deck,
     slide: shared.slide,
     bars: shared.bars,
     live: shared.live!,
     totalTaps: shared.totalTaps!,
     ...yours,
-    ...(shared.topReason !== undefined ? { topReason: shared.topReason } : {}),
+    ...topReason,
   };
 }
 
-export function computeState(lectureId: string, browserId: string): MeterState | undefined {
-  const shared = computeSharedState(lectureId);
-  if (!shared) return undefined;
-  return meterStateFor(shared, lectureId, browserId);
+// `deck` is the deck this viewer is watching (demo only; null otherwise).
+export function computeState(lectureId: string, browserId: string, deck: DeckId | null): MeterState | undefined {
+  const lecture = getLecture(lectureId);
+  if (!lecture) return undefined;
+  const shared = computeSharedState(lecture, deck);
+  return meterStateFor(shared, yourStateFor(lectureId, browserId, shared.since));
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
@@ -276,15 +349,34 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
 }
 
+// Each stream gets the live slide of the deck it's watching. The shared
+// state is computed lazily once per deck, the per-browser part once per
+// browser, and the JSON once per (browser, deck) — never once per stream.
 export function broadcast(lectureId: string): void {
   const byBrowser = connections.get(lectureId);
-  if (byBrowser && byBrowser.size > 0) {
-    const shared = computeSharedState(lectureId);
-    if (shared) {
-      for (const [browserId, set] of byBrowser) {
-        const state = meterStateFor(shared, lectureId, browserId);
-        const payload = `data: ${JSON.stringify(state)}\n\n`;
-        for (const res of set) res.write(payload);
+  const lecture = byBrowser && byBrowser.size > 0 ? getLecture(lectureId) : undefined;
+  if (byBrowser && lecture) {
+    const sharedByDeck = new Map<DeckId | null, SharedMeterState>();
+    const sharedFor = (deck: DeckId | null): SharedMeterState => {
+      let shared = sharedByDeck.get(deck);
+      if (!shared) {
+        shared = computeSharedState(lecture, deck);
+        sharedByDeck.set(deck, shared);
+      }
+      return shared;
+    };
+    for (const [browserId, streams] of byBrowser) {
+      let yours: YourState | undefined;
+      const payloadByDeck = new Map<DeckId | null, string>();
+      for (const [res, deck] of streams) {
+        let payload = payloadByDeck.get(deck);
+        if (payload === undefined) {
+          const shared = sharedFor(deck);
+          yours ??= yourStateFor(lectureId, browserId, shared.since);
+          payload = `data: ${JSON.stringify(meterStateFor(shared, yours))}\n\n`;
+          payloadByDeck.set(deck, payload);
+        }
+        res.write(payload);
       }
     }
   }
@@ -319,28 +411,29 @@ export function scheduleFade(lectureId: string): void {
 // it — no tap, no connect, nothing — so without this, open streams would
 // only see the new slide once something else happened to cause a broadcast
 // (the bug this fixes: slides only updated on page reload). Mirrors
-// scheduleFade's shape: one timer per lecture, armed for exactly when the
-// state will next change, re-arming itself after it fires.
-export function scheduleSlideAdvance(lectureId: string): void {
-  if (slideTimers.has(lectureId)) return;
-  const lecture = getLecture(lectureId);
-  if (!lecture) return;
-  const delay = msUntilNextSlideChange(lecture);
+// scheduleFade's shape, but one timer per running deck clock: armed when the
+// clock starts (addConnection), for exactly when its slide will next change,
+// re-arming itself after it fires, and cleared with the clock when the
+// deck's last viewer leaves (removeConnection). No clock, no timer.
+function scheduleSlideAdvance(lectureId: string, deck: DeckId): void {
+  const key = slideTimerKey(lectureId, deck);
+  if (slideTimers.has(key)) return;
+  const delay = msUntilNextSlideChange(lectureId, deck);
   if (delay === undefined) return;
   const timer = setTimeout(() => {
-    slideTimers.delete(lectureId);
+    slideTimers.delete(key);
     broadcast(lectureId);
-    scheduleSlideAdvance(lectureId);
+    scheduleSlideAdvance(lectureId, deck);
   }, delay);
   timer.unref();
-  slideTimers.set(lectureId, timer);
+  slideTimers.set(key, timer);
 }
 
 export function startHeartbeat(): void {
   const timer = setInterval(() => {
     for (const byBrowser of connections.values()) {
-      for (const set of byBrowser.values()) {
-        for (const res of set) res.write(": heartbeat\n\n");
+      for (const streams of byBrowser.values()) {
+        for (const res of streams.keys()) res.write(": heartbeat\n\n");
       }
     }
     for (const set of lecturerConnections.values()) {

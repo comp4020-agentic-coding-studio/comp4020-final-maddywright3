@@ -12,6 +12,7 @@ interface Bar {
 interface MeterState {
   present: number;
   shown: boolean;
+  deck?: string;
   slide: number;
   bars: Bar[];
   live?: number;
@@ -284,39 +285,136 @@ it("browsing to a different slide doesn't change the live slide for anyone else"
   }
 });
 
-// The demo's slide is driven entirely by the shared clock, with no request
-// (tap, connect, lecturer action) to trigger the change — so an open stream
-// must see it pushed on its own, the same way a live tap's 60s fade pushes
-// without a new tap. Bug this guards against: slides only updated when
-// something else happened to cause a broadcast (e.g. a page reload).
-it(
-  "the demo's slide change reaches an open stream on its own, with no tap or reload",
-  async () => {
-    const cookie = await newBrowserCookie("demo");
-    const stream = await SseStream.open("/l/demo/events", cookie);
-    try {
-      const before = await stream.next();
-      const after = await stream.waitFor((s) => s.slide !== before.slide, 41_000);
-      expect(after.slide).not.toBe(before.slide);
-    } finally {
-      await stream.close();
-    }
-  },
-  45_000,
-);
-
-// Two decks, added after the first slide-navigation design: week-4 is the
-// one with a shared clock (the demo's "live" slide), week-6 is a second deck
-// that's only ever browsed, switched between via a menu/?deck= query param.
-// Both decks' markup is always present in the page (toggled via `hidden`, so
-// switching is a pure visibility change with no fetch) — so "which deck is
-// showing" is read from the deck wrapper's `hidden` attribute, not from
-// whether its text appears anywhere in the HTML at all.
+// Two decks, switched between via a menu/?deck= query param, each with its
+// own shared clock. Both decks' markup is always present in the page
+// (toggled via `hidden`, so switching is a pure visibility change with no
+// fetch) — so "which deck is showing" is read from the deck wrapper's
+// `hidden` attribute, not from whether its text appears anywhere in the HTML
+// at all.
 function deckIsVisible(html: string, deckId: string): boolean {
   const match = html.match(new RegExp(`<div class="deck" data-deck="${deckId}"( hidden)?>`));
   if (!match) throw new Error(`no deck wrapper found for ${deckId}`);
   return match[1] === undefined;
 }
+
+// The one slide section in `deckId`'s wrapper without `hidden`.
+function visibleSlide(html: string, deckId: string): number {
+  const start = html.indexOf(`<div class="deck" data-deck="${deckId}"`);
+  if (start === -1) throw new Error(`no deck wrapper found for ${deckId}`);
+  const end = html.indexOf('<footer class="slide-credit">', start);
+  const shown = [...html.slice(start, end).matchAll(/<section class="slide" data-slide="(\d+)"( hidden)?>/g)].filter(
+    (m) => m[2] === undefined,
+  );
+  if (shown.length !== 1) throw new Error(`expected exactly one visible slide in ${deckId}, found ${shown.length}`);
+  return Number(shown[0][1]);
+}
+
+async function demoPage(path: string, cookie: string): Promise<string> {
+  return (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text();
+}
+
+async function demoLecturerCookie(): Promise<string> {
+  const cookie = await newBrowserCookie("demo");
+  const loginRes = await fetch(new URL("/l/demo/lecturer", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "code=DEMO",
+    redirect: "manual",
+  });
+  const lsessCookie = loginRes.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("lsess="))
+    ?.split(";")[0];
+  if (!lsessCookie) throw new Error("demo lecturer login failed");
+  return `${cookie}; ${lsessCookie}`;
+}
+
+// "Slide 1 on entry" (docs/prompts/finish.md): each demo deck's shared clock
+// starts when its first student stream opens, so nobody lands mid-lecture in
+// an empty room. Real timing — SLIDE_DURATION_MS is 40s, so one wait for
+// the first advance covers every scenario below in a single run:
+// - the first viewer of an empty deck gets slide 1;
+// - the slide change reaches an open stream on its own, with no tap or
+//   reload (the bug this once guarded alone: slides only updated when
+//   something else happened to cause a broadcast);
+// - a second viewer who joins after 40s gets the same slide as the first;
+// - watching one deck doesn't restart the other;
+// - a lecturer stream never counts as watching;
+// - after every viewer closes, the next one gets slide 1.
+it(
+  "each demo deck's clock starts with its first viewer, is shared by later ones, and restarts once all leave",
+  async () => {
+    const lecturer = await SseStream.open("/l/demo/lecturer/events", await demoLecturerCookie());
+    const cookieA = await newBrowserCookie("demo");
+    const cookieB = await newBrowserCookie("demo");
+    const cookieC = await newBrowserCookie("demo");
+    const open: SseStream[] = [lecturer];
+    try {
+      // A lecturer watching alone starts no clock: week-4 is still on 1.
+      expect(visibleSlide(await demoPage("/l/demo", cookieA), "week-4")).toBe(1);
+
+      const a = await SseStream.open("/l/demo/events?deck=week-4", cookieA);
+      open.push(a);
+      const first = await a.next();
+      expect(first.deck).toBe("week-4");
+      expect(first.slide).toBe(1);
+
+      const advanced = await a.waitFor((s) => s.slide !== 1, 41_000);
+      expect(advanced.slide).toBe(2);
+
+      // Joining a running deck lands on its current slide, not slide 1 —
+      // on the stream and on a page render alike.
+      const b = await SseStream.open("/l/demo/events?deck=week-4", cookieB);
+      open.push(b);
+      const joined = await b.next();
+      expect(joined.deck).toBe("week-4");
+      expect(joined.slide).toBe(2);
+      const week4Html = await demoPage("/l/demo?deck=week-4", cookieB);
+      expect(visibleSlide(week4Html, "week-4")).toBe(2);
+
+      // Nobody is watching week-6 yet: a page render shows its slide 1, and
+      // the first stream on it starts its own clock there — while week-4's
+      // viewers, who get a frame from that same connect, stay on 2.
+      expect(visibleSlide(await demoPage("/l/demo?deck=week-6", cookieC), "week-6")).toBe(1);
+      const c = await SseStream.open("/l/demo/events?deck=week-6", cookieC);
+      open.push(c);
+      const week6First = await c.next();
+      expect(week6First.deck).toBe("week-6");
+      expect(week6First.slide).toBe(1);
+      // present counts distinct browsers on any deck (A, B, C), so 3 picks
+      // out the frame C's connect pushed to A.
+      const aAfterWeek6 = await a.waitFor((s) => s.present === 3);
+      expect(aAfterWeek6.deck).toBe("week-4");
+      expect(aAfterWeek6.slide).toBe(2);
+
+      // Everyone leaves (the lecturer stays): the next arrival, including
+      // a returning browser, starts week-4 from slide 1 again.
+      for (const stream of [a, b, c]) await stream.close();
+      open.splice(1);
+      expect(visibleSlide(await demoPage("/l/demo", cookieA), "week-4")).toBe(1);
+      const again = await SseStream.open("/l/demo/events", cookieA);
+      open.push(again);
+      const restarted = await again.next();
+      expect(restarted.deck).toBe("week-4"); // no ?deck= means the default deck
+      expect(restarted.slide).toBe(1);
+    } finally {
+      for (const stream of open) await stream.close();
+    }
+  },
+  50_000,
+);
+
+it("a stream with an invalid deck watches the default deck", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const stream = await SseStream.open("/l/demo/events?deck=not-a-real-deck", cookie);
+  try {
+    const state = await stream.next();
+    expect(state.deck).toBe("week-4");
+    expect(state.slide).toBe(1);
+  } finally {
+    await stream.close();
+  }
+});
 
 it("switching to week-6 shows its own content, not week-4's", async () => {
   const cookie = await newBrowserCookie("demo");
@@ -371,16 +469,24 @@ it("an invalid deck id is rejected on a tap, and falls back to the live deck on 
   expect(deckIsVisible(html, "week-4")).toBe(true);
 });
 
-it("Back to live from week-6 returns to week-4's live slide", async () => {
+// Each deck runs its own clock now, so "Back to live" stays on the deck
+// being viewed and returns to that deck's live slide — not to week-4's, as
+// when week-4 was the only deck with a clock.
+it("Back to live from a browsed week-6 slide returns to week-6's live slide", async () => {
   const cookie = await newBrowserCookie("demo");
-  const html = await (await fetch(new URL("/l/demo?deck=week-6", baseUrl), { headers: { cookie } })).text();
-  const href = html.match(/<a href="([^"]*)" id="back-to-live-link"/)?.[1];
-  expect(href).toBeDefined();
-  expect(href).not.toContain("deck="); // bare /l/demo, no deck param at all — means "the live deck"
+  const html = await demoPage("/l/demo?deck=week-6&slide=4", cookie);
+  const link = html.match(/<a href="([^"]*)" id="back-to-live-link"( hidden)?>/);
+  expect(link).not.toBeNull();
+  expect(link![2]).toBeUndefined(); // shown: slide 4 isn't live
+  expect(link![1]).toBe("/l/demo?deck=week-6");
 
-  const backHtml = await (await fetch(new URL(href!, baseUrl), { headers: { cookie } })).text();
-  expect(deckIsVisible(backHtml, "week-4")).toBe(true);
-  expect(deckIsVisible(backHtml, "week-6")).toBe(false);
+  const backHtml = await demoPage(link![1], cookie);
+  expect(deckIsVisible(backHtml, "week-6")).toBe(true);
+  expect(deckIsVisible(backHtml, "week-4")).toBe(false);
+  expect(visibleSlide(backHtml, "week-6")).toBe(1); // nobody is watching week-6
+  // On the live slide, the link is still in the markup (so the script can
+  // reveal it when the clock moves on), just hidden.
+  expect(backHtml).toMatch(/<a href="\/l\/demo\?deck=week-6" id="back-to-live-link" hidden>/);
 });
 
 it("both real diagrams render as accessible inline SVG", async () => {
