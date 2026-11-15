@@ -33,7 +33,18 @@ import {
   scheduleSlideAdvance,
   startHeartbeat,
 } from "./realtime.ts";
-import { currentSlideIndex, demoCreditHtml, demoSlideCount, demoSlides, isValidSlide } from "./slides.ts";
+import {
+  DECK_IDS,
+  DECK_TITLES,
+  LIVE_DECK,
+  currentSlideIndex,
+  deckCreditHtml,
+  deckSlideCount,
+  deckSlides,
+  isDeckId,
+  isValidSlide,
+} from "./slides.ts";
+import type { DeckId } from "./slides.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const BROWSER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
@@ -133,53 +144,89 @@ function gaugeMessage(
   return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
 }
 
-// The demo lecture has its own deck, rendered entirely server-side so a
-// no-JS visitor sees whatever slide the request asked for (or the live one,
-// with no request) — the script below only toggles `hidden`, it never
-// fetches slide content over the wire. A created (/new) lecture has no deck
-// of its own, just a number the lecturer advances, so there's no content to
-// show here at all.
-function slideSectionHtml(lectureId: string, viewedSlide: number): string {
+// The demo lecture has two decks. Both are rendered entirely server-side,
+// every slide of each, so switching decks or slides is a pure visibility
+// toggle with no fetch involved — the script below only flips `hidden`, it
+// never loads content over the wire (which would mean a client-side request
+// back to this same server just to switch what's showing; rendering
+// everything up front avoids that entirely, and keeps a no-JS visitor's
+// browsing behaviour identical to a JS one's). A created (/new) lecture has
+// no deck of its own, just a number the lecturer advances, so there's no
+// content to show here at all.
+function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number): string {
   if (lectureId !== "demo") return "";
-  const sections = demoSlides
-    .map((html, i) => {
-      const slideNumber = i + 1;
-      const hidden = slideNumber === viewedSlide ? "" : " hidden";
-      return `<section class="slide" data-slide="${slideNumber}"${hidden}>${html}</section>`;
-    })
-    .join("\n");
-  return `<div id="slides">\n${sections}\n</div>\n<footer id="slide-credit">${demoCreditHtml}</footer>`;
+  const deckDivs = DECK_IDS.map((deckId) => {
+    const sections = deckSlides(deckId)
+      .map((html, i) => {
+        const slideNumber = i + 1;
+        const visible = deckId === viewedDeck && slideNumber === viewedSlide;
+        return `<section class="slide" data-slide="${slideNumber}"${visible ? "" : " hidden"}>${html}</section>`;
+      })
+      .join("\n");
+    const deckHidden = deckId === viewedDeck ? "" : " hidden";
+    return `<div class="deck" data-deck="${deckId}"${deckHidden}>\n${sections}\n<footer class="slide-credit">${deckCreditHtml(deckId)}</footer>\n</div>`;
+  }).join("\n");
+  return `<div id="slides">\n${deckDivs}\n</div>`;
 }
 
-function slideProgressLabel(lectureId: string, slide: number): string {
-  const total = lectureId === "demo" ? ` of ${demoSlideCount()}` : "";
+function slideProgressLabel(lectureId: string, deck: DeckId, slide: number): string {
+  const total = lectureId === "demo" ? ` of ${deckSlideCount(deck)}` : "";
   return `<p id="slide-label">Slide ${slide}${total}</p>`;
 }
 
-// Previous/Next as plain links (?slide=N) work with no JS at all, each a
-// full page load; the script below intercepts clicks to switch slides
-// client-side instead. "Back to live" only appears while browsing away from
-// the live slide, and returns to it. ADR 004's amendment: browsing is now
-// how a tap records an earlier slide, replacing the old grace-window
-// reconciliation outright. Only rendered for the demo — a created lecture
-// has no deck content in the app to browse, just a number the lecturer
-// advances, so there's nothing here for a student to flip between.
-function slideNavHtml(lectureId: string, viewedSlide: number, liveSlide: number): string {
+// A plain <select>, submitting via its own tiny no-JS form — picking a deck
+// always lands on that deck's slide 1, same as following a link does. The
+// enhancement script intercepts `change` to switch client-side instead of
+// submitting. Only rendered for the demo — a created lecture has no deck
+// choice at all.
+function deckMenuHtml(lectureId: string, viewedDeck: DeckId): string {
   if (lectureId !== "demo") return "";
   const base = `/l/${encodeURIComponent(lectureId)}`;
-  const maxSlide = demoSlideCount();
+  const options = DECK_IDS.map(
+    (id) => `<option value="${id}"${id === viewedDeck ? " selected" : ""}>${escapeHtml(DECK_TITLES[id])}</option>`,
+  ).join("\n");
+  return `
+    <form method="get" action="${base}" id="deck-form">
+      <label for="deck-select">Lecture</label>
+      <select name="deck" id="deck-select">
+        ${options}
+      </select>
+      <noscript><button type="submit">Go</button></noscript>
+    </form>
+  `;
+}
+
+// Previous/Next as plain links (?deck=D&slide=N) work with no JS at all,
+// each a full page load; the script below intercepts clicks to switch
+// slides client-side instead. "Back to live" always returns to the live
+// deck's live slide in one step, regardless of which deck was being viewed
+// — ADR 004's amendment: browsing is now how a tap records an earlier
+// slide, replacing the old grace-window reconciliation outright. Only
+// rendered for the demo — a created lecture has no deck content in the app
+// to browse, just a number the lecturer advances, so there's nothing here
+// for a student to flip between.
+function slideNavHtml(
+  lectureId: string,
+  viewedDeck: DeckId,
+  viewedSlide: number,
+  liveDeck: DeckId,
+  liveSlide: number,
+): string {
+  if (lectureId !== "demo") return "";
+  const base = `/l/${encodeURIComponent(lectureId)}`;
+  const maxSlide = deckSlideCount(viewedDeck);
   const prevSlide = viewedSlide - 1;
   const nextSlide = viewedSlide + 1;
   const prevHtml =
     prevSlide >= 1
-      ? `<a href="${base}?slide=${prevSlide}" id="slide-prev-link">Previous slide</a>`
+      ? `<a href="${base}?deck=${viewedDeck}&slide=${prevSlide}" id="slide-prev-link">Previous slide</a>`
       : `<span id="slide-prev-link" aria-disabled="true">Previous slide</span>`;
   const nextHtml =
     nextSlide <= maxSlide
-      ? `<a href="${base}?slide=${nextSlide}" id="slide-next-link">Next slide</a>`
+      ? `<a href="${base}?deck=${viewedDeck}&slide=${nextSlide}" id="slide-next-link">Next slide</a>`
       : `<span id="slide-next-link" aria-disabled="true">Next slide</span>`;
-  const backToLiveHtml =
-    viewedSlide !== liveSlide ? `<a href="${base}" id="back-to-live-link">Back to live</a>` : "";
+  const onLive = viewedDeck === liveDeck && viewedSlide === liveSlide;
+  const backToLiveHtml = !onLive ? `<a href="${base}" id="back-to-live-link">Back to live</a>` : "";
   return `
     <nav id="slide-nav" aria-label="Slide navigation">
       ${prevHtml}
@@ -197,12 +244,23 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   logAction("page_view", id, browserId);
 
   const liveSlide = currentSlideIndex(lecture);
-  const requestedSlideRaw = new URL(req.url).searchParams.get("slide");
+  const params = new URL(req.url).searchParams;
+  const requestedDeckRaw = params.get("deck");
+  const requestedSlideRaw = params.get("slide");
+  const requestedDeck = requestedDeckRaw !== null && isDeckId(requestedDeckRaw) ? requestedDeckRaw : undefined;
   const requestedSlideNumber = requestedSlideRaw !== null ? Number(requestedSlideRaw) : NaN;
+
+  // Omitting deck (and slide) means "the live deck's live slide" — following
+  // a Previous/Next link always names both, so this only matters for the
+  // bare /l/demo request. Naming a deck but no slide lands on that deck's
+  // slide 1, same as the menu switching decks does.
+  const viewedDeck: DeckId = requestedDeck ?? LIVE_DECK;
   const viewedSlide =
-    Number.isFinite(requestedSlideNumber) && isValidSlide(lecture, requestedSlideNumber)
-      ? requestedSlideNumber
-      : liveSlide;
+    requestedDeck === undefined && requestedSlideRaw === null
+      ? liveSlide
+      : Number.isFinite(requestedSlideNumber) && isValidSlide(lecture, viewedDeck, requestedSlideNumber)
+        ? requestedSlideNumber
+        : 1;
 
   const state = computeState(id, browserId) ?? {
     present: 0,
@@ -224,11 +282,13 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
 
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
-    ${slideProgressLabel(id, viewedSlide)}
-    ${slideNavHtml(id, viewedSlide, liveSlide)}
-    ${slideSectionHtml(id, viewedSlide)}
+    ${deckMenuHtml(id, viewedDeck)}
+    ${slideProgressLabel(id, viewedDeck, viewedSlide)}
+    ${slideNavHtml(id, viewedDeck, viewedSlide, LIVE_DECK, liveSlide)}
+    ${slideSectionHtml(id, viewedDeck, viewedSlide)}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
     <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
+      <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
       <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
       ${buttonHtml}
     </form>
@@ -238,7 +298,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     <script>
       (function () {
         var minPresent = ${JSON.stringify(lecture.min_present)};
-        var maxSlide = ${JSON.stringify(id === "demo" ? demoSlideCount() : undefined)};
+        var deckSlideCounts = ${JSON.stringify(
+          id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
+        )};
+        var liveDeck = ${JSON.stringify(LIVE_DECK)};
         var gauge = document.getElementById("gauge");
         var form = document.getElementById("tap-form");
         var button = document.getElementById("tap-button");
@@ -246,21 +309,37 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var tapCount = document.getElementById("tap-count");
         var yourCount = document.getElementById("your-count");
         var slideInput = document.getElementById("slide-input");
+        var deckInput = document.getElementById("deck-input");
+        var deckSelect = document.getElementById("deck-select");
+        var deckForm = document.getElementById("deck-form");
 
-        // Two numbers, kept separate: the slide this browser is looking at
-        // (what a tap records, what the arrows move), and the live slide the
-        // shared clock or lecturer is on (what "Back to live" returns to).
+        // Kept separate: the deck/slide this browser is looking at (what a
+        // tap records, what the arrows move), and the live deck/slide the
+        // shared clock is on (what "Back to live" returns to in one step).
         // Browsing away from live never changes the live slide for anyone.
+        var viewedDeck = ${JSON.stringify(viewedDeck)};
         var viewedSlide = ${JSON.stringify(viewedSlide)};
         var liveSlide = ${JSON.stringify(liveSlide)};
 
-        function showSlide(slide) {
+        function maxSlideFor(deck) {
+          return deckSlideCounts ? deckSlideCounts[deck] : undefined;
+        }
+
+        function showSlide(deck, slide) {
+          viewedDeck = deck;
           viewedSlide = slide;
+          if (deckInput) deckInput.value = deck;
           if (slideInput) slideInput.value = String(slide);
-          var slides = document.querySelectorAll("#slides .slide");
+          if (deckSelect) deckSelect.value = deck;
+          var decks = document.querySelectorAll("#slides .deck");
+          for (var d = 0; d < decks.length; d++) {
+            decks[d].hidden = decks[d].dataset.deck !== deck;
+          }
+          var slides = document.querySelectorAll("#slides .deck[data-deck=\\"" + deck + "\\"] .slide");
           for (var i = 0; i < slides.length; i++) {
             slides[i].hidden = Number(slides[i].dataset.slide) !== slide;
           }
+          var maxSlide = maxSlideFor(deck);
           var label = document.getElementById("slide-label");
           if (label) {
             label.textContent = "Slide " + slide + (maxSlide ? " of " + maxSlide : "");
@@ -270,24 +349,21 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           var backLink = document.getElementById("back-to-live-link");
           if (prevLink) {
             if (slide > 1) {
-              prevLink.outerHTML = '<a href="?slide=' + (slide - 1) + '" id="slide-prev-link">Previous slide</a>';
+              prevLink.outerHTML = '<a href="?deck=' + deck + '&slide=' + (slide - 1) + '" id="slide-prev-link">Previous slide</a>';
             } else {
               prevLink.outerHTML = '<span id="slide-prev-link" aria-disabled="true">Previous slide</span>';
             }
           }
           if (nextLink) {
             if (!maxSlide || slide < maxSlide) {
-              nextLink.outerHTML = '<a href="?slide=' + (slide + 1) + '" id="slide-next-link">Next slide</a>';
+              nextLink.outerHTML = '<a href="?deck=' + deck + '&slide=' + (slide + 1) + '" id="slide-next-link">Next slide</a>';
             } else {
               nextLink.outerHTML = '<span id="slide-next-link" aria-disabled="true">Next slide</span>';
             }
           }
           if (backLink) {
-            if (slide !== liveSlide) {
-              backLink.style.display = "";
-            } else {
-              backLink.style.display = "none";
-            }
+            var onLive = deck === liveDeck && slide === liveSlide;
+            backLink.style.display = onLive ? "none" : "";
           }
           attachNavHandlers();
         }
@@ -299,36 +375,45 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           if (prevLink && prevLink.tagName === "A") {
             prevLink.addEventListener("click", function (event) {
               event.preventDefault();
-              showSlide(viewedSlide - 1);
+              showSlide(viewedDeck, viewedSlide - 1);
             });
           }
           if (nextLink && nextLink.tagName === "A") {
             nextLink.addEventListener("click", function (event) {
               event.preventDefault();
-              showSlide(viewedSlide + 1);
+              showSlide(viewedDeck, viewedSlide + 1);
             });
           }
           if (backLink) {
             backLink.addEventListener("click", function (event) {
               event.preventDefault();
-              showSlide(liveSlide);
+              showSlide(liveDeck, liveSlide);
             });
           }
         }
         attachNavHandlers();
 
+        if (deckSelect && deckForm) {
+          deckSelect.addEventListener("change", function (event) {
+            event.preventDefault();
+            showSlide(deckSelect.value, 1);
+          });
+        }
+
         document.addEventListener("keydown", function (event) {
           var active = document.activeElement;
           var tag = active && active.tagName;
-          if (tag === "INPUT" || tag === "TEXTAREA") return;
-          if (event.key === "ArrowLeft" && viewedSlide > 1) showSlide(viewedSlide - 1);
-          if (event.key === "ArrowRight" && (!maxSlide || viewedSlide < maxSlide)) showSlide(viewedSlide + 1);
+          if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+          var maxSlide = maxSlideFor(viewedDeck);
+          if (event.key === "ArrowLeft" && viewedSlide > 1) showSlide(viewedDeck, viewedSlide - 1);
+          if (event.key === "ArrowRight" && (!maxSlide || viewedSlide < maxSlide)) showSlide(viewedDeck, viewedSlide + 1);
         });
 
         function render(state) {
           liveSlide = state.slide;
           var backLink = document.getElementById("back-to-live-link");
-          if (backLink) backLink.style.display = viewedSlide !== liveSlide ? "" : "none";
+          var onLive = viewedDeck === liveDeck && viewedSlide === liveSlide;
+          if (backLink) backLink.style.display = onLive ? "none" : "";
           if (state.shown) {
             gauge.textContent = state.present + " people here, " + state.live + " lost right now";
             if (!tapCount) {
@@ -364,7 +449,13 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           feedback.textContent = "";
           button.disabled = true;
           button.textContent = "Sending...";
-          fetch(form.action, { method: "POST", body: new URLSearchParams({ slide: slideInput ? slideInput.value : "" }) })
+          fetch(form.action, {
+            method: "POST",
+            body: new URLSearchParams({
+              deck: deckInput ? deckInput.value : "",
+              slide: slideInput ? slideInput.value : "",
+            }),
+          })
             .then(function (res) {
               if (!res.ok) throw new Error("tap failed");
               button.textContent = "You're counted";
@@ -409,15 +500,20 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     });
   }
 
-  // A tap always records the slide the viewer says they're looking at — no
-  // reconciliation against a "current" slide, since browsing to an earlier
-  // one is now a normal, expected thing to do (ADR 004's amendment). An
-  // out-of-range or missing value can only mean a malformed request, so it's
-  // rejected rather than silently substituted.
+  // A tap always records the deck and slide the viewer says they're looking
+  // at — no reconciliation against a "current" slide, since browsing to an
+  // earlier one is now a normal, expected thing to do (ADR 004's amendment).
+  // An out-of-range or missing value can only mean a malformed request, so
+  // it's rejected rather than silently substituted. A created lecture (no
+  // deck concept at all) always submits an empty deck, which isValidSlide
+  // treats as fine since it ignores the deck entirely for non-demo lectures.
   const body = await req.text();
-  const submittedSlideRaw = new URLSearchParams(body).get("slide");
+  const params = new URLSearchParams(body);
+  const submittedDeckRaw = params.get("deck");
+  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedSlideRaw = params.get("slide");
   const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
-  if (!isValidSlide(lecture, submittedSlide)) {
+  if (!isValidSlide(lecture, submittedDeck, submittedSlide)) {
     logAction("tap_rejected", id, browserId);
     return new Response("Invalid slide", {
       status: 400,
@@ -426,7 +522,7 @@ async function handleTap(id: string, req: Request): Promise<Response> {
   }
 
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  const inserted = tapIfNotRecentlyTapped(id, browserId, since, submittedSlide);
+  const inserted = tapIfNotRecentlyTapped(id, browserId, since, submittedDeck ?? null, submittedSlide);
   if (inserted) {
     broadcast(id);
     scheduleFade(id);
@@ -435,9 +531,10 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     logAction("tap_ignored", id, browserId);
   }
 
+  const deckParam = submittedDeck !== undefined ? `deck=${submittedDeck}&` : "";
   return new Response(null, {
     status: 303,
-    headers: { location: `/l/${encodeURIComponent(id)}?slide=${submittedSlide}` },
+    headers: { location: `/l/${encodeURIComponent(id)}?${deckParam}slide=${submittedSlide}` },
   });
 }
 
