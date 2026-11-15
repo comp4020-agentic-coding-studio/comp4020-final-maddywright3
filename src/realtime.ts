@@ -1,6 +1,16 @@
 import type { ServerResponse } from "node:http";
-import { getLecture, hasLiveTap, liveTapInfo, slideTapCounts, tapCount, yourTapCount } from "./db.ts";
-import { currentSlideIndex, msUntilNextSlideChange } from "./slides.ts";
+import {
+  getLecture,
+  liveTapFor,
+  liveTapInfo,
+  reasonCounts as rawReasonCounts,
+  slideNoteCounts,
+  slideTapCounts,
+  tapCount,
+  visibleNotesForSlide,
+  yourTapCount,
+} from "./db.ts";
+import { currentDeck, currentSlideIndex, msUntilNextSlideChange } from "./slides.ts";
 
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -9,6 +19,21 @@ export interface Bar {
   deck: string | null;
   slide: number;
   distinctBrowsers: number;
+}
+
+export interface ReasonCountEntry {
+  deck: string | null;
+  slide: number;
+  reason: string;
+  count: number;
+}
+
+export interface NoteEntry {
+  deck: string | null;
+  slide: number;
+  id: number;
+  text: string;
+  created_at: string;
 }
 
 // Below min_present, live/totalTaps are never present on the object at all
@@ -20,8 +45,21 @@ export interface Bar {
 // — a slide clears the bar threshold once >= min_present distinct browsers
 // have ever tapped it, whoever is present right now (ADR 004's refined
 // privacy rule), so `bars` is present on both branches of this union.
+// `liveForMs` and `topReason` are per-browser/per-slide extras: `liveForMs`
+// only appears while `youAreCounted` (the caller's own live tap), never
+// sent to anyone else's stream; `topReason` only appears once the current
+// slide's top reason has itself cleared its own (deck, slide, reason) gate.
 export type MeterState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; yourTapCount: number; youAreCounted: boolean }
+  | {
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      yourTapCount: number;
+      youAreCounted: boolean;
+      liveForMs?: number;
+      topReason?: string;
+    }
   | {
       present: number;
       shown: true;
@@ -31,10 +69,12 @@ export type MeterState =
       totalTaps: number;
       yourTapCount: number;
       youAreCounted: boolean;
+      liveForMs?: number;
+      topReason?: string;
     };
 
 export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[] }
+  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
   | {
       present: number;
       shown: true;
@@ -42,6 +82,8 @@ export type LecturerState =
       bars: Bar[];
       live: number;
       totalTaps: number;
+      reasonCounts: ReasonCountEntry[];
+      notes: NoteEntry[];
     };
 
 // Bars are gated per (deck, slide) pair, independently of present/shown: a
@@ -51,6 +93,46 @@ export type LecturerState =
 // individually cleared the threshold.
 function gatedBars(lectureId: string, minPresent: number): Bar[] {
   return slideTapCounts(lectureId).filter((bar) => bar.distinctBrowsers >= minPresent);
+}
+
+// Reason counts are gated per (deck, slide, reason) triple, NOT inherited
+// from the slide's own bar gate: a slide can clear the bar threshold (e.g.
+// 20 distinct tappers) while one specific reason among them was picked by
+// only one or two people — surfacing that reason's count would be exactly
+// the one-person signal ADR 004 rules out ("no bar can ever be one
+// person"), just nested inside an otherwise-qualifying slide.
+function gatedReasonCounts(lectureId: string, minPresent: number): ReasonCountEntry[] {
+  return rawReasonCounts(lectureId).filter((entry) => entry.count >= minPresent);
+}
+
+// The current slide's most common *qualifying* reason — drawn only from
+// entries that already cleared the per-pair gate above, so this can never
+// surface a reason picked by fewer than min_present distinct browsers even
+// though it's reporting on just one slide rather than the whole gated list.
+function topReasonFor(
+  gatedReasons: ReasonCountEntry[],
+  deck: string | null,
+  slide: number,
+): string | undefined {
+  const forSlide = gatedReasons.filter((entry) => entry.deck === deck && entry.slide === slide);
+  if (forSlide.length === 0) return undefined;
+  return forSlide.reduce((top, entry) => (entry.count > top.count ? entry : top)).reason;
+}
+
+// Notes are gated per (deck, slide) pair, same two-step pattern as bars:
+// slideNoteCounts decides which pairs clear min_present distinct (visible)
+// browsers, and only for those does visibleNotesForSlide get called at all
+// — a pair below threshold contributes nothing to the array, not an empty
+// group. Lecturer-only: this is never called for MeterState.
+function gatedNotes(lectureId: string, minPresent: number): NoteEntry[] {
+  const qualifying = slideNoteCounts(lectureId).filter((count) => count.distinctBrowsers >= minPresent);
+  return qualifying.flatMap((count) =>
+    visibleNotesForSlide(lectureId, count.deck, count.slide).map((note) => ({
+      deck: count.deck,
+      slide: count.slide,
+      ...note,
+    })),
+  );
 }
 
 // Student/presence connections, keyed by lecture then by browser, so
@@ -120,10 +202,18 @@ export function computeState(lectureId: string, browserId: string): MeterState |
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = currentSlideIndex(lecture);
+  const deck = currentDeck(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
+  const gatedReasons = gatedReasonCounts(lectureId, lecture.min_present);
+  const topReason = topReasonFor(gatedReasons, deck, slide);
+  const liveTap = liveTapFor(lectureId, browserId, since);
   const yours = {
     yourTapCount: yourTapCount(lectureId, browserId),
-    youAreCounted: hasLiveTap(lectureId, browserId, since),
+    youAreCounted: liveTap !== undefined,
+    ...(liveTap !== undefined
+      ? { liveForMs: Math.max(0, new Date(liveTap.created_at).getTime() + LIVE_WINDOW_MS - Date.now()) }
+      : {}),
+    ...(topReason !== undefined ? { topReason } : {}),
   };
   if (!shown) return { present, shown, slide, bars, ...yours };
   const { count: live } = liveTapInfo(lectureId, since);
@@ -137,10 +227,12 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const shown = present >= lecture.min_present;
   const slide = currentSlideIndex(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars };
+  const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
+  const notes = gatedNotes(lectureId, lecture.min_present);
+  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId) };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
 }
 
 export function broadcast(lectureId: string): void {
