@@ -228,8 +228,17 @@ async function capture(
   await cdp.send("Page.navigate", { url: new URL(path, baseUrl).href }, sessionId);
   await loaded;
   await sleep(1500); // the first stream frame, and any live update it causes
+  // Full page the way Playwright's fullPage does it: stretch the viewport to
+  // the content height, so a sticky element sits where it would be scrolled
+  // to rather than painted over the content at the first screen's bottom.
   const { cssContentSize } = await cdp.send("Page.getLayoutMetrics", {}, sessionId);
   const height = Math.max(viewport.height, Math.ceil(cssContentSize.height));
+  await cdp.send(
+    "Emulation.setDeviceMetricsOverride",
+    { width: viewport.width, height, deviceScaleFactor: 1, mobile: viewport.mobile },
+    sessionId,
+  );
+  await sleep(300);
   const { data } = await cdp.send(
     "Page.captureScreenshot",
     {
