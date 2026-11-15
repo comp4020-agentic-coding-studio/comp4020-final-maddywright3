@@ -349,10 +349,79 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
 }
 
+// At most one student broadcast and one lecturer broadcast per lecture per
+// BROADCAST_WINDOW_MS (ADR 005). Leading edge: if nothing went out in the
+// last window, send now, so a single tap in a quiet room has no added delay.
+// Otherwise one trailing send at the window's end covers every change in it,
+// so a burst of 50 taps is 2 frames per stream, not 50. Each send reads the
+// state fresh when it fires and there's never more than one pending per
+// lecture, so frames can't arrive out of order. Every trigger (taps,
+// reasons, resolve, notes, slide changes, connects, disconnects, fades)
+// comes through broadcast() or broadcastToLecturer(), so all are covered.
+export const BROADCAST_WINDOW_MS = 50;
+
+interface Throttle {
+  lastSentAt: number;
+  trailing: NodeJS.Timeout | undefined;
+}
+
+function makeThrottle(send: (lectureId: string) => void): (lectureId: string) => void {
+  const throttles = new Map<string, Throttle>();
+  return (lectureId) => {
+    let t = throttles.get(lectureId);
+    if (!t) {
+      t = { lastSentAt: -Infinity, trailing: undefined };
+      throttles.set(lectureId, t);
+    }
+    if (t.trailing) return;
+    const waitMs = t.lastSentAt + BROADCAST_WINDOW_MS - performance.now();
+    const fire = () => {
+      t.trailing = undefined;
+      t.lastSentAt = performance.now();
+      send(lectureId);
+    };
+    if (waitMs <= 0) {
+      fire();
+      return;
+    }
+    t.trailing = setTimeout(() => {
+      fire();
+      // Nothing pending and the window has passed: drop the entry so a
+      // lecture nobody is using holds no memory.
+      setTimeout(() => {
+        const current = throttles.get(lectureId);
+        if (current && !current.trailing && performance.now() - current.lastSentAt >= BROADCAST_WINDOW_MS) {
+          throttles.delete(lectureId);
+        }
+      }, BROADCAST_WINDOW_MS).unref();
+    }, waitMs);
+    t.trailing.unref();
+  };
+}
+
+export const broadcast = makeThrottle((lectureId) => {
+  sendToStudents(lectureId);
+  broadcastToLecturer(lectureId);
+});
+
+export const broadcastToLecturer = makeThrottle(sendToLecturers);
+
+// A stream that has just opened gets its own first frame at once, not up to
+// a window later: it has nothing to show until then.
+export function sendInitialState(lectureId: string, browserId: string, res: ServerResponse, deck: DeckId | null): void {
+  const state = computeState(lectureId, browserId, deck);
+  if (state) res.write(`data: ${JSON.stringify(state)}\n\n`);
+}
+
+export function sendInitialLecturerState(lectureId: string, res: ServerResponse): void {
+  const state = computeLecturerState(lectureId);
+  if (state) res.write(`data: ${JSON.stringify(state)}\n\n`);
+}
+
 // Each stream gets the live slide of the deck it's watching. The shared
 // state is computed lazily once per deck, the per-browser part once per
 // browser, and the JSON once per (browser, deck) — never once per stream.
-export function broadcast(lectureId: string): void {
+function sendToStudents(lectureId: string): void {
   const byBrowser = connections.get(lectureId);
   const lecture = byBrowser && byBrowser.size > 0 ? getLecture(lectureId) : undefined;
   if (byBrowser && lecture) {
@@ -380,10 +449,9 @@ export function broadcast(lectureId: string): void {
       }
     }
   }
-  broadcastToLecturer(lectureId);
 }
 
-export function broadcastToLecturer(lectureId: string): void {
+function sendToLecturers(lectureId: string): void {
   const set = lecturerConnections.get(lectureId);
   if (!set || set.size === 0) return;
   const state = computeLecturerState(lectureId);

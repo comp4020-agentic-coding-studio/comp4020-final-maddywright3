@@ -43,6 +43,8 @@ import {
   removeConnection,
   removeLecturerConnection,
   scheduleFade,
+  sendInitialLecturerState,
+  sendInitialState,
   startHeartbeat,
 } from "./realtime.ts";
 import type { Bar } from "./realtime.ts";
@@ -1299,6 +1301,7 @@ function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): vo
 
   addConnection(id, browserId, res, deck);
   logAction("stream_open", id, browserId);
+  sendInitialState(id, browserId, res, deck);
   broadcast(id);
   scheduleFade(id);
 
@@ -1333,6 +1336,7 @@ function handleLecturerEvents(id: string, req: IncomingMessage, res: ServerRespo
 
   addLecturerConnection(id, res);
   logAction("stream_open", id, browserId);
+  sendInitialLecturerState(id, res);
   broadcastToLecturer(id);
 
   req.on("close", () => {
