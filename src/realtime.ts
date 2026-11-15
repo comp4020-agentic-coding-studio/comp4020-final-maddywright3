@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import {
   getLecture,
+  helpedCounts as rawHelpedCounts,
   liveTapInfo,
   reasonCounts as rawReasonCounts,
   slidesYouTapped,
@@ -9,7 +10,7 @@ import {
   tapCount,
   visibleNotesForSlide,
 } from "./db.ts";
-import type { Lecture, YourSlide } from "./db.ts";
+import type { HelpedCount, Lecture, YourSlide } from "./db.ts";
 import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
@@ -80,7 +81,15 @@ export type MeterState =
     };
 
 export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
+  | {
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
+      notes: NoteEntry[];
+    }
   | {
       present: number;
       shown: true;
@@ -89,6 +98,7 @@ export type LecturerState =
       live: number;
       totalTaps: number;
       reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
       notes: NoteEntry[];
     };
 
@@ -109,6 +119,13 @@ function gatedBars(lectureId: string, minPresent: number): Bar[] {
 // person"), just nested inside an otherwise-qualifying slide.
 function gatedReasonCounts(lectureId: string, minPresent: number): ReasonCountEntry[] {
   return rawReasonCounts(lectureId).filter((entry) => entry.count >= minPresent);
+}
+
+// What helped, gated per (deck, slide, answer) exactly as reasons are: one
+// answer picked by fewer than min_present browsers is absent, even on a
+// slide where other answers qualify. Lecturer-only.
+function gatedHelpedCounts(lectureId: string, minPresent: number): HelpedCount[] {
+  return rawHelpedCounts(lectureId).filter((entry) => entry.count >= minPresent);
 }
 
 // The current slide's most common *qualifying* reason — drawn only from
@@ -343,11 +360,12 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const slide = currentSlideIndex(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
   const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
+  const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
+  if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, helpedCounts, notes };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per

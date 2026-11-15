@@ -72,6 +72,10 @@ if (!tapColumns.some((c) => c.name === "run_id")) {
 if (!tapColumns.some((c) => c.name === "legacy_duplicate")) {
   db.exec("ALTER TABLE taps ADD COLUMN legacy_duplicate INTEGER NOT NULL DEFAULT 0");
 }
+// What helped, from a fixed list, answered once after "I get it now".
+if (!tapColumns.some((c) => c.name === "helped")) {
+  db.exec("ALTER TABLE taps ADD COLUMN helped TEXT");
+}
 
 // One "I'm lost" per (lecture, run, deck, slide, browser), held by a unique
 // index rather than by a check in the insert. Two things make the index
@@ -180,6 +184,7 @@ export interface Tap {
   deck: string | null;
   reason: string | null;
   resolved_at: string | null;
+  helped: string | null;
 }
 
 export function getLecture(id: string): Lecture | undefined {
@@ -246,6 +251,12 @@ export interface YourSlide {
   slide: number;
   // Still counted as lost: inside the live window and not resolved.
   live: boolean;
+  // "I get it now" was pressed for this slide.
+  resolved: boolean;
+  // Whether a reason / what-helped has been sent. Flags only, never the
+  // answer itself: no answer text travels in a student payload.
+  answeredReason: boolean;
+  answeredHelped: boolean;
 }
 
 // Every (deck, slide) this browser has said it's lost on in the lecture,
@@ -254,13 +265,44 @@ export interface YourSlide {
 export function slidesYouTapped(lectureId: string, browserId: string, sinceIso: string): YourSlide[] {
   const rows = db
     .prepare(
-      `SELECT deck, slide, (created_at >= ? AND resolved_at IS NULL) AS live
+      `SELECT deck, slide, (created_at >= ? AND resolved_at IS NULL) AS live,
+              resolved_at IS NOT NULL AS resolved, reason IS NOT NULL AS answeredReason,
+              helped IS NOT NULL AS answeredHelped
        FROM taps
        WHERE lecture_id = ? AND browser_id = ? AND slide IS NOT NULL AND legacy_duplicate = 0
        ORDER BY deck, slide`,
     )
-    .all(sinceIso, lectureId, browserId) as { deck: string | null; slide: number; live: number }[];
-  return rows.map((row) => ({ deck: row.deck, slide: row.slide, live: row.live === 1 }));
+    .all(sinceIso, lectureId, browserId) as {
+    deck: string | null;
+    slide: number;
+    live: number;
+    resolved: number;
+    answeredReason: number;
+    answeredHelped: number;
+  }[];
+  return rows.map((row) => ({
+    deck: row.deck,
+    slide: row.slide,
+    live: row.live === 1,
+    resolved: row.resolved === 1,
+    answeredReason: row.answeredReason === 1,
+    answeredHelped: row.answeredHelped === 1,
+  }));
+}
+
+// This browser's own answers on one slide, for its own server-rendered page
+// only (to mark the chosen button pressed): never put in any stream.
+export function yourAnswersOn(
+  lectureId: string,
+  browserId: string,
+  slideRef: SlideRef,
+): { reason: string | null; helped: string | null } | undefined {
+  return db
+    .prepare(
+      `SELECT reason, helped FROM taps
+       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ? AND legacy_duplicate = 0`,
+    )
+    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide) as { reason: string | null; helped: string | null } | undefined;
 }
 
 // The caller's own live (unresolved, within the window) tap, if any —
@@ -299,8 +341,49 @@ export interface SlideRef {
   slide: number;
 }
 
+// The tap a "what helped" answer goes on: this browser's tap on the named
+// slide, once resolved. Not limited to the live window: someone can say
+// what helped a little after pressing "I get it now".
+export function resolvedTapOn(lectureId: string, browserId: string, slideRef: SlideRef): Tap | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM taps
+       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+         AND resolved_at IS NOT NULL AND legacy_duplicate = 0`,
+    )
+    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide) as Tap | undefined;
+}
+
+// Answers lock once sent (ADR 006): "AND reason IS NULL" in the same UPDATE
+// means a second answer changes nothing, even two arriving at once.
 export function setTapReason(tapId: number, reason: string): boolean {
-  return db.prepare("UPDATE taps SET reason = ? WHERE id = ?").run(reason, tapId).changes > 0;
+  return db.prepare("UPDATE taps SET reason = ? WHERE id = ? AND reason IS NULL").run(reason, tapId).changes > 0;
+}
+
+export function setTapHelped(tapId: number, helped: string): boolean {
+  return (
+    db
+      .prepare("UPDATE taps SET helped = ? WHERE id = ? AND helped IS NULL AND resolved_at IS NOT NULL")
+      .run(helped, tapId).changes > 0
+  );
+}
+
+export interface HelpedCount {
+  deck: string | null;
+  slide: number;
+  helped: string;
+  count: number;
+}
+
+// Raw counts per (deck, slide, answer); gated in realtime.ts like reasons.
+export function helpedCounts(lectureId: string): HelpedCount[] {
+  return db
+    .prepare(
+      `SELECT deck, slide, helped, COUNT(DISTINCT browser_id) AS count
+       FROM taps WHERE lecture_id = ? AND helped IS NOT NULL AND legacy_duplicate = 0
+       GROUP BY deck, slide, helped`,
+    )
+    .all(lectureId) as unknown as HelpedCount[];
 }
 
 // resolved_at IS NULL in the WHERE: two "I get it now" presses at once

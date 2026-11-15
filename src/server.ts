@@ -13,6 +13,9 @@ import {
   lectureCount,
   liveTapOn,
   resolveTap,
+  resolvedTapOn,
+  setTapHelped,
+  yourAnswersOn,
   stepCurrentSlide,
   setNote,
   setTapReason,
@@ -448,12 +451,18 @@ function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): s
     : `You're on ${slideName(deck, viewedSlide)}. The lecture is on ${slideName(deck, liveSlide)}.`;
 }
 
+// The fixed list of reasons, checked on the server. A function so it can be
+// used above where REASONS is declared, at module load.
+function REASONS_LIST(): string[] {
+  return ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
+}
+
 // Reason buttons appear after tapping, while the caller's own tap is live.
 // A fixed list, checked server-side — no free text for students, per
 // CLAUDE.md. Each is a tiny one-field <form>, so it works with no JS as a
 // full page POST; the enhancement script intercepts submit to send it via
-// fetch instead, same pattern as the tap form. A reason can be changed
-// while live by just submitting a different one. Each form names the deck
+// fetch instead, same pattern as the tap form. A reason locks once sent
+// (ADR 006); see answerButtonsHtml. Each form names the deck
 // and slide it's about: with one tap per slide, a browser can have live
 // taps on two slides at once.
 function slideFieldsHtml(deck: DeckId | undefined, slide: number): string {
@@ -461,22 +470,88 @@ function slideFieldsHtml(deck: DeckId | undefined, slide: number): string {
   return `${deckInput}<input type="hidden" name="slide" value="${slide}">`;
 }
 
-function reasonButtonsHtml(lectureId: string, deck: DeckId | undefined, slide: number, live: boolean): string {
-  if (!live) return "";
+// One button per answer on a fixed list, each its own one-field form so it
+// works without JS. Answers lock once sent (ADR 006): after one is chosen
+// it's marked aria-pressed="true" and class "answer-chosen", the others
+// "answer-other" (style.css dims those), and every button is disabled. The
+// page script builds the same markup (buildAnswersHtml) from the same
+// inputs, so the two can't drift apart.
+interface AnswerSet {
+  id: string;
+  legend: string;
+  path: string;
+  field: string;
+  formClass: string;
+  options: string[];
+}
+
+function answerButtonsHtml(
+  lectureId: string,
+  set: AnswerSet,
+  deck: DeckId | undefined,
+  slide: number,
+  chosen: string | null,
+  locked: boolean,
+): string {
   const base = `/l/${encodeURIComponent(lectureId)}`;
-  const buttons = REASONS.map(
-    (reason) => `<form method="post" action="${base}/reason" class="reason-form">
+  const buttons = set.options
+    .map((option) => {
+      const pressed = chosen === option;
+      const cls = chosen === null ? "answer" : pressed ? "answer answer-chosen" : "answer answer-other";
+      return `<form method="post" action="${base}${set.path}" class="${set.formClass}">
       ${slideFieldsHtml(deck, slide)}
-      <input type="hidden" name="reason" value="${escapeHtml(reason)}">
-      <button type="submit">${escapeHtml(reason)}</button>
-    </form>`,
-  ).join("\n");
+      <input type="hidden" name="${set.field}" value="${escapeHtml(option)}">
+      <button type="submit" class="${cls}" aria-pressed="${pressed}"${locked ? " disabled" : ""}>${escapeHtml(option)}</button>
+    </form>`;
+    })
+    .join("\n");
   return `
-    <fieldset id="reasons">
-      <legend>What kind of lost?</legend>
+    <fieldset id="${set.id}">
+      <legend>${escapeHtml(set.legend)}</legend>
       ${buttons}
     </fieldset>
   `;
+}
+
+const REASON_SET: AnswerSet = {
+  id: "reasons",
+  legend: "What kind of lost?",
+  path: "/reason",
+  field: "reason",
+  formClass: "reason-form",
+  options: REASONS_LIST(),
+};
+
+// Shown in place of the reasons once "I get it now" is pressed for the
+// slide being viewed: the reasons no longer apply, what helped does.
+const HELPED = ["The next slide", "Re-reading it", "The example", "Someone explained it", "Worked it out myself"];
+const GLAD_TEXT = "Glad you've got it now.";
+const HELPED_SET: AnswerSet = {
+  id: "helped",
+  legend: "What helped your understanding?",
+  path: "/helped",
+  field: "helped",
+  formClass: "helped-form",
+  options: HELPED,
+};
+
+function reasonButtonsHtml(
+  lectureId: string,
+  deck: DeckId | undefined,
+  slide: number,
+  live: boolean,
+  chosen: string | null,
+): string {
+  if (!live) return "";
+  return answerButtonsHtml(lectureId, REASON_SET, deck, slide, chosen, chosen !== null);
+}
+
+function helpedHtml(lectureId: string, deck: DeckId | undefined, slide: number, resolved: boolean, chosen: string | null): string {
+  if (!resolved) return "";
+  return `<div id="after-clicked">
+      <p id="glad-text">${GLAD_TEXT}</p>
+      ${answerButtonsHtml(lectureId, HELPED_SET, deck, slide, chosen, chosen !== null)}
+    </div>`;
 }
 
 // What this browser has said about the slide it's looking at: nothing yet,
@@ -569,6 +644,12 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const viewedDeckOrNull = id === "demo" ? viewedDeck : null;
   const tapStatus = slideTapStatus(state.yourSlides, viewedDeckOrNull, viewedSlide);
   const viewedLive = tapStatus === "live";
+  const viewedMine = state.yourSlides.find((s) => s.deck === viewedDeckOrNull && s.slide === viewedSlide);
+  const viewedResolved = viewedMine?.resolved ?? false;
+  // This browser's own answers on the viewed slide, to mark the chosen
+  // button pressed. Read for this page only; never put in a stream.
+  const yourAnswers =
+    viewedMine !== undefined ? yourAnswersOn(id, browserId, { deck: viewedDeckOrNull, slide: viewedSlide }) : undefined;
   // The status line and "I get it now" sit beside the tap form, not inside
   // it: a <form> nested in another is dropped by the HTML parser, which left
   // "I get it now" submitting a tap instead of resolving one.
@@ -621,7 +702,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         ${tapStatusHtml}
       </div>
       <div class="after-tap">
-        ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
+        ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive, yourAnswers?.reason ?? null)}
+        ${helpedHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedResolved, yourAnswers?.helped ?? null)}
         ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
         <p id="tap-feedback" aria-live="polite"></p>
         ${tapCountHtml}
@@ -858,20 +940,60 @@ ${SLIDE_NAME_CLIENT_JS}
           container.appendChild(table);
         }
 
-        function attachReasonHandlers() {
-          var forms = document.querySelectorAll(".reason-form");
+        // Answers this browser chose, by "set:deck:slide", kept on this page
+        // only so the chosen button stays marked after a live update. The
+        // stream never carries the answer itself, only that one was sent.
+        var chosenAnswers = {};
+        // The server-rendered page already marks this browser's own choice.
+        (function () {
+          var pressed = document.querySelectorAll(".answer[aria-pressed=true]");
+          for (var i = 0; i < pressed.length; i++) {
+            var set = pressed[i].closest("fieldset").id;
+            chosenAnswers[set + ":" + viewedDeck + ":" + viewedSlide] = pressed[i].textContent;
+          }
+        })();
+
+        // A sent answer locks at once, before the stream confirms it: the
+        // chosen button pressed, the rest dimmed, all of them unavailable.
+        // aria-disabled, not disabled, so the button a keyboard user just
+        // pressed keeps focus (the tap button does the same).
+        function lockAnswers(fieldset, chosen) {
+          var buttons = fieldset.querySelectorAll("button.answer");
+          for (var i = 0; i < buttons.length; i++) {
+            var isChosen = buttons[i].textContent === chosen;
+            buttons[i].className = "answer " + (isChosen ? "answer-chosen" : "answer-other");
+            buttons[i].setAttribute("aria-pressed", String(isChosen));
+            buttons[i].disabled = false;
+            buttons[i].setAttribute("aria-disabled", "true");
+          }
+        }
+
+        function attachAnswerHandlers(fieldset) {
+          if (!fieldset) return;
+          var disabled = fieldset.querySelectorAll("button.answer[disabled]");
+          for (var d = 0; d < disabled.length; d++) {
+            disabled[d].disabled = false;
+            disabled[d].setAttribute("aria-disabled", "true");
+          }
+          var forms = fieldset.querySelectorAll("form");
           for (var i = 0; i < forms.length; i++) {
             forms[i].addEventListener("submit", function (event) {
               event.preventDefault();
-              var reasonForm = event.target;
-              fetch(reasonForm.action, {
+              var answerForm = event.target;
+              var pressedButton = answerForm.querySelector("button.answer");
+              if (pressedButton.getAttribute("aria-disabled") === "true") return;
+              var chosen = pressedButton.textContent;
+              chosenAnswers[fieldset.id + ":" + viewedDeck + ":" + viewedSlide] = chosen;
+              lockAnswers(fieldset, chosen);
+              fetch(answerForm.action, {
                 method: "POST",
-                body: new URLSearchParams(new FormData(reasonForm)),
+                body: new URLSearchParams(new FormData(answerForm)),
               }).catch(function () {});
             });
           }
         }
-        attachReasonHandlers();
+        attachAnswerHandlers(document.getElementById("reasons"));
+        attachAnswerHandlers(document.getElementById("helped"));
 
         function attachNoteHandlers() {
           var noteFormEl = document.getElementById("note-form");
@@ -902,7 +1024,8 @@ ${SLIDE_NAME_CLIENT_JS}
         }
 
         var tapBaseUrl = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
-        var reasonsList = ${JSON.stringify(REASONS)};
+        var answerSets = ${JSON.stringify({ reasons: REASON_SET, helped: HELPED_SET })};
+        var gladText = ${JSON.stringify(GLAD_TEXT)};
         var isDemo = ${JSON.stringify(id === "demo")};
 
         // The deck and slide a reason, note or "I get it now" is about: the
@@ -912,17 +1035,24 @@ ${SLIDE_NAME_CLIENT_JS}
             + '<input type="hidden" name="slide" value="' + viewedSlide + '">';
         }
 
-        function buildReasonsHtml() {
-          var html = '<fieldset id="reasons"><legend>What kind of lost?</legend>';
-          for (var i = 0; i < reasonsList.length; i++) {
-            var r = reasonsList[i];
-            html += '<form method="post" action="' + tapBaseUrl + '/reason" class="reason-form">'
+        function escapeText(text) {
+          return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+
+        // The same markup answerButtonsHtml renders on the server.
+        function buildAnswersHtml(set, chosen, locked) {
+          var html = '<fieldset id="' + set.id + '"><legend>' + escapeText(set.legend) + '</legend>';
+          for (var i = 0; i < set.options.length; i++) {
+            var option = set.options[i];
+            var pressed = chosen === option;
+            var cls = chosen === null ? "answer" : pressed ? "answer answer-chosen" : "answer answer-other";
+            html += '<form method="post" action="' + tapBaseUrl + set.path + '" class="' + set.formClass + '">'
               + slideFieldsHtml()
-              + '<input type="hidden" name="reason" value="' + r + '">'
-              + '<button type="submit">' + r + '</button></form>';
+              + '<input type="hidden" name="' + set.field + '" value="' + escapeText(option) + '">'
+              + '<button type="submit" class="' + cls + '" aria-pressed="' + pressed + '"' + (locked ? " disabled" : "") + '>'
+              + escapeText(option) + '</button></form>';
           }
-          html += '</fieldset>';
-          return html;
+          return html + '</fieldset>';
         }
 
         function buildNoteFormHtml() {
@@ -937,38 +1067,71 @@ ${SLIDE_NAME_CLIENT_JS}
             + '</form>';
         }
 
-        // Builds the reason fieldset and note form fresh each time the
-        // viewed slide's tap goes live (another tab's tap reaching this one
-        // via SSE included, not just this tab's own submit) — removed
-        // entirely, not merely hidden, once it's no longer live or the view
-        // moves to another slide, so a form never names a slide that isn't
-        // showing.
-        var builtFor = null;
-        function renderReasonsAndNote(live) {
-          var existingReasons = document.getElementById("reasons");
+        // What sits under the tap bar for the slide being viewed:
+        // - its tap is live: the reasons (locked once one is sent) and the note;
+        // - "I get it now" was pressed: "Glad you've got it now." and what
+        //   helped (locked once sent), the reasons gone;
+        // - otherwise nothing.
+        // Each part is rebuilt only when what it shows changes, so an
+        // unrelated live update never tears down a focused button.
+        var shownAnswers = {};
+        // The parts keep the same order as the server renders them, reasons
+        // then note then what helped, so the reading and Tab order never
+        // change: a part being rebuilt replaces itself in place, and a new
+        // one goes in after the parts that come before it.
+        var PART_ORDER = ["reasons", "note-form", "after-clicked"];
+        function placePart(id, html) {
+          var holder = document.createElement("div");
+          holder.innerHTML = html;
+          var el = holder.firstElementChild;
+          var existing = document.getElementById(id);
+          if (existing) {
+            existing.replaceWith(el);
+            return el;
+          }
+          var after = null;
+          for (var i = PART_ORDER.indexOf(id) - 1; i >= 0 && !after; i--) after = document.getElementById(PART_ORDER[i]);
+          if (after) after.insertAdjacentElement("afterend", el);
+          else feedback.insertAdjacentElement("beforebegin", el);
+          return el;
+        }
+        function renderAnswerSet(setId, show, answered, wrap) {
+          var partId = wrap || setId;
+          var key = show ? [viewedDeck, viewedSlide, answered].join(":") : null;
+          var existing = document.getElementById(partId);
+          if (shownAnswers[setId] === key && (existing !== null) === show) return;
+          var hadFocus = existing && existing.contains(document.activeElement);
+          shownAnswers[setId] = key;
+          if (!show) {
+            if (existing) existing.remove();
+            return;
+          }
+          var chosen = chosenAnswers[setId + ":" + viewedDeck + ":" + viewedSlide];
+          var setHtml = buildAnswersHtml(answerSets[setId], chosen === undefined ? null : chosen, answered);
+          var el = placePart(partId, wrap ? '<div id="' + wrap + '"><p id="glad-text">' + escapeText(gladText) + '</p>' + setHtml + '</div>' : setHtml);
+          attachAnswerHandlers(document.getElementById(setId));
+          if (hadFocus) {
+            var target = el.querySelector(".answer-chosen") || el.querySelector("button.answer");
+            if (target) target.focus();
+          }
+        }
+        var noteBuiltFor = null;
+        function renderReasonsAndNote(mine) {
+          var live = !!(mine && mine.live);
+          var resolved = !!(mine && mine.resolved);
+          renderAnswerSet("reasons", live, live && mine.answeredReason);
           var existingNote = document.getElementById("note-form");
           var key = viewedDeck + ":" + viewedSlide;
-          if (!live || builtFor !== key) {
-            if (existingReasons) existingReasons.remove();
-            if (existingNote) existingNote.remove();
-            existingReasons = null;
+          if (existingNote && (!live || noteBuiltFor !== key)) {
+            existingNote.remove();
             existingNote = null;
-            builtFor = null;
           }
-          if (!live) return;
-          builtFor = key;
-          if (!existingReasons) {
-            var wrapper = document.createElement("div");
-            wrapper.innerHTML = buildReasonsHtml();
-            feedback.insertAdjacentElement("beforebegin", wrapper.firstElementChild);
-            attachReasonHandlers();
-          }
-          if (!existingNote) {
-            var noteWrapper = document.createElement("div");
-            noteWrapper.innerHTML = buildNoteFormHtml();
-            feedback.insertAdjacentElement("beforebegin", noteWrapper.firstElementChild);
+          if (live && !existingNote) {
+            noteBuiltFor = key;
+            placePart("note-form", buildNoteFormHtml());
             attachNoteHandlers();
           }
+          renderAnswerSet("helped", resolved, resolved && mine.answeredHelped, "after-clicked");
         }
 
         var resolveForm = document.getElementById("resolve-form");
@@ -1039,13 +1202,18 @@ ${SLIDE_NAME_CLIENT_JS}
         // you've already said you're lost on it.
         var lastYourSlides = ${JSON.stringify(state.yourSlides)};
         var tapButtonText = ${JSON.stringify(TAP_BUTTON_TEXT)};
-        function viewedTapStatus() {
+        function viewedMine() {
           var deck = isDemo ? viewedDeck : null;
           for (var i = 0; i < lastYourSlides.length; i++) {
             var mine = lastYourSlides[i];
-            if ((mine.deck || null) === deck && mine.slide === viewedSlide) return mine.live ? "live" : "said";
+            if ((mine.deck || null) === deck && mine.slide === viewedSlide) return mine;
           }
-          return "none";
+          return null;
+        }
+        function viewedTapStatus() {
+          var mine = viewedMine();
+          if (!mine) return "none";
+          return mine.live ? "live" : "said";
         }
         function updateTapControls() {
           if (!button || !resolveForm) return;
@@ -1069,11 +1237,17 @@ ${SLIDE_NAME_CLIENT_JS}
             resolveForm.hidden = true;
             if (hadFocus) button.focus();
           }
+          var mine = viewedMine();
           var afterTap = document.querySelector(".after-tap");
           var focusInAfterTap = status !== "live" && afterTap && afterTap.contains(document.activeElement)
             && (document.activeElement.closest("#reasons") || document.activeElement.closest("#note-form"));
-          renderReasonsAndNote(status === "live");
-          if (focusInAfterTap) button.focus();
+          renderReasonsAndNote(mine);
+          // Focus that was in the reasons or note, now gone, moves to the
+          // first thing that replaced it, or else the tap button.
+          if (focusInAfterTap && !afterTap.contains(document.activeElement)) {
+            var next = document.querySelector("#helped button.answer");
+            (next || button).focus();
+          }
         }
 
         var source = null;
@@ -1223,7 +1397,7 @@ function namedSlide(lecture: Lecture, params: URLSearchParams): SlideRef | undef
   return { deck: deck ?? null, slide };
 }
 
-const REASONS = ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
+const REASONS = REASONS_LIST();
 
 async function handleReason(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
@@ -1250,18 +1424,75 @@ async function handleReason(id: string, req: Request): Promise<Response> {
     });
   }
 
+  // Answers lock once sent (ADR 006): a slide whose tap already has a
+  // reason, or has no live tap to put one on, refuses the request. setTapReason's
+  // own "reason IS NULL" holds this even for two requests at once.
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const tap = liveTapOn(id, browserId, since, slideRef);
-  if (tap !== undefined) {
-    setTapReason(tap.id, reason);
-    logAction("reason_set", id, browserId);
-    broadcast(id);
-    broadcastToLecturer(id);
+  if (tap === undefined || !setTapReason(tap.id, reason)) {
+    logAction("reason_refused", id, browserId);
+    return answerRefused("A reason can only be sent once per slide, while you're counted as lost on it.");
   }
+  logAction("reason_set", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
 
   return new Response(null, {
     status: 303,
     headers: { location: tapPageLocation(id, slideRef, tap) },
+  });
+}
+
+// 409, with a plain sentence: the request was well formed, but the answer
+// is already given (or there's nothing yet to answer).
+function answerRefused(message: string): Response {
+  return new Response(message, {
+    status: 409,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+// "What helped your understanding?" (ADR 006), asked after "I get it now".
+// Accepted once per slide, and only once that slide's tap is resolved; the
+// answer comes from a fixed list checked here. Counted for the lecturer per
+// (deck, slide, answer), gated like reasons; never sent to any student.
+async function handleHelped(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!browserId) {
+    logAction("tap_rejected", id, rawBrowserCookie(cookieHeader));
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const params = new URLSearchParams(await req.text());
+  const helped = params.get("helped") ?? "";
+  const slideRef = namedSlide(lecture, params);
+  if (!HELPED.includes(helped) || slideRef === undefined || slideRef === "invalid") {
+    logAction("helped_rejected", id, browserId);
+    return new Response("Invalid answer", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const tap = resolvedTapOn(id, browserId, slideRef);
+  if (tap === undefined || !setTapHelped(tap.id, helped)) {
+    logAction("helped_refused", id, browserId);
+    return answerRefused("What helped can only be sent once per slide, after \"I get it now\".");
+  }
+  logAction("helped_set", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: slidePageLocation(id, slideRef.deck, slideRef.slide) },
   });
 }
 
@@ -2005,6 +2236,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     slide: currentSlideIndex(lecture),
     bars: [] as Bar[],
     reasonCounts: [] as DashboardReasonCount[],
+    helpedCounts: [],
     notes: [] as DashboardNote[],
   };
   return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
@@ -2247,6 +2479,13 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(reasonMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleReason(id, req);
+  }
+
+  const helpedMatch = pathname.match(/^\/l\/([^/]+)\/helped$/);
+  if (method === "POST" && helpedMatch) {
+    const id = safeDecode(helpedMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleHelped(id, req);
   }
 
   const resolveMatch = pathname.match(/^\/l\/([^/]+)\/resolve$/);

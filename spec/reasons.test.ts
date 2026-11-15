@@ -18,7 +18,14 @@ interface MeterState {
   totalTaps?: number;
   yourTapCount: number;
   youAreCounted: boolean;
-  yourSlides: { deck: string | null; slide: number; live: boolean }[];
+  yourSlides: {
+    deck: string | null;
+    slide: number;
+    live: boolean;
+    resolved: boolean;
+    answeredReason: boolean;
+    answeredHelped: boolean;
+  }[];
   topReason?: string;
 }
 
@@ -262,7 +269,9 @@ it("yourSlides lists only this browser's own taps, never another browser's", asy
   const streamA = await SseStream.open("/l/demo/events", cookieA);
   try {
     const state = await streamA.next();
-    expect(state.yourSlides).toEqual([{ deck: "week-6", slide: 7, live: true }]);
+    expect(state.yourSlides).toEqual([
+      { deck: "week-6", slide: 7, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    ]);
   } finally {
     await streamA.close();
   }
@@ -301,8 +310,8 @@ it("a reason and I get it now act on the slide they name", async () => {
   try {
     const state = await own.next();
     expect(state.yourSlides).toEqual([
-      { deck: null, slide: 1, live: false },
-      { deck: null, slide: 2, live: true },
+      { deck: null, slide: 1, live: false, resolved: true, answeredReason: true, answeredHelped: false },
+      { deck: null, slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
     ]);
   } finally {
     await own.close();
@@ -390,7 +399,7 @@ it("the student page marks the chosen reason pressed, the rest not, and disables
   await postForm("demo", cookie, "tap", { deck: "week-6", slide: "5" });
   const before = await (await fetch(new URL("/l/demo?deck=week-6&slide=5", baseUrl), { headers: { cookie } })).text();
   const buttonsBefore = [...before.matchAll(/<form method="post" action="\/l\/demo\/reason" class="reason-form">[\s\S]*?<button([^>]*)>([^<]*)<\/button>/g)];
-  expect(buttonsBefore.map((m) => m[2])).toEqual(["Too fast", "Missed a step", "Notation", "Can't see or hear"]);
+  expect(buttonsBefore.map((m) => m[2].replace(/&#39;/g, "'"))).toEqual(["Too fast", "Missed a step", "Notation", "Can't see or hear"]);
   for (const [, attrs] of buttonsBefore) {
     expect(attrs).toContain('aria-pressed="false"');
     expect(attrs).not.toContain("disabled");
@@ -450,7 +459,9 @@ it("what helped is gated per (slide, answer), and no answer ever reaches a stude
   const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
   for (const [i, cookie] of cookies.entries()) {
     await postForm(lecture.id, cookie, "tap", { slide: "1" });
-    await postForm(lecture.id, cookie, "reason", { slide: "1", reason: "Missed a step" });
+    // Four and one: no reason reaches 5, so the room's gated "most people
+    // say" stays absent and any reason text below would be a real leak.
+    await postForm(lecture.id, cookie, "reason", { slide: "1", reason: i === 0 ? "Notation" : "Missed a step" });
     await postForm(lecture.id, cookie, "resolve", { slide: "1" });
     // Four say one thing, one says another: only the four-person answer is
     // below 5 too, so neither qualifies yet.
@@ -473,7 +484,7 @@ it("what helped is gated per (slide, answer), and no answer ever reaches a stude
     const stream = await SseStream.open(`/l/${lecture.id}/events`, cookie);
     try {
       const payload = JSON.stringify(await stream.next());
-      for (const text of ["Missed a step", ...HELPED]) expect(payload).not.toContain(text);
+      for (const text of ["Missed a step", "Notation", ...HELPED]) expect(payload).not.toContain(text);
     } finally {
       await stream.close();
     }

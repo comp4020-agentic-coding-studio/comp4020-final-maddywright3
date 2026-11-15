@@ -222,8 +222,8 @@ it("a created lecture (no deck) also takes one tap per browser per slide", async
   const state = await stream.next();
   expect(state.yourTapCount).toBe(2);
   expect((state as unknown as { yourSlides: unknown[] }).yourSlides).toEqual([
-    { deck: null, slide: 1, live: true },
-    { deck: null, slide: 2, live: true },
+    { deck: null, slide: 1, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    { deck: null, slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
   ]);
 });
 
