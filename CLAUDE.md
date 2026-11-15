@@ -27,6 +27,7 @@
 - Lecturer and student state travel on separate routes.
 - live and totalTaps only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
 - A slide's bar, its reason counts, and its notes are each gated on their own distinct-browser count (>= min_present), independent of present/shown — a lone returning visitor still sees a slide's history once it individually qualifies. (Refined in ADR 004 so a returning visitor still sees history.) A browser may always see its own counts.
+- Any derived number (a share, a ranking, the hardest slide) appears only when every count behind it is at least min_present. (Added for the lecturer dashboard: a share reveals its numerator.)
 - Student text (notes) is lecturer-only: never shown to students, never logged, never sent to a third party. Reasons come from a fixed list checked on the server; never add free-text input for students. (Changed in the ADR 004 amendment.)
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
 - Every page must work without JavaScript.
