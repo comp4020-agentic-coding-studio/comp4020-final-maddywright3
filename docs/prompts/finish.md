@@ -222,3 +222,95 @@ to docs/prompts/finish.md under "## Phase 5, completed" (its own commit).
 
 Commit in small steps with messages saying why. Ask before any dependency, CI change,
 deploy, push or tag.
+
+## Lecturer dashboard and after the hand checks
+
+Start a NEW subagent, separate from the Phase 5 UI agent that's still running. Don't
+touch that agent's branch or worktree.
+- New git worktree, branch lecture-features off the current main.
+- PORT=8083, APP_URL=http://localhost:8083, DATA_DIR=/tmp/meter-c.
+- Styling is the UI agent's job. Add class names and markup only; don't restyle
+  pages or edit its stylesheet. Once its branch merges, use its tokens.
+- No new dependencies and no CI changes. If you need one, stop and tell me.
+- When both are done: merge the UI branch first, rebase lecture-features onto main,
+  resolve conflicts, run pnpm check twice, and show me the merged diff before merging.
+  Ask before any push or deploy.
+
+First, save this message word for word to docs/prompts/finish.md under
+"## Lecturer dashboard and after the hand checks" (its own commit). Then add an
+ADR 004 amendment covering the timeline, one tap per slide, the dashboard, and the
+rejected per-student log and email, with options and costs (its own commit).
+Show me the plan, then wait for go.
+
+0. Diagnose first
+   The lecturer view on /l/demo/lecturer showed only "Slide 6", "2 people here,
+   0 lost right now" and the total, with no reasons or notes. Reproduce it with two
+   browsers tapping the same slide, choosing the same reason, and each writing a
+   note. Paste the actual lecturer stream payload. Tell me whether the threshold hid
+   them or it's a bug. If it's a bug, commit a failing test first.
+
+1. Lecturer dashboard (aggregates only, never per student)
+   - Current slide first: the live gauge, its reasons, its notes, readable on a projector.
+   - Summary tiles: people here, lost right now, distinct browsers lost this lecture,
+     the share of lost taps resolved with "I get it now", and the hardest slide.
+   - Bars per slide with reasons stacked inside, and "what helped" per slide.
+   - Notes feed grouped by slide, newest first, filterable by deck and slide. Each note
+     has a Hide button. No student labels, numbers or grouping by student anywhere.
+   - Every empty or hidden part says why, e.g. "Shows once 2 people have chosen a
+     reason on this slide", using the lecture's real threshold.
+   - Server-rendered SVG, no chart library. Text alternatives for every chart.
+     Works without JS, updates live.
+
+2. A help link the student chooses to use
+   - /new gets an optional "Where students can get help" link (https only, max 300
+     characters). The lecturer can edit it from the lecturer view (session checked).
+     The demo uses the course page:
+     https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/
+   - Once a browser has said it's lost on 3 or more slides in a lecture, that browser
+     alone sees "Want a hand with this? Your lecturer offers help here." with the link.
+   - This is worked out for that browser only. Never send it to the lecturer, never
+     log who saw it, never count it.
+
+3. Reasons grey out
+   - The chosen reason shows as selected (aria-pressed="true"). The others dim but
+     stay clickable so the answer can be changed while the tap is live. Contrast still
+     passes axe.
+
+4. Lecture timeline (stranger test: it didn't look like a live lecture)
+   - Under the slide: a horizontal timeline like a video scrubber, one segment per
+     slide labelled with its start time (0:00, 0:40, ...), and "Lecture time 3:20 / 6:00".
+   - A "Live" marker that moves in real time, and a "You" marker when browsing away.
+     Clicking a segment browses to that slide for this browser only.
+   - Segments shaded by distinct browsers lost there, with exactly the bars' threshold.
+     Below it, unshaded, not zero.
+   - /new lectures: a segment per slide reached so far, with the time the lecturer
+     moved to it, and no total length.
+   - Works without JS (segments are links), keyboard reachable, text alternative,
+     no horizontal scroll at 390x844, no animation with prefers-reduced-motion.
+
+5. Lecturer view link
+   - A small "Lecturer view" link on every lecture page. On the demo only, show
+     "Code: DEMO" next to it.
+
+6. After "I get it now"
+   - Show "Glad it clicked. You're no longer counted as lost." and hide the reasons.
+   - Then ask "What helped it click?" with a fixed list, checked on the server:
+     The next slide, Re-reading it, The example, Worked it out myself.
+   - Stored on the resolved tap. The lecturer sees counts per slide, gated per
+     (slide, answer) like reasons. Never in a student payload.
+
+7. One "I'm lost" per browser per slide (mock lecture: stop spam)
+   - One tap per (lecture, deck, slide) per browser, ever, in the same single SQL
+     statement as now. Still live for 60 seconds or until "I get it now".
+   - Replace the countdown with "You've said you're lost on this slide."
+   - Update the README-enforced test and the CLAUDE.md "one browser, one voice"
+     wording to match, as its own commit.
+
+Tests: no dashboard payload ever contains a browser ID, hash or per-student grouping;
+each empty state shows its threshold message; the help link only reaches a browser
+lost on 3+ slides and never the lecturer stream or the logs; an unknown "what helped"
+answer is rejected; timeline shading respects the threshold; clicking a segment doesn't
+move anyone else; a second tap on the same slide is ignored, a tap on another slide
+counts, and two parallel taps on one slide count once. Playwright once the UI branch
+has merged: the dashboard and timeline at both viewports, keyboard only, no overflow.
+Commit in small steps with messages saying why.
