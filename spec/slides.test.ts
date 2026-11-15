@@ -198,51 +198,83 @@ it("slide change on the demo lecture is rejected even with a valid lecturer sess
   expect(res.status).toBe(403);
 });
 
-it("a tap submitted with the previous slide, just after a change, is recorded against it", async () => {
-  const lecture = await createLectureAndLogIn("Grace window test");
+// ADR 004's amendment dropped the 5-second grace window: a tap now always
+// records whatever slide the viewer's own page says it's showing, with no
+// reconciliation against the lecture's "current" slide. Browsing to an
+// earlier slide and tapping there is a normal, expected use of the deck now
+// — not a race to be lenient about.
+it("a tap records the slide the request named, even if it differs from the live slide", async () => {
+  const lecture = await createLectureAndLogIn("Viewed-slide test");
   const tapCookie = await newBrowserCookie(lecture.id);
 
-  // Move to slide 2, then immediately submit a tap claiming slide 1 (the
-  // slide the student's page was still showing when the form was built) —
-  // within the 5s grace window, this should land on slide 1, not 2.
+  // Move the live slide to 2, then tap while still viewing slide 1 — a
+  // perfectly normal "I was on an earlier slide" tap under the new design.
   await fetch(new URL(`/l/${lecture.id}/lecturer/slide/next`, baseUrl), {
     method: "POST",
     headers: { cookie: lecture.lecturerCookie },
   });
 
-  await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+  const tapRes = await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
     method: "POST",
     headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
     body: "slide=1",
+    redirect: "manual",
   });
+  expect(tapRes.status).toBe(303);
+  expect(tapRes.headers.get("location")).toContain("slide=1");
 
   const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
   try {
     const state = await stream.next();
-    expect(state.slide).toBe(2); // the lecture has moved on
-    expect(state).toHaveProperty("yourTapCount");
+    expect(state.slide).toBe(2); // the live slide moved on regardless of the tap
   } finally {
     await stream.close();
   }
-  // The bar-per-slide assertion that this tap landed on slide 1 (not 2) is
-  // covered once Phase 2 exposes bars; for now this test only confirms the
-  // request is accepted (not rejected/misattributed to a 404 or 400), since
-  // the slide value isn't independently observable until bars exist.
 });
 
-it("a tap with a stale slide outside the grace window falls back to the current slide", async () => {
-  const lecture = await createLectureAndLogIn("Stale slide test");
+it("a tap with an out-of-range slide is rejected, not silently reattributed", async () => {
+  const lecture = await createLectureAndLogIn("Out-of-range slide test");
   const tapCookie = await newBrowserCookie(lecture.id);
 
-  // A slide index that was never current and has no recorded change event
-  // near it (far outside any 5s window) should simply fall back to current.
-  const res = await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+  // The demo's deck has a fixed size; a created lecture doesn't, so this
+  // checks the demo specifically, where a ceiling actually applies.
+  const res = await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie: await newBrowserCookie("demo"), "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=999",
+  });
+  expect(res.status).toBe(400);
+
+  // A non-numeric slide is rejected the same way.
+  const res2 = await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
     method: "POST",
     headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "slide=999",
-    redirect: "manual",
+    body: "slide=not-a-number",
   });
-  expect(res.status).toBe(303); // accepted, not rejected
+  expect(res2.status).toBe(400);
+});
+
+it("browsing to a different slide doesn't change the live slide for anyone else", async () => {
+  const otherCookie = await newBrowserCookie("demo");
+  const stream = await SseStream.open("/l/demo/events", otherCookie);
+  try {
+    const before = await stream.next();
+
+    // A GET with ?slide=N is pure browsing — it must never mutate shared
+    // state, only change what this one request's page shows.
+    const browseSlide = before.slide === 1 ? 2 : 1;
+    await fetch(new URL(`/l/demo?slide=${browseSlide}`, baseUrl), {
+      headers: { cookie: await newBrowserCookie("demo") },
+    });
+
+    // Give any (incorrect) broadcast a moment to arrive, then confirm the
+    // live slide this other stream sees is unchanged.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const after = await stream.next(300).catch(() => before); // no new frame is the expected, correct outcome
+    expect(after.slide).toBe(before.slide);
+  } finally {
+    await stream.close();
+  }
 });
 
 // The demo's slide is driven entirely by the shared clock, with no request

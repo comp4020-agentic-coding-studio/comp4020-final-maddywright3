@@ -104,7 +104,11 @@ it("a tap shows up on an open /events stream within 1 second", async () => {
   const other = await SseStream.open("/l/demo/events", otherCookie);
   try {
     const before = await stream.waitFor((s) => s.shown);
-    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+    await fetch(new URL("/l/demo/tap", baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: "slide=1",
+    });
     const after = await stream.waitFor((s) => s.shown && s.live! >= before.live! + 1, 1000);
     expect(after.live).toBeGreaterThanOrEqual(before.live! + 1);
   } finally {
@@ -121,7 +125,11 @@ it("the total taps count goes up on an open stream after a tap", async () => {
   const other = await SseStream.open("/l/demo/events", otherCookie);
   try {
     const before = await stream.waitFor((s) => s.shown);
-    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie: tapCookie } });
+    await fetch(new URL("/l/demo/tap", baseUrl), {
+      method: "POST",
+      headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
+      body: "slide=1",
+    });
     const after = await stream.waitFor((s) => s.shown && s.totalTaps! > before.totalTaps!, 1000);
     expect(after.totalTaps).toBe(before.totalTaps! + 1);
   } finally {
@@ -181,7 +189,11 @@ it(
     const other = await SseStream.open("/l/demo/events", otherCookie);
     try {
       await stream.waitFor((s) => s.shown);
-      await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+      await fetch(new URL("/l/demo/tap", baseUrl), {
+        method: "POST",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: "slide=1",
+      });
       const afterTap = await stream.waitFor((s) => s.shown, 1000);
       expect(afterTap.live).toBeGreaterThanOrEqual(1);
 

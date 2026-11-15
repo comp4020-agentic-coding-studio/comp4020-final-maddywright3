@@ -121,12 +121,20 @@ it("a second tap within 60 seconds from the same browser doesn't change the coun
   const before = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
   const beforeCount = Number(before.match(/Total taps: (\d+)/)?.[1]);
 
-  await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+  await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
   const afterFirst = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
   const afterFirstCount = Number(afterFirst.match(/Total taps: (\d+)/)?.[1]);
   expect(afterFirstCount).toBe(beforeCount + 1);
 
-  await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+  await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
   const afterSecond = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
   const afterSecondCount = Number(afterSecond.match(/Total taps: (\d+)/)?.[1]);
   expect(afterSecondCount).toBe(afterFirstCount);
@@ -283,7 +291,11 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
   const lecturerStream = await trackedStream(`/l/${lectureId}/lecturer/events`, lecturerCookie);
   await lecturerStream.next();
 
-  await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), { method: "POST", headers: { cookie: tapCookie } });
+  await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
+    method: "POST",
+    headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
 
   // The student's own open stream: a tap just happened, but present is
   // still below min_present, so no live count or total should be visible —
@@ -327,7 +339,11 @@ it("the per-minute timeline shows Australia/Sydney time", async () => {
   await otherB.next();
 
   const tapTime = new Date();
-  await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
+  await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
 
   const rightCode = await fetch(new URL("/l/demo/lecturer", baseUrl), {
     method: "POST",
