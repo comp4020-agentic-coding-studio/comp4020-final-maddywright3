@@ -124,7 +124,7 @@ it("a second tap within 60 seconds from the same browser doesn't change the coun
   await fetch(new URL("/l/demo/tap", baseUrl), {
     method: "POST",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "slide=1",
+    body: "deck=week-4&slide=1",
   });
   const afterFirst = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
   const afterFirstCount = Number(afterFirst.match(/Total taps: (\d+)/)?.[1]);
@@ -133,7 +133,7 @@ it("a second tap within 60 seconds from the same browser doesn't change the coun
   await fetch(new URL("/l/demo/tap", baseUrl), {
     method: "POST",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "slide=1",
+    body: "deck=week-4&slide=1",
   });
   const afterSecond = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
   const afterSecondCount = Number(afterSecond.match(/Total taps: (\d+)/)?.[1]);
@@ -294,7 +294,7 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
   await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
     method: "POST",
     headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "slide=1",
+    body: "deck=week-4&slide=1",
   });
 
   // The student's own open stream: a tap just happened, but present is
@@ -342,7 +342,7 @@ it("the per-minute timeline shows Australia/Sydney time", async () => {
   await fetch(new URL("/l/demo/tap", baseUrl), {
     method: "POST",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "slide=1",
+    body: "deck=week-4&slide=1",
   });
 
   const rightCode = await fetch(new URL("/l/demo/lecturer", baseUrl), {

@@ -297,3 +297,100 @@ it(
   },
   45_000,
 );
+
+// Two decks, added after the first slide-navigation design: week-4 is the
+// one with a shared clock (the demo's "live" slide), week-6 is a second deck
+// that's only ever browsed, switched between via a menu/?deck= query param.
+// Both decks' markup is always present in the page (toggled via `hidden`, so
+// switching is a pure visibility change with no fetch) — so "which deck is
+// showing" is read from the deck wrapper's `hidden` attribute, not from
+// whether its text appears anywhere in the HTML at all.
+function deckIsVisible(html: string, deckId: string): boolean {
+  const match = html.match(new RegExp(`<div class="deck" data-deck="${deckId}"( hidden)?>`));
+  if (!match) throw new Error(`no deck wrapper found for ${deckId}`);
+  return match[1] === undefined;
+}
+
+it("switching to week-6 shows its own content, not week-4's", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const html = await (await fetch(new URL("/l/demo?deck=week-6", baseUrl), { headers: { cookie } })).text();
+  expect(deckIsVisible(html, "week-6")).toBe(true);
+  expect(deckIsVisible(html, "week-4")).toBe(false);
+
+  // No-JS path: a plain GET with the query param behaves identically, since
+  // the server renders every deck's content and toggles visibility —
+  // there's no separate "JS" rendering path to diverge from this.
+  const noJsHtml = await (await fetch(new URL("/l/demo?deck=week-6", baseUrl))).text();
+  expect(deckIsVisible(noJsHtml, "week-6")).toBe(true);
+});
+
+it("a tap while viewing week-6 records that deck; a tap on the live week-4 slide records week-4", async () => {
+  const cookieA = await newBrowserCookie("demo");
+  const cookieB = await newBrowserCookie("demo");
+
+  const week6Res = await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie: cookieA, "content-type": "application/x-www-form-urlencoded" },
+    body: "deck=week-6&slide=1",
+    redirect: "manual",
+  });
+  expect(week6Res.status).toBe(303);
+  expect(week6Res.headers.get("location")).toContain("deck=week-6");
+
+  const week4Res = await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie: cookieB, "content-type": "application/x-www-form-urlencoded" },
+    body: "deck=week-4&slide=1",
+    redirect: "manual",
+  });
+  expect(week4Res.status).toBe(303);
+  expect(week4Res.headers.get("location")).toContain("deck=week-4");
+});
+
+it("an invalid deck id is rejected on a tap, and falls back to the live deck on a page view", async () => {
+  const cookie = await newBrowserCookie("demo");
+
+  const tapRes = await fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "deck=not-a-real-deck&slide=1",
+  });
+  expect(tapRes.status).toBe(400);
+
+  // A page view with an unrecognized deck id falls back to the live deck
+  // (week-4) rather than erroring, same discipline as an invalid slide
+  // number already falls back rather than 404ing a whole page.
+  const html = await (await fetch(new URL("/l/demo?deck=not-a-real-deck", baseUrl), { headers: { cookie } })).text();
+  expect(deckIsVisible(html, "week-4")).toBe(true);
+});
+
+it("Back to live from week-6 returns to week-4's live slide", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const html = await (await fetch(new URL("/l/demo?deck=week-6", baseUrl), { headers: { cookie } })).text();
+  const href = html.match(/<a href="([^"]*)" id="back-to-live-link"/)?.[1];
+  expect(href).toBeDefined();
+  expect(href).not.toContain("deck="); // bare /l/demo, no deck param at all — means "the live deck"
+
+  const backHtml = await (await fetch(new URL(href!, baseUrl), { headers: { cookie } })).text();
+  expect(deckIsVisible(backHtml, "week-4")).toBe(true);
+  expect(deckIsVisible(backHtml, "week-6")).toBe(false);
+});
+
+it("both real diagrams render as accessible inline SVG", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const week4Html = await (
+    await fetch(new URL("/l/demo?deck=week-4&slide=10", baseUrl), { headers: { cookie } })
+  ).text();
+  expect(week4Html).toContain("<svg");
+  expect(week4Html).toContain('role="img"');
+  expect(week4Html).toMatch(/<title id="skill-loading-title">/);
+  expect(week4Html).toMatch(/<desc id="skill-loading-desc">/);
+
+  const week6Html = await (
+    await fetch(new URL("/l/demo?deck=week-6&slide=9", baseUrl), { headers: { cookie } })
+  ).text();
+  expect(week6Html).toContain("<svg");
+  expect(week6Html).toContain('role="img"');
+  expect(week6Html).toMatch(/<title id="actions-run-title">/);
+  expect(week6Html).toMatch(/<desc id="actions-run-desc">/);
+});

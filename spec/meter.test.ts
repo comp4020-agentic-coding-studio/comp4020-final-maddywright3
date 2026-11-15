@@ -60,7 +60,7 @@ it("posting a tap to /l/demo increases the count by one", async () => {
     const res = await fetch(new URL("/l/demo/tap", baseUrl), {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: "slide=1",
+      body: "deck=week-4&slide=1",
     });
     expect(res.status).toBe(200); // fetch follows the 303 redirect by default
     const after = tapCountFrom(await res.text());
