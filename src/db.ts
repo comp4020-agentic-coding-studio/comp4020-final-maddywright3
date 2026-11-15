@@ -39,12 +39,6 @@ if (!lectureColumns.some((c) => c.name === "code_salt")) {
 if (!lectureColumns.some((c) => c.name === "current_slide")) {
   db.exec("ALTER TABLE lectures ADD COLUMN current_slide INTEGER NOT NULL DEFAULT 1");
 }
-if (!lectureColumns.some((c) => c.name === "previous_slide")) {
-  db.exec("ALTER TABLE lectures ADD COLUMN previous_slide INTEGER");
-}
-if (!lectureColumns.some((c) => c.name === "slide_changed_at")) {
-  db.exec("ALTER TABLE lectures ADD COLUMN slide_changed_at TEXT");
-}
 
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
@@ -89,8 +83,6 @@ export interface Lecture {
   code_hash: string | null;
   code_salt: string | null;
   current_slide: number;
-  previous_slide: number | null;
-  slide_changed_at: string | null;
 }
 
 export interface Tap {
@@ -212,11 +204,6 @@ export function lecturerSessionValid(token: string, lectureId: string): boolean 
   return row !== undefined;
 }
 
-// Records what the slide *was* (previous_slide) and *when* it changed
-// (slide_changed_at), not just the new value — a tap already in flight when
-// the lecturer advances needs both to be attributed correctly.
-export function setCurrentSlide(lectureId: string, newSlide: number, oldSlide: number): void {
-  db.prepare(
-    "UPDATE lectures SET current_slide = ?, previous_slide = ?, slide_changed_at = ? WHERE id = ?",
-  ).run(newSlide, oldSlide, new Date().toISOString(), lectureId);
+export function setCurrentSlide(lectureId: string, newSlide: number): void {
+  db.prepare("UPDATE lectures SET current_slide = ? WHERE id = ?").run(newSlide, lectureId);
 }
