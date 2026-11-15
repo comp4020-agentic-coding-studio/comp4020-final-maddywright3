@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
     "check:evidence": "node scripts/check-evidence.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "load": "node scripts/load-test.ts"
   },
   "dependencies": {
     "marked": "^18.2.0"
