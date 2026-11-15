@@ -32,6 +32,19 @@ export function currentSlideIndex(lecture: Lecture): number {
   return lecture.id === "demo" ? demoSlideIndex(lecture) : lecture.current_slide;
 }
 
+// For a clock-driven lecture (the demo), milliseconds until the slide
+// advances on its own — so a timer can be armed to push a broadcast right
+// then, the same way a live tap's 60s fade is scheduled rather than only
+// recomputed when something else happens to trigger a broadcast. undefined
+// for a lecturer-driven lecture, where every slide change already broadcasts
+// from the handler that makes it.
+export function msUntilNextSlideChange(lecture: Lecture): number | undefined {
+  if (lecture.id !== "demo") return undefined;
+  const elapsed = Date.now() - new Date(lecture.created_at).getTime();
+  const intoCurrentSlide = Math.max(0, elapsed) % SLIDE_DURATION_MS;
+  return SLIDE_DURATION_MS - intoCurrentSlide;
+}
+
 // A submitted slide index is trusted only if it matches the slide the server
 // currently has recorded, or the previous one if the change happened within
 // the last 5 seconds — a tap already in flight when the lecturer advances

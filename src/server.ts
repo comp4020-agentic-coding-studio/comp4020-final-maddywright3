@@ -30,6 +30,7 @@ import {
   removeConnection,
   removeLecturerConnection,
   scheduleFade,
+  scheduleSlideAdvance,
   startHeartbeat,
 } from "./realtime.ts";
 import { currentSlideIndex, demoSlides, resolveTapSlide } from "./slides.ts";
@@ -342,6 +343,7 @@ function handleEvents(id: string, req: IncomingMessage, res: ServerResponse): vo
   logAction("stream_open", id, browserId);
   broadcast(id);
   scheduleFade(id);
+  scheduleSlideAdvance(id);
 
   req.on("close", () => {
     removeConnection(id, browserId, res);
@@ -834,6 +836,7 @@ const server = createServer(async (req, res) => {
 });
 
 startHeartbeat();
+scheduleSlideAdvance("demo");
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on 0.0.0.0:${PORT}`);

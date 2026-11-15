@@ -1,6 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { getLecture, hasLiveTap, liveTapInfo, perMinuteTimeline, tapCount, yourTapCount } from "./db.ts";
-import { currentSlideIndex } from "./slides.ts";
+import { currentSlideIndex, msUntilNextSlideChange } from "./slides.ts";
 
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -41,6 +41,7 @@ const connections = new Map<string, Map<string, Set<ServerResponse>>>();
 // grader) opening the dashboard never counts as a student in presence.
 const lecturerConnections = new Map<string, Set<ServerResponse>>();
 const fadeTimers = new Map<string, NodeJS.Timeout>();
+const slideTimers = new Map<string, NodeJS.Timeout>();
 
 function browsersFor(lectureId: string): Map<string, Set<ServerResponse>> {
   let byBrowser = connections.get(lectureId);
@@ -163,6 +164,27 @@ export function scheduleFade(lectureId: string): void {
   }, delay);
   timer.unref();
   fadeTimers.set(lectureId, timer);
+}
+
+// The demo's slide advances on the shared clock with no request to trigger
+// it — no tap, no connect, nothing — so without this, open streams would
+// only see the new slide once something else happened to cause a broadcast
+// (the bug this fixes: slides only updated on page reload). Mirrors
+// scheduleFade's shape: one timer per lecture, armed for exactly when the
+// state will next change, re-arming itself after it fires.
+export function scheduleSlideAdvance(lectureId: string): void {
+  if (slideTimers.has(lectureId)) return;
+  const lecture = getLecture(lectureId);
+  if (!lecture) return;
+  const delay = msUntilNextSlideChange(lecture);
+  if (delay === undefined) return;
+  const timer = setTimeout(() => {
+    slideTimers.delete(lectureId);
+    broadcast(lectureId);
+    scheduleSlideAdvance(lectureId);
+  }, delay);
+  timer.unref();
+  slideTimers.set(lectureId, timer);
 }
 
 export function startHeartbeat(): void {

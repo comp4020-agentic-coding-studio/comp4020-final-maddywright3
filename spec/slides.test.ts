@@ -244,3 +244,24 @@ it("a tap with a stale slide outside the grace window falls back to the current 
   });
   expect(res.status).toBe(303); // accepted, not rejected
 });
+
+// The demo's slide is driven entirely by the shared clock, with no request
+// (tap, connect, lecturer action) to trigger the change — so an open stream
+// must see it pushed on its own, the same way a live tap's 60s fade pushes
+// without a new tap. Bug this guards against: slides only updated when
+// something else happened to cause a broadcast (e.g. a page reload).
+it(
+  "the demo's slide change reaches an open stream on its own, with no tap or reload",
+  async () => {
+    const cookie = await newBrowserCookie("demo");
+    const stream = await SseStream.open("/l/demo/events", cookie);
+    try {
+      const before = await stream.next();
+      const after = await stream.waitFor((s) => s.slide !== before.slide, 41_000);
+      expect(after.slide).not.toBe(before.slide);
+    } finally {
+      await stream.close();
+    }
+  },
+  45_000,
+);
