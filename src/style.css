@@ -220,11 +220,12 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-2);
 }
 
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   cursor: default;
   background: var(--surface-2);
   color: var(--text-muted);
@@ -493,12 +494,13 @@ svg.gauge-bar {
   color: var(--on-accent);
 }
 
-.tap-button:hover:not(:disabled) {
+.tap-button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--accent);
   color: var(--on-accent);
 }
 
-.tap-button:disabled {
+.tap-button:disabled,
+.tap-button[aria-disabled="true"] {
   border-color: var(--border);
   background: var(--surface-2);
   color: var(--text-muted);

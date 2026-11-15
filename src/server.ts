@@ -963,22 +963,32 @@ ${GAUGE_CLIENT_JS}
           var countdownEl2 = document.getElementById("tap-countdown");
           var resolveFormEl = document.getElementById("resolve-form");
           if (state.youAreCounted) {
-            button.disabled = true;
+            setTapEnabled(false);
             button.textContent = "You're counted";
             if (countdownEl2) countdownEl2.hidden = false;
             if (resolveFormEl) resolveFormEl.hidden = false;
             if (typeof state.liveForMs === "number") startCountdown(state.liveForMs);
           } else {
-            button.disabled = false;
+            setTapEnabled(true);
             button.textContent = "I'm lost";
             stopCountdown();
             if (countdownEl2) {
               countdownEl2.hidden = true;
               countdownEl2.textContent = "";
             }
-            if (resolveFormEl) resolveFormEl.hidden = true;
+            if (resolveFormEl) {
+              // Hiding a focused control drops focus to <body>; hand it to
+              // the tap button, the next thing a keyboard user needs.
+              var hadFocus = resolveFormEl.contains(document.activeElement);
+              resolveFormEl.hidden = true;
+              if (hadFocus) button.focus();
+            }
           }
+          var afterTap = document.querySelector(".after-tap");
+          var focusInAfterTap = !state.youAreCounted && afterTap && afterTap.contains(document.activeElement)
+            && (document.activeElement.closest("#reasons") || document.activeElement.closest("#note-form"));
           renderReasonsAndNote(state.youAreCounted);
+          if (focusInAfterTap) button.focus();
         }
 
         var source = null;
@@ -995,10 +1005,22 @@ ${GAUGE_CLIENT_JS}
         }
         connect();
 
+        // Once the script runs, the button is never \`disabled\`: a disabled
+        // button can't hold focus, so a keyboard user who pressed Enter on it
+        // was dropped back to the top of the page. aria-disabled keeps it
+        // focusable and still says it's unavailable; presses are ignored here.
+        function setTapEnabled(enabled) {
+          button.disabled = false;
+          if (enabled) button.removeAttribute("aria-disabled");
+          else button.setAttribute("aria-disabled", "true");
+        }
+        setTapEnabled(!button.disabled);
+
         form.addEventListener("submit", function (event) {
           event.preventDefault();
+          if (button.getAttribute("aria-disabled") === "true") return;
           feedback.textContent = "";
-          button.disabled = true;
+          setTapEnabled(false);
           button.textContent = "Sending...";
           fetch(form.action, {
             method: "POST",
@@ -1012,7 +1034,7 @@ ${GAUGE_CLIENT_JS}
               button.textContent = "You're counted";
             })
             .catch(function () {
-              button.disabled = false;
+              setTapEnabled(true);
               button.textContent = "I'm lost";
               feedback.textContent = "Couldn't send. Try again.";
             });
