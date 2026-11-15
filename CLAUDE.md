@@ -34,6 +34,7 @@
 - Every activity log line covers at least min_present actions. Never log or show a single student's action to the lecturer. (ADR 006.)
 - Lecturer-supplied slide text is escaped. No raw HTML, no images, nothing loaded from elsewhere.
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
+- Every page sends the CSP header. Never weaken it to make something work. (Enforces the no-third-party rule in the browser.)
 - Every page must work without JavaScript.
 
 ## Ask first
