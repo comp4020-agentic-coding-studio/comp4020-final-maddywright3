@@ -31,7 +31,7 @@ async function createLecture(): Promise<{ id: string }> {
   const res = await fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "title=Load+test+lecture",
+    body: "title=Load+test",
   });
   const html = await res.text();
   const id = html.match(/\/l\/([a-f0-9]+)/)?.[1];
@@ -45,6 +45,7 @@ class SseStream {
   private buffer = "";
   private controller = new AbortController();
   private latest: MeterState | undefined;
+  private latestAt = 0;
   private waiters: { predicate: (s: MeterState) => boolean; resolve: () => void }[] = [];
 
   private constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
@@ -76,6 +77,7 @@ class SseStream {
           if (!dataLine) continue;
           const state = JSON.parse(dataLine.slice("data: ".length)) as MeterState;
           this.latest = state;
+          this.latestAt = Date.now();
           this.waiters = this.waiters.filter((w) => {
             if (w.predicate(state)) {
               w.resolve();
@@ -97,7 +99,10 @@ class SseStream {
   // already have landed, making a wait that starts its clock at call time
   // measure nothing. Passing a fixed `since` measures the real round trip.
   waitFor(predicate: (s: MeterState) => boolean, timeoutMs: number, since: number): Promise<number> {
-    if (this.latest && predicate(this.latest)) return Promise.resolve(Date.now() - since);
+    // A frame that already arrived counts from when it arrived, not from
+    // now: otherwise every stream reports the moment the last of the 50
+    // requests finished, and min, median and max all collapse to one value.
+    if (this.latest && predicate(this.latest)) return Promise.resolve(this.latestAt - since);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timed out")), timeoutMs);
       this.waiters.push({
@@ -138,7 +143,7 @@ async function main(): Promise<void> {
   console.log(`opened ${streams.length} SSE connections`);
 
   const presentLatencies = await Promise.all(
-    streams.map((s) => s.waitFor((state) => state.present >= BROWSER_COUNT, 30_000, connectStart)),
+    streams.map((s) => s.waitFor((state) => state.present === BROWSER_COUNT, 30_000, connectStart)),
   );
   stats("time until present === 50 (from first connection attempt)", presentLatencies);
 
@@ -155,7 +160,7 @@ async function main(): Promise<void> {
   console.log(`fired ${cookies.length} taps`);
 
   const liveLatencies = await Promise.all(
-    streams.map((s) => s.waitFor((state) => state.shown === true && state.live! >= BROWSER_COUNT, 30_000, tapStart)),
+    streams.map((s) => s.waitFor((state) => state.shown === true && state.live === BROWSER_COUNT, 30_000, tapStart)),
   );
   stats("time until live === 50 (from first tap sent)", liveLatencies);
 
