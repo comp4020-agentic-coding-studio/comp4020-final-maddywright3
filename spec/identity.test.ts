@@ -3,11 +3,18 @@ import { newBrowserCookie } from "./test-helpers.ts";
 
 const baseUrl = inject("baseUrl");
 
+interface Bar {
+  deck: string | null;
+  slide: number;
+  distinctBrowsers: number;
+}
+
 interface MeterState {
   present: number;
   live: number;
   shown: boolean;
   totalTaps: number;
+  bars: Bar[];
   yourTapCount: number;
   youAreCounted: boolean;
 }
@@ -240,13 +247,13 @@ it("a browser holding both cookies gets student state on /l/:id/events and count
 
   // The lecturer's own browser opens the STUDENT stream (/l/demo/events,
   // not /l/demo/lecturer/events) while also holding a valid lsess cookie.
-  // It must get student state (yourTapCount/youAreCounted, not a timeline)
-  // and must count as present — the route decides the state, not whichever
-  // cookies happen to be on the request.
+  // It must get student state (yourTapCount/youAreCounted) and must count
+  // as present — the route decides the state, not whichever cookies happen
+  // to be on the request.
   const studentStream = await trackedStream("/l/demo/events", bothCookies);
   const studentFrame = await studentStream.next();
   expect(studentFrame).toHaveProperty("youAreCounted");
-  expect(studentFrame).not.toHaveProperty("timeline");
+  expect(studentFrame).toHaveProperty("bars"); // ungated field, present either way
 
   const updated = await other.waitFor((s) => s.present === initial.present + 1);
   expect(updated.present).toBe(initial.present + 1);
@@ -300,86 +307,40 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
   // The student's own open stream: a tap just happened, but present is
   // still below min_present, so no live count or total should be visible —
   // only the fields a hidden gauge needs (present, shown, this browser's
-  // own tap bookkeeping).
+  // own tap bookkeeping, and bars — gated separately, per slide). Only one
+  // distinct browser has tapped this lecture's slide 1, well below its
+  // min_present of 5, so that slide's bar hasn't individually qualified
+  // either — bars is empty, not just the live/total fields.
   const afterTapOnStream = await stream.next(1000);
   expect(afterTapOnStream.shown).toBe(false);
   expect(afterTapOnStream).not.toHaveProperty("live");
   expect(afterTapOnStream).not.toHaveProperty("totalTaps");
+  expect(afterTapOnStream.bars).toEqual([]);
 
   // The student's own page render (server-rendered HTML), same lecture.
   const studentHtml = await (
     await fetch(new URL(`/l/${lectureId}`, baseUrl), { headers: { cookie: tapCookie } })
   ).text();
   expect(studentHtml).not.toMatch(/Total taps: \d+/);
+  expect(studentHtml).not.toContain('<table class="bars"');
 
   // The lecturer dashboard, both its stream push and its page render.
   const lecturerFrame = await lecturerStream.next(1000);
   expect(lecturerFrame.shown).toBe(false);
   expect(lecturerFrame).not.toHaveProperty("live");
   expect(lecturerFrame).not.toHaveProperty("totalTaps");
-  expect(lecturerFrame).not.toHaveProperty("timeline");
+  expect(lecturerFrame.bars).toEqual([]);
 
   const lecturerHtml = await (
     await fetch(new URL(`/l/${lectureId}/lecturer`, baseUrl), { headers: { cookie: lecturerCookie } })
   ).text();
   expect(lecturerHtml).not.toMatch(/Total taps: \d+/);
-  expect(lecturerHtml).not.toContain('<table class="timeline"');
+  expect(lecturerHtml).not.toContain('<table class="bars"');
 });
 
-it("the per-minute timeline shows Australia/Sydney time", async () => {
-  const cookie = await newBrowserCookie("demo");
-  // The timeline is only sent at/above min_present (2) — see the privacy
-  // test above — so two otherwise-unused presence connections need to be
-  // open before the lecturer dashboard will render it at all.
-  const otherCookieA = await newBrowserCookie("demo");
-  const otherCookieB = await newBrowserCookie("demo");
-  const otherA = await trackedStream("/l/demo/events", otherCookieA);
-  const otherB = await trackedStream("/l/demo/events", otherCookieB);
-  await otherA.next();
-  await otherB.next();
-
-  const tapTime = new Date();
-  await fetch(new URL("/l/demo/tap", baseUrl), {
-    method: "POST",
-    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
-  });
-
-  const rightCode = await fetch(new URL("/l/demo/lecturer", baseUrl), {
-    method: "POST",
-    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "code=DEMO",
-    redirect: "manual",
-  });
-  const lsessCookie = rightCode.headers
-    .getSetCookie()
-    .find((c) => c.startsWith("lsess="))
-    ?.split(";")[0];
-  const dashboardHtml = await (
-    await fetch(new URL("/l/demo/lecturer", baseUrl), { headers: { cookie: `${cookie}; ${lsessCookie}` } })
-  ).text();
-
-  // The bucket this tap landed in, truncated to the minute (matching the
-  // server's strftime('%Y-%m-%dT%H:%M:00Z', ...) grouping), formatted two
-  // ways: as the dashboard should render it (Sydney) and as it must NOT
-  // (server/UTC). If the dashboard used UTC instead of Sydney time, this
-  // test only actually distinguishes the two when they render different
-  // text, so skip at the rare instant they'd coincide.
-  const bucket = new Date(tapTime);
-  bucket.setUTCSeconds(0, 0);
-  const sydneyLabel = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "Australia/Sydney",
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(bucket);
-  const utcLabel = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "UTC",
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(bucket);
-
-  if (sydneyLabel === utcLabel) return; // can't distinguish right now; avoid a flaky false failure
-
-  expect(dashboardHtml).toContain(sydneyLabel);
-  expect(dashboardHtml).not.toContain(utcLabel);
-});
+// The per-minute timeline this test covered is retired by ADR 004: "the
+// per-minute timeline is removed... a minute with one tap in it is a
+// confession." Bars per (deck, slide) replace it (spec/slides.test.ts), and
+// bars have no per-minute timestamp to format in any timezone, so this test
+// has nothing left to check — removed along with the feature, in the same
+// commit, not loosened.

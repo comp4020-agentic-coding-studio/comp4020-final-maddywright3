@@ -3,10 +3,17 @@ import { newBrowserCookie } from "./test-helpers.ts";
 
 const baseUrl = inject("baseUrl");
 
+interface Bar {
+  deck: string | null;
+  slide: number;
+  distinctBrowsers: number;
+}
+
 interface MeterState {
   present: number;
   shown: boolean;
   slide: number;
+  bars: Bar[];
   live?: number;
   totalTaps?: number;
   yourTapCount: number;
@@ -393,4 +400,113 @@ it("both real diagrams render as accessible inline SVG", async () => {
   expect(week6Html).toContain('role="img"');
   expect(week6Html).toMatch(/<title id="actions-run-title">/);
   expect(week6Html).toMatch(/<desc id="actions-run-desc">/);
+});
+
+// Phase 2: bars per slide — distinct browsers who've ever tapped a slide,
+// gated independently of present/shown (ADR 004's refined privacy rule).
+it("tapping, undoing, and tapping the same slide again counts once toward its bar", async () => {
+  const lecture = await createLectureAndLogIn("Bars dedup test");
+  const tapCookie = await newBrowserCookie(lecture.id);
+  // Enough other browsers present+tapping the same slide to clear this
+  // lecture's min_present (5), so the bar actually surfaces to check.
+  const otherCookies = await Promise.all(
+    Array.from({ length: 4 }, () => newBrowserCookie(lecture.id)),
+  );
+
+  async function tapSlide1(cookie: string) {
+    await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: "slide=1",
+    });
+  }
+
+  await tapSlide1(tapCookie);
+  // A second tap from the same browser within 60s is deduped by the
+  // existing tapIfNotRecentlyTapped logic — shouldn't change the bar either
+  // way, but exercising it here confirms the dedup and the bar count agree.
+  await tapSlide1(tapCookie);
+  for (const cookie of otherCookies) await tapSlide1(cookie);
+
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
+  try {
+    const state = await stream.waitFor((s) => s.bars.length > 0, 2000);
+    const slide1Bar = state.bars.find((b) => b.slide === 1);
+    expect(slide1Bar).toBeDefined();
+    expect(slide1Bar!.distinctBrowsers).toBe(5); // tapCookie + 4 others, not 6
+  } finally {
+    await stream.close();
+  }
+});
+
+it("a slide below min_present distinct browsers sends no bar for it", async () => {
+  const lecture = await createLectureAndLogIn("Bars threshold test");
+  const tapCookie = await newBrowserCookie(lecture.id);
+
+  await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+    method: "POST",
+    headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
+
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
+  try {
+    const state = await stream.next();
+    // Only one distinct browser has tapped slide 1, well below this
+    // lecture's default min_present (5) — no bar for it at all.
+    expect(state.bars.find((b) => b.slide === 1)).toBeUndefined();
+  } finally {
+    await stream.close();
+  }
+});
+
+it("a lone returning browser still receives bars for slides that independently qualify", async () => {
+  const lecture = await createLectureAndLogIn("Bars independent-of-presence test");
+  const otherCookies = await Promise.all(
+    Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)),
+  );
+  for (const cookie of otherCookies) {
+    await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: "slide=1",
+    });
+  }
+
+  // A single, otherwise-unused browser opens the stream alone — present is
+  // 1, well below min_present, so shown is false — but the bar still
+  // cleared its own threshold independently, and this browser's own tap
+  // bookkeeping is still there regardless.
+  const loneCookie = await newBrowserCookie(lecture.id);
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, loneCookie);
+  try {
+    const state = await stream.next();
+    expect(state.shown).toBe(false);
+    expect(state.bars.find((b) => b.slide === 1)?.distinctBrowsers).toBe(5);
+    expect(state).toHaveProperty("yourTapCount");
+  } finally {
+    await stream.close();
+  }
+});
+
+it("no gated field (live, total, or any bar below its own threshold) appears below the thresholds", async () => {
+  const lecture = await createLectureAndLogIn("Bars privacy test");
+  const tapCookie = await newBrowserCookie(lecture.id);
+
+  await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+    method: "POST",
+    headers: { cookie: tapCookie, "content-type": "application/x-www-form-urlencoded" },
+    body: "slide=1",
+  });
+
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
+  try {
+    const state = await stream.next();
+    const payload = JSON.stringify(state);
+    expect(payload).not.toContain('"live"');
+    expect(payload).not.toContain('"totalTaps"');
+    expect(state.bars).toEqual([]); // no slide here has cleared its own threshold
+  } finally {
+    await stream.close();
+  }
 });
