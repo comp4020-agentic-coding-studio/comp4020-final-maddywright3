@@ -9,6 +9,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 COPY src/ src/
+COPY slides/ slides/
 COPY README.md ./
 COPY docs/ docs/
 
