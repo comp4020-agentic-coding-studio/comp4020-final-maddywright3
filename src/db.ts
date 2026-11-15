@@ -168,18 +168,23 @@ export function hasLiveTap(lectureId: string, browserId: string, sinceIso: strin
   return row !== undefined;
 }
 
-export interface MinuteBucket {
-  minute: string;
-  count: number;
+export interface SlideTapCount {
+  deck: string | null;
+  slide: number;
+  distinctBrowsers: number;
 }
 
-export function perMinuteTimeline(lectureId: string): MinuteBucket[] {
+// Distinct browsers per (deck, slide) — grouped by deck too, not slide alone,
+// so week-4's slide 3 and week-6's slide 3 are counted separately. No gating
+// here; that's realtime.ts's job, same separation as the rest of db.ts.
+export function slideTapCounts(lectureId: string): SlideTapCount[] {
   return db
     .prepare(
-      `SELECT strftime('%Y-%m-%dT%H:%M:00Z', created_at) AS minute, COUNT(*) AS count
-       FROM taps WHERE lecture_id = ? GROUP BY minute ORDER BY minute ASC`,
+      `SELECT deck, slide, COUNT(DISTINCT browser_id) AS distinctBrowsers
+       FROM taps WHERE lecture_id = ? AND slide IS NOT NULL
+       GROUP BY deck, slide`,
     )
-    .all(lectureId) as unknown as MinuteBucket[];
+    .all(lectureId) as unknown as SlideTapCount[];
 }
 
 export function browserExists(id: string): boolean {
