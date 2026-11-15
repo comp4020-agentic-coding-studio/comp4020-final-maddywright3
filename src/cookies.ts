@@ -6,7 +6,15 @@ export function parseCookies(header: string | null | undefined): Record<string, 
     if (eq === -1) continue;
     const name = part.slice(0, eq).trim();
     const value = part.slice(eq + 1).trim();
-    if (name) cookies[name] = decodeURIComponent(value);
+    if (!name) continue;
+    try {
+      // A malformed percent-encoding (e.g. a lone %E0) throws rather than
+      // just failing to decode — treat it as if this cookie weren't sent,
+      // not as a reason to take the whole request down.
+      cookies[name] = decodeURIComponent(value);
+    } catch {
+      // skip this one cookie; the caller sees it as missing/unknown
+    }
   }
   return cookies;
 }

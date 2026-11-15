@@ -97,6 +97,18 @@ const notFoundResponse = (): Response =>
 
 const isHttps = (req: Request): boolean => req.headers.get("x-forwarded-proto") === "https";
 
+// decodeURIComponent throws on malformed percent-encoding (a lone %E0 isn't
+// valid UTF-8) rather than failing softly, and a lecture id comes straight
+// from the URL path — so a bad request must not look like a bug that takes
+// the whole process down. undefined means "treat this as not found".
+function safeDecode(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleHome(): Promise<Response> {
   const body = `
     <h1>Confusion meter</h1>
@@ -569,14 +581,26 @@ async function route(req: Request): Promise<Response> {
   if (method === "POST" && pathname === "/new") return handleNewPost(req);
 
   const lecturerMatch = pathname.match(/^\/l\/([^/]+)\/lecturer$/);
-  if (method === "GET" && lecturerMatch) return handleLecturerGet(decodeURIComponent(lecturerMatch[1]), req);
-  if (method === "POST" && lecturerMatch) return handleLecturerPost(decodeURIComponent(lecturerMatch[1]), req);
+  if (lecturerMatch) {
+    const id = safeDecode(lecturerMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    if (method === "GET") return handleLecturerGet(id, req);
+    if (method === "POST") return handleLecturerPost(id, req);
+  }
 
   const lectureMatch = pathname.match(/^\/l\/([^/]+)$/);
-  if (method === "GET" && lectureMatch) return handleLecture(decodeURIComponent(lectureMatch[1]), req);
+  if (method === "GET" && lectureMatch) {
+    const id = safeDecode(lectureMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleLecture(id, req);
+  }
 
   const tapMatch = pathname.match(/^\/l\/([^/]+)\/tap$/);
-  if (method === "POST" && tapMatch) return handleTap(decodeURIComponent(tapMatch[1]), req);
+  if (method === "POST" && tapMatch) {
+    const id = safeDecode(tapMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleTap(id, req);
+  }
 
   if (method === "GET" && pathname.startsWith("/docs/")) return handleDocs(pathname);
 
@@ -594,19 +618,31 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
   const { pathname } = new URL(url);
 
   const lecturerEventsMatch = req.method === "GET" && pathname.match(/^\/l\/([^/]+)\/lecturer\/events$/);
   if (lecturerEventsMatch) {
-    handleLecturerEvents(decodeURIComponent(lecturerEventsMatch[1]), req, res);
+    const id = safeDecode(lecturerEventsMatch[1]);
+    if (id === undefined) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+    handleLecturerEvents(id, req, res);
     return;
   }
 
   const eventsMatch = req.method === "GET" && pathname.match(/^\/l\/([^/]+)\/events$/);
   if (eventsMatch) {
-    handleEvents(decodeURIComponent(eventsMatch[1]), req, res);
+    const id = safeDecode(eventsMatch[1]);
+    if (id === undefined) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+    handleEvents(id, req, res);
     return;
   }
 
@@ -635,6 +671,18 @@ const server = createServer(async (req, res) => {
 
   res.writeHead(response.status, responseHeaders);
   res.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+}
+
+const server = createServer(async (req, res) => {
+  try {
+    await handleRequest(req, res);
+  } catch (err) {
+    console.error(JSON.stringify({ time: new Date().toISOString(), action: "error", error: String(err) }));
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+    }
+    res.end("Internal server error");
+  }
 });
 
 startHeartbeat();
