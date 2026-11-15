@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { hashCode } from "./codes.ts";
+import type { HashedCode } from "./codes.ts";
 
 const dataDir = process.env.DATA_DIR ?? "./data";
 mkdirSync(dataDir, { recursive: true });
@@ -27,6 +29,32 @@ const lectureColumns = db.prepare("PRAGMA table_info(lectures)").all() as { name
 if (!lectureColumns.some((c) => c.name === "min_present")) {
   db.exec("ALTER TABLE lectures ADD COLUMN min_present INTEGER NOT NULL DEFAULT 5");
 }
+if (!lectureColumns.some((c) => c.name === "code_hash")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN code_hash TEXT");
+}
+if (!lectureColumns.some((c) => c.name === "code_salt")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN code_salt TEXT");
+}
+
+const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
+if (!tapColumns.some((c) => c.name === "browser_id")) {
+  db.exec("ALTER TABLE taps ADD COLUMN browser_id TEXT");
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS browsers (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lecturer_sessions (
+    token TEXT PRIMARY KEY,
+    lecture_id TEXT NOT NULL REFERENCES lectures(id),
+    created_at TEXT NOT NULL
+  )
+`);
 
 db.prepare(
   "INSERT OR IGNORE INTO lectures (id, title, created_at) VALUES (?, ?, ?)",
@@ -34,28 +62,36 @@ db.prepare(
 
 db.prepare("UPDATE lectures SET min_present = 2 WHERE id = 'demo'").run();
 
+const demoCode = hashCode("DEMO");
+db.prepare("UPDATE lectures SET code_hash = ?, code_salt = ? WHERE id = 'demo' AND code_hash IS NULL").run(
+  demoCode.hash,
+  demoCode.salt,
+);
+
 export interface Lecture {
   id: string;
   title: string;
   created_at: string;
   min_present: number;
+  code_hash: string | null;
+  code_salt: string | null;
 }
 
 export interface Tap {
   id: number;
   lecture_id: string;
   created_at: string;
+  browser_id: string | null;
 }
 
 export function getLecture(id: string): Lecture | undefined {
   return db.prepare("SELECT * FROM lectures WHERE id = ?").get(id) as Lecture | undefined;
 }
 
-export function addTap(lectureId: string): void {
-  db.prepare("INSERT INTO taps (lecture_id, created_at) VALUES (?, ?)").run(
-    lectureId,
-    new Date().toISOString(),
-  );
+export function createLecture(id: string, title: string, minPresent: number, code: HashedCode): void {
+  db.prepare(
+    "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, title, new Date().toISOString(), minPresent, code.hash, code.salt);
 }
 
 export function tapCount(lectureId: string): number {
@@ -63,12 +99,6 @@ export function tapCount(lectureId: string): number {
     .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ?")
     .get(lectureId) as { count: number };
   return row.count;
-}
-
-export function tapsNewestFirst(lectureId: string): Tap[] {
-  return db
-    .prepare("SELECT * FROM taps WHERE lecture_id = ? ORDER BY created_at DESC, id DESC")
-    .all(lectureId) as unknown as Tap[];
 }
 
 export interface LiveTapInfo {
@@ -83,4 +113,79 @@ export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
     )
     .get(lectureId, sinceIso) as { count: number; earliest: string | null };
   return row;
+}
+
+// Atomic insert-if-not-recently-tapped: a single statement rather than a
+// separate SELECT-then-INSERT, so a browser can't double-count a tap no
+// matter how the handler around it changes later. Returns whether a row was
+// actually inserted.
+export function tapIfNotRecentlyTapped(lectureId: string, browserId: string, sinceIso: string): boolean {
+  const nowIso = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO taps (lecture_id, created_at, browser_id)
+       SELECT ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM taps WHERE lecture_id = ? AND browser_id = ? AND created_at >= ?
+       )`,
+    )
+    .run(lectureId, nowIso, browserId, lectureId, browserId, sinceIso);
+  return result.changes > 0;
+}
+
+export function yourTapCount(lectureId: string, browserId: string): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ? AND browser_id = ?")
+    .get(lectureId, browserId) as { count: number };
+  return row.count;
+}
+
+export function hasLiveTap(lectureId: string, browserId: string, sinceIso: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT 1 FROM taps WHERE lecture_id = ? AND browser_id = ? AND created_at >= ? LIMIT 1",
+    )
+    .get(lectureId, browserId, sinceIso);
+  return row !== undefined;
+}
+
+export interface MinuteBucket {
+  minute: string;
+  count: number;
+}
+
+export function perMinuteTimeline(lectureId: string): MinuteBucket[] {
+  return db
+    .prepare(
+      `SELECT strftime('%Y-%m-%dT%H:%M:00Z', created_at) AS minute, COUNT(*) AS count
+       FROM taps WHERE lecture_id = ? GROUP BY minute ORDER BY minute ASC`,
+    )
+    .all(lectureId) as unknown as MinuteBucket[];
+}
+
+export function browserExists(id: string): boolean {
+  const row = db.prepare("SELECT 1 FROM browsers WHERE id = ?").get(id);
+  return row !== undefined;
+}
+
+export function insertBrowser(id: string): void {
+  db.prepare("INSERT OR IGNORE INTO browsers (id, created_at) VALUES (?, ?)").run(
+    id,
+    new Date().toISOString(),
+  );
+}
+
+export function insertLecturerSession(token: string, lectureId: string): void {
+  db.prepare("INSERT INTO lecturer_sessions (token, lecture_id, created_at) VALUES (?, ?, ?)").run(
+    token,
+    lectureId,
+    new Date().toISOString(),
+  );
+}
+
+export function lecturerSessionValid(token: string, lectureId: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM lecturer_sessions WHERE token = ? AND lecture_id = ?")
+    .get(token, lectureId);
+  return row !== undefined;
 }
