@@ -9,6 +9,8 @@
 - Never change fly.toml settings, spec/invariants.test.ts or the shipped CI checks.
 - Never commit mise.local.toml or any secret.
 - Never write README.md, PROCESS.md or reflections/. I write those.
+- Never loosen an assertion to make a test pass. Find the cause first. (Added in C10, when an exact +1 was relaxed to >= before the real cause, parallel test files, was found.)
+- Never rm -rf. Test a fresh database with a temporary DATA_DIR.
 
 ## Every change
 - /readme/ renders README.md on the server, so headings are in the HTML before any script runs.
@@ -17,6 +19,11 @@
 - When I correct you, suggest a rule for this file or a test in spec/ so it can't happen again.
 - If README.md says a claim is enforced, its test must run in pnpm check. Never skip it. (Added in C9, when the fade test was skipped while the README called it enforced.)
 - Anything on a page that can change must update live in every open session. (Added in C9, when the total stayed stale after a tap.)
+
+## Privacy (from the README's one idea)
+- No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
+- No per-person history is ever shown. Taps are shown as counts per minute.
+- Lecturer and student state travel on separate routes.
 
 ## Ask first
 - Ask before any deploy, machine restart, push or tag, even if a plan mentions it. (Added after C8, when the agent did all four unasked.)
