@@ -11,6 +11,7 @@
 - Never write README.md, PROCESS.md or reflections/. I write those.
 - Never loosen an assertion to make a test pass. Find the cause first. (Added in C10, when an exact +1 was relaxed to >= before the real cause, parallel test files, was found.)
 - Never rm -rf. Test a fresh database with a temporary DATA_DIR.
+- Never use emoji in any file or commit message. (Added after an emoji replaced ":[" in a pasted payload in docs/feedback/finish.md.)
 
 ## Every change
 - /readme/ renders README.md on the server, so headings are in the HTML before any script runs.
