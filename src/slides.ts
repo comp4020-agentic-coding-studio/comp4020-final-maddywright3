@@ -7,11 +7,13 @@ export const SLIDE_DURATION_MS = 40_000;
 // Loaded once at module scope: the deck is fixed content shipped with the
 // app, not per-request input, so there's no reason to re-read or re-parse it
 // on every page view the way handleReadme does for the (small, rarely read)
-// about page.
+// about page. The file's first part (before the first ---) is a credit
+// block, not a slide — split off and rendered once, separately, under every
+// slide view rather than as slide content itself.
 const rawDeck = readFileSync("slides/demo.md", "utf8");
-export const demoSlides: string[] = rawDeck
-  .split(/\n---\n/)
-  .map((slide) => marked.parse(slide.trim()) as string);
+const [rawCredit, ...rawSlides] = rawDeck.split(/\n---\n/);
+export const demoCreditHtml: string = marked.parse(rawCredit.trim()) as string;
+export const demoSlides: string[] = rawSlides.map((slide) => marked.parse(slide.trim()) as string);
 
 export function demoSlideCount(): number {
   return demoSlides.length;
@@ -21,7 +23,9 @@ export function demoSlideCount(): number {
 // visitor computing this from the same created_at lands on the same slide,
 // with nothing stored anywhere — that's the "shared clock". 1-based, like
 // lectures.current_slide, so a tap's `slide` value means the same thing
-// whether it came from the demo's clock or a lecturer's Next/Prev.
+// whether it came from the demo's clock or a lecturer's Next/Prev. Browsing
+// (below) never changes this — it only changes what a given viewer is
+// looking at, not the shared live slide "Back to live" returns to.
 export function demoSlideIndex(lecture: Lecture): number {
   const elapsed = Date.now() - new Date(lecture.created_at).getTime();
   const slideCount = demoSlideCount();
@@ -45,25 +49,16 @@ export function msUntilNextSlideChange(lecture: Lecture): number | undefined {
   return SLIDE_DURATION_MS - intoCurrentSlide;
 }
 
-// A submitted slide index is trusted only if it matches the slide the server
-// currently has recorded, or the previous one if the change happened within
-// the last 5 seconds — a tap already in flight when the lecturer advances
-// shouldn't be silently reattributed to the new slide. Anything else (stale
-// beyond the grace window, or not matching either value) falls back to the
-// current slide, so a tap is never dropped, just attributed to the safest one.
-const SLIDE_GRACE_MS = 5_000;
-
-export function resolveTapSlide(lecture: Lecture, submittedSlide: number | undefined): number {
-  const current = currentSlideIndex(lecture);
-  if (submittedSlide === undefined) return current;
-  if (submittedSlide === current) return current;
-  if (
-    lecture.previous_slide !== null &&
-    lecture.slide_changed_at !== null &&
-    submittedSlide === lecture.previous_slide &&
-    Date.now() - new Date(lecture.slide_changed_at).getTime() < SLIDE_GRACE_MS
-  ) {
-    return lecture.previous_slide;
-  }
-  return current;
+// A tap always records the slide the viewer says they're looking at — ADR
+// 004's amendment replaces the old grace-window reconciliation with outright
+// browsing, so there's no single "current slide" a late tap could be racing
+// against. The demo has a fixed deck (9 slides), so a submitted slide must
+// fall within it. A created lecture has no deck of its own — just a number
+// the lecturer advances — so there's no fixed ceiling to validate against;
+// any positive integer is a plausible slide for one of those (the lecturer
+// may advance further after a student's page loads, and a student may be
+// looking at an earlier slide than the current one too).
+export function isValidSlide(lecture: Lecture, slide: number): boolean {
+  if (!Number.isInteger(slide) || slide < 1) return false;
+  return lecture.id === "demo" ? slide <= demoSlideCount() : true;
 }
