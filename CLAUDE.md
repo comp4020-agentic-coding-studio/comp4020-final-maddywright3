@@ -25,6 +25,10 @@
 - No per-person history is ever shown. Taps are shown as counts per minute.
 - Lecturer and student state travel on separate routes.
 - Below min_present, no tap data leaves the server, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
+- Live numbers (live, total, reasons) only leave the server when present >= min_present. A history bar for a slide is only sent once >= min_present distinct browsers have tapped on that slide. A browser may always see its own counts. (Refined in ADR 004 so a returning visitor still sees history.)
+- Never add free-text input for students. Reasons come from a fixed list checked on the server.
+- Never load anything from a third party (embeds, fonts, analytics, CDNs).
+- Every page must work without JavaScript.
 
 ## Ask first
 - Ask before any deploy, machine restart, push or tag, even if a plan mentions it. (Added after C8, when the agent did all four unasked.)
