@@ -24,8 +24,9 @@
 - No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
 - No per-person history is ever shown. Taps are shown as counts per slide, by distinct browser.
 - Lecturer and student state travel on separate routes.
-- Live numbers (live, total, reasons) only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.) A history bar for a slide is only sent once >= min_present distinct browsers have tapped on that slide. A browser may always see its own counts. (Refined in ADR 004 so a returning visitor still sees history.)
-- Student text (notes) is only ever shown to the lecturer, per slide, once at least min_present distinct browsers have written a note on that slide. Never send note text to students, never log it, never send it to any third party. Reasons still come from a fixed list checked on the server. (Changed in the ADR 004 amendment.)
+- live and totalTaps only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
+- A slide's bar, its reason counts, and its notes are each gated on their own distinct-browser count (>= min_present), independent of present/shown — a lone returning visitor still sees a slide's history once it individually qualifies. (Refined in ADR 004 so a returning visitor still sees history.) A browser may always see its own counts.
+- Student text (notes) is lecturer-only: never shown to students, never logged, never sent to a third party. Reasons come from a fixed list checked on the server; never add free-text input for students. (Changed in the ADR 004 amendment.)
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
 - Every page must work without JavaScript.
 
