@@ -34,7 +34,7 @@ async function createLecture(): Promise<{ id: string }> {
     body: "title=Load+test",
   });
   const html = await res.text();
-  const id = html.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = html.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   if (!id) throw new Error("couldn't parse the new lecture's id");
   return { id };
 }

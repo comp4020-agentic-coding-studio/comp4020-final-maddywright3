@@ -129,7 +129,7 @@ it("a created lecture's lecturer dashboard (Previous/Next controls) has no axe v
     body: "title=Accessibility+test+lecture",
   });
   const createHtml = await createRes.text();
-  const id = createHtml.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
   expect(id).toBeDefined();
   expect(code).toBeDefined();

@@ -83,7 +83,7 @@ async function createLecture(title: string): Promise<string> {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: `title=${encodeURIComponent(title)}`,
   });
-  const id = (await res.text()).match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = (await res.text()).match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   if (!id) throw new Error("couldn't create a lecture");
   return id;
 }

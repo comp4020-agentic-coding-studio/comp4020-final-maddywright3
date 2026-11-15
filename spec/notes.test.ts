@@ -17,7 +17,7 @@ async function createLectureAndLogIn(title: string): Promise<NewLecture> {
     body: `title=${encodeURIComponent(title)}`,
   });
   const createHtml = await createRes.text();
-  const id = createHtml.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
   if (!id || !code) throw new Error("couldn't parse the new lecture's id/code");
 

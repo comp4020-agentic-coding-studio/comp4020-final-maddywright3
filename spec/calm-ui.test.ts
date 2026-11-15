@@ -114,7 +114,7 @@ async function createLecture(title: string): Promise<{ id: string; code: string 
       body: `title=${encodeURIComponent(title)}`,
     })
   ).text();
-  const id = html.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = html.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   const code = html.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
   if (!id || !code) throw new Error("couldn't parse the new lecture's id/code");
   return { id, code };
