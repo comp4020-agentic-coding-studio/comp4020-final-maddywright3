@@ -43,6 +43,8 @@ A deck I wrote myself would be a stand-in. The course's own lectures publish a m
 
 Students can also move back and forward through the slides with arrows, and rejoin the shared clock with "Back to live". A tap records the slide the student is looking at, which is how real people use slides: you flick back to the one where you lost the thread.
 
+The shared clock now starts when the first person arrives, so a visitor never lands mid-lecture in an empty room.
+
 ### Notes on what didn't make sense
 
 The fixed reasons say what kind of lost. They can't say where: "the bit where the budget suddenly included tool output". Testers wanted that. I had rejected free text because writing a question takes the same courage as asking one. That's true when other people can read it. It's much less true when only the lecturer can, and only alongside other people's notes.

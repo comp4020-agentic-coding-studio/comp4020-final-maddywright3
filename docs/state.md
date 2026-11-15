@@ -10,11 +10,13 @@ brief reconnect.
 
 ## `src/realtime.ts`
 
-- **`connections`** — `Map<lectureId, Map<browserId, Set<ServerResponse>>>`,
-  every open student SSE stream. Lost on restart: every open `EventSource`
-  reconnects on its own within a few seconds (the browser's native retry),
-  and the reconnect's first frame recomputes `present`/`shown`/etc. correctly
-  from the database, so nothing is wrong, just briefly absent.
+- **`connections`** — `Map<lectureId, Map<browserId, Map<ServerResponse,
+  deck | null>>>`, every open student SSE stream and the demo deck it's
+  watching (null for a created lecture). Lost on restart: every open
+  `EventSource` reconnects on its own within a few seconds (the browser's
+  native retry), and the reconnect's first frame recomputes
+  `present`/`shown`/etc. correctly from the database, so nothing is wrong,
+  just briefly absent.
 - **`lecturerConnections`** — `Map<lectureId, Set<ServerResponse>>`, every
   open lecturer SSE stream. Same cost as `connections`: lost, reconnects on
   its own, recomputed correctly.
@@ -25,11 +27,22 @@ brief reconnect.
   tap that aged out during the gap is correctly excluded the moment anything
   queries it again — the timer is only what *pushes* the update proactively,
   not what makes it correct.
-- **`slideTimers`** — `Map<lectureId, NodeJS.Timeout>`, the demo's "advance
-  to the next slide" timer. Same shape as `fadeTimers`: lost, re-armed on the
-  next student stream open, and `currentSlideIndex`'s shared-clock
-  computation is always correct from `lectures.created_at` regardless of
-  whether a timer was running to push it.
+- **`slideTimers`** — `Map<"lectureId:deck", NodeJS.Timeout>`, one "advance
+  to the next slide" timer per running demo deck clock. Armed when that
+  deck's clock starts, re-armed after each advance, cleared with the clock
+  when the deck's last viewer leaves. Lost on restart along with the clocks
+  themselves (below), and armed again when the next viewer starts one. It
+  only *pushes* the change; the live slide is always computed from the
+  deck's start time, whether or not a timer is running.
+
+## `src/slides.ts`
+
+- **`deckStarts`** — `Map<"lectureId:deck", number>`, when each demo deck's
+  shared clock started: set when a student stream opens on a deck nobody is
+  watching, deleted when its last viewer leaves. No entry means the live
+  slide is 1. Lost on restart, which is exactly right rather than a cost: a
+  restart closes every stream, so nobody is watching, and slide 1 is what
+  the next arrival should see. Lecturer streams never set it.
 
 ## `src/auth.ts`
 
