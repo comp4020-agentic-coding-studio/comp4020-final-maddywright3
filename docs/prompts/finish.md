@@ -1,0 +1,92 @@
+# Finishing stage prompt (Claude Code)
+
+Read CLAUDE.md, README.md, all of docs/adr/ (especially 004), docs/feedback/c10.md,
+and the current src/ and spec/ before planning.
+
+This is the finishing stage of the final project. It answers the C10 feedback with
+the design in ADR 004 and fixes the other review findings. The README's one idea,
+"you can admit you're lost without being the one who admitted it", decides every
+trade-off. Work in the phases below. After each phase: run pnpm check twice, commit
+in small steps with messages saying why, then STOP and show me a short summary and
+what I should try by hand. Don't start the next phase until I say go.
+Ask before adding any dependency, deploying, pushing or tagging.
+
+PHASE 0 - harness first
+- Save this prompt word for word to docs/prompts/finish.md (its own commit).
+- Add to CLAUDE.md, as its own commit:
+  - Privacy: live numbers (live, total, reasons) only leave the server when present >=
+    min_present. A history bar for a slide is only sent once >= min_present distinct
+    browsers have tapped on that slide. A browser may always see its own counts.
+    (Refined in ADR 004 so a returning visitor still sees history.)
+  - Never add free-text input for students. Reasons come from a fixed list checked
+    on the server.
+  - Never load anything from a third party (embeds, fonts, analytics, CDNs).
+  - Every page must work without JavaScript.
+
+PHASE 1 - a lecture to be lost in
+- Slides as data: slides/demo.md, slides separated by a line with ---, rendered on the
+  server with marked. Draft an 8-slide, first-year mini-lecture on recursion. Make
+  slide 5 deliberately rushed (two steps skipped) so there's somewhere to get lost.
+  Diagrams as inline SVG with text alternatives. No images from outside the repo.
+- Shared clock for the demo: each slide shows for 40 seconds, looping. The current
+  slide is worked out on the server from the time, so every visitor sees the same
+  slide with no stored state. Send the slide index in the stream and push on change.
+- Real lectures (/new): no slide content. lectures.current_slide (default 1). The
+  lecturer view gets Previous and Next buttons (server-checked, lecturer session only)
+  that broadcast the change. Students see "Slide N".
+- Migration: taps.slide (nullable for old rows; treat old rows as slide 1). Each tap
+  records the current slide.
+- Tests: two streams see the same slide index; a slide change reaches open streams
+  within a second; only a lecturer session can change slides.
+
+PHASE 2 - where the room got lost
+- Bars per slide, counting distinct browsers who tapped on that slide, shown to
+  students and the lecturer. Server-rendered SVG so it works without JS, updated
+  live, with a text table alternative for screen readers.
+- Apply the refined privacy rule from Phase 0 exactly, on the server.
+- Remove the per-minute timeline and its code.
+- Tests: tap, undo, tap again on one slide counts once; a slide with fewer than
+  min_present distinct browsers sends no bar; a returning browser with nobody else
+  present still gets bars for slides that qualify, and its own count; none of this
+  data appears in any payload below the thresholds.
+
+PHASE 3 - your own tap
+- After "I'm lost", show optional one-tap reasons: Too fast, Missed a step, Notation,
+  Can't see or hear. A reason attaches to your live tap and can be changed while it's
+  live. The server rejects anything not on the list.
+- The lecturer sees reason counts per slide (same thresholds). Students see the
+  current slide's most common reason once it qualifies.
+- Countdown: "You're counted. You can tap again in 0:42", from a liveUntil time the
+  server sends for your own tap only. Without JS, show the time it unlocks.
+- "I get it now": ends your live tap at once (taps.resolved_at), so live drops within
+  a second. Bars still count you, because you were lost on that slide.
+- Small hint under the button: "Other tabs in this browser count as you."
+- Tests: unknown reason rejected; reason change updates the lecturer within a second;
+  "I get it now" drops live by one within a second; liveUntil is only in your own payload.
+
+PHASE 4 - review findings
+- aria-live: announce only when the lost count changes or the gauge appears or
+  disappears. People arriving and leaving update visually, not out loud.
+- Show "Reconnecting..." when the stream drops (EventSource error) and clear it on
+  the next message.
+- Lecturer code rate limit per browser and lecture, not per lecture. Lecturer sessions
+  expire after 12 hours.
+- /new: max 3 lectures per browser per hour, a hard cap of 500 lectures in total,
+  title max 100 characters. Each limit gives a clear message.
+- Performance: compute the shared state once per broadcast, then add each browser's
+  own fields, not a full recompute per browser.
+- Load test: scripts/load-test.ts (pnpm load, not part of pnpm check) that mints 50
+  browsers, opens 50 streams, taps from all 50 at once, and reports how long until
+  every stream has seen all 50. Run it locally and report the numbers.
+- Tests for each limit, and that people arriving doesn't change the aria-live text.
+
+PHASE 5 - accessibility and hardening
+- Propose two ways to add automated accessibility checks: axe-core run in jsdom
+  (light, but can't check colour contrast or layout), or Playwright with axe in
+  Chromium (heavier, needs a CI step, but can also test keyboard use and both
+  viewports, 390x844 and 1920x1080). Give me the cost of each and wait for my choice.
+- Then make sure: visible focus on every control, everything reachable by keyboard,
+  nothing breaks when the window is resized mid-tap, and no horizontal scroll at 390x844.
+
+Not in scope: accounts, names, free text, editing or deleting lectures, anything third-party.
+Show me the plan for all phases first.
