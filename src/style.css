@@ -185,6 +185,9 @@ td {
   padding: var(--space-2) var(--space-3);
   text-align: left;
   vertical-align: top;
+  /* break-word doesn't shrink a cell's min-content width; anywhere does, so
+     a long path like spec/events.test.ts can't widen a table past 390px. */
+  overflow-wrap: anywhere;
 }
 
 th {
