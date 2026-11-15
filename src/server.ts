@@ -77,6 +77,7 @@ const STYLE = `
     margin: 0 auto;
     padding: 1rem;
     line-height: 1.5;
+    overflow-wrap: break-word;
   }
   .tap-button {
     display: block;

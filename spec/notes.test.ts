@@ -205,3 +205,13 @@ it("a note's text never appears anywhere in the server's log output", async () =
   const homeHtml = await (await fetch(new URL("/", baseUrl))).text();
   expect(homeHtml).not.toContain(distinctiveText);
 });
+
+// A note can be up to 200 characters with no spaces (the length/URL/email/
+// phone checks don't reject that), which would overflow a narrow viewport
+// horizontally without this rule — found while hand-checking the 390x844
+// layout for Phase 5, fixed on body so it covers every free-text field
+// (note text, the lecture title), not just this one element.
+it("the page CSS wraps long unbroken text instead of letting it overflow", async () => {
+  const html = await (await fetch(new URL("/", baseUrl))).text();
+  expect(html).toContain("overflow-wrap: break-word");
+});
