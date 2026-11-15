@@ -374,6 +374,12 @@ it("a created lecture's student page follows the lecturer's Next live", async ()
     await student.page.goto(new URL(`/l/${lectureId}`, baseUrl).toString());
     const label = student.page.locator("#slide-label");
     await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
+    // There are no slides here to browse, so the arrow keys don't move the
+    // slide a tap would record.
+    await student.page.keyboard.press("ArrowRight");
+    await student.page.waitForTimeout(200);
+    expect(await label.textContent()).toBe("Slide 1 (live)");
+    expect(await student.page.locator("#slide-input").inputValue()).toBe("1");
 
     await lecturer.page.goto(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString());
     await lecturer.page.locator("#slide-next-form button").click();
