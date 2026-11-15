@@ -708,3 +708,34 @@ it("a created lecture has no deck: its pages say Slide N, with (live) on the cur
   expect(studentHtml).toContain("<tr><td>Slide 1</td><td>5</td></tr>");
   expect(renderedMarkup(studentHtml)).not.toMatch(/Week \d/);
 });
+
+// A created lecture has no deck, but its tap form carried the demo's
+// default deck, so its taps were stored as "week-4" while its notes had no
+// deck. Taps and notes on the same slide then never grouped together, the
+// lecturer's current-slide panel (which looks for no deck) never found the
+// bar, and the bars named a deck the lecture doesn't have.
+it("a created lecture's tap form sends no deck, and its taps are filed with no deck", async () => {
+  const lecture = await createLectureAndLogIn("No deck on taps test");
+  const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
+  for (const cookie of cookies) {
+    const html = await demoPage(`/l/${lecture.id}`, cookie);
+    const form = html.match(/<form method="post" action="[^"]+\/tap" id="tap-form">[\s\S]*?<\/form>/)?.[0];
+    expect(form).toBeDefined();
+    expect(form).not.toMatch(/name="deck"/);
+    // Submit exactly the fields the page's own form carries, as a browser would.
+    const fields = new URLSearchParams([...form!.matchAll(/name="(\w+)"[^>]*value="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: fields,
+      redirect: "manual",
+    });
+  }
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
+  try {
+    const state = await stream.waitFor((s) => s.bars.length > 0, 2000);
+    expect(state.bars).toEqual([{ deck: null, slide: 1, distinctBrowsers: 5 }]);
+  } finally {
+    await stream.close();
+  }
+});
