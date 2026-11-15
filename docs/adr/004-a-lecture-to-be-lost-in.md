@@ -63,3 +63,79 @@ What it costs:
 - *Batching delays notes* until enough people have written, so a lecturer can't react to the first one.
 - *Nothing checks tone.* The guardrails are an audience of one and the batch threshold, not a filter for rudeness.
 - *Writing style can still identify someone* to a lecturer who knows them well. Batching makes that harder, not impossible.
+
+## Amendment, 16 November 2026: a timeline, one tap per slide, and a lecturer dashboard
+
+The hand checks, the stranger test, the mock lecture and the lecturer view are in [docs/feedback/finish.md](../feedback/finish.md).
+
+### A lecture timeline
+
+Given only the URL, the stranger didn't realise the demo was replaying a live lecture. They suggested a progress bar like a video player, with times for each part. In my own Phase 1 check, nothing showed how far through the lecture we were.
+
+Options considered:
+
+1. *"Slide 6 of 10" as it is.* Already on the page, and the stranger still missed it.
+2. *A per-minute timeline of taps.* ADR 004 removed it: a minute with one tap in it is a confession.
+3. *A timeline like a video scrubber:* a segment per slide labelled with its start time, a Live marker that moves, and a You marker when you browse away. Segments are shaded where people got lost.
+
+Decision: option 3. Shading uses exactly the bars' threshold, so a segment below it is unshaded, not zero. Segments are links, so it works without JavaScript, and clicking one moves only your own view. A lecture made at /new gets a segment per slide reached so far, with the time the lecturer moved to it, and no total length, because nobody knows how long a real lecture will run.
+
+What it costs:
+- *A slide a few people were lost on looks the same as one nobody was lost on.*
+- *The server keeps when the lecturer moved to each slide.* It's a time per slide, nothing about students.
+- *The demo's times are a loop,* so 0:00 comes round again every few minutes.
+- *Ten segments at phone width are small targets.*
+
+### One "I'm lost" per browser per slide
+
+In the mock lecture, people liked that they couldn't spam "I'm lost". Their suggestion was one per slide.
+
+Options considered:
+
+1. *One live tap per browser per 60 seconds, as now.* One person can tap again every minute, so the total grows with how long a slide stays up.
+2. *One tap per browser per slide, ever.* It still counts as live for 60 seconds or until "I get it now".
+3. *One tap per browser per lecture.* Too few: lost on slide 3 and lost on slide 8 are different facts.
+
+Decision: option 2, in the same single SQL statement as now, so two taps at the same moment still count once. The countdown is replaced by "You've said you're lost on this slide."
+
+What it costs:
+- *A student who is lost again on the same slide later can't say so.* After "I get it now", that slide is done for them.
+- *A tap on a slide you browsed back to uses that slide up too.*
+- *"One browser, one voice" changes meaning,* from one live tap to one tap per slide, so its wording and its enforced test change with it.
+- *A private window still beats it* (ADR 003's cost stands).
+
+### A lecturer dashboard
+
+The lecturer view showed only the slide, people here, lost right now and the total. No reasons, no notes, and nothing saying why. The threshold was hiding them, but the lecturer couldn't tell that from the page. I wanted real statistics and notes I could filter by slide.
+
+Options considered:
+
+1. *Show the lecturer counts below the threshold.* The lecturer is exactly who mustn't learn who tapped, and a count of one next to a note is a confession.
+2. *Keep the view and add a line about the threshold.* Cheap, but still no statistics.
+3. *A dashboard of aggregates only:* the current slide first, summary tiles, bars per slide with reasons inside, what helped, and notes grouped by slide and filterable by deck and slide. Every part that's empty or below its threshold says why, with the lecture's real number: "Shows once 2 people have chosen a reason on this slide."
+
+Decision: option 3. Charts are SVG drawn on the server, with no chart library, and each has a text alternative. Nothing is labelled, numbered or grouped by student.
+
+What it costs:
+- *A lecturer sees nothing for slides below the threshold,* only a message saying why. In a real lecture, a slide four people were lost on stays blank.
+- *Each tile needs its own threshold too,* so early in a lecture most of the dashboard says "not yet".
+- *Everything is drawn twice,* once by the server and once by the script for live updates, and the two must stay in step.
+
+### No per-student log or email: a help link the student chooses
+
+I also wanted a way to help students who are very lost.
+
+Options considered:
+
+1. *Label students ("Student 1") with their own history.* A pseudonym with a history is a profile a lecturer can match to a person.
+2. *Email very lost students.* Emailing someone means knowing who they are, which needs the accounts ADR 003 rejected.
+3. *A help link the student sees themselves.* The lecturer sets a link. Once a browser has said it's lost on three or more slides, that browser alone sees "Want a hand with this? Your lecturer offers help here." It's worked out for that browser only, never sent to the lecturer, never logged and never counted.
+
+Decision: option 3. The student reaches out, and the lecturer never learns who.
+
+What it costs:
+- *The lecturer can't reach the student who needs it most,* only offer a link.
+- *Three slides is a guess.* A student lost on two slides sees nothing.
+- *Nobody can tell if it helps,* because nothing counts who saw it or followed it.
+- *Following the link leaves the app.* Whatever the linked site knows about the student, this app can't control.
+- *A new window or cleared cookies resets the count.*
