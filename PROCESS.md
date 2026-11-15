@@ -10,7 +10,7 @@ The brief asks for a multi-user, real-time app that's good by a definition I mak
 
 I completed C8 to C10 as self-run milestones under an extension, so the feedback at each one is my own testing of the deployed app rather than a crit session.
 
-I use two agents with separate jobs. Kiro is where I plan, check the course pages and draft documents. Claude Code builds the app, in plan mode first, and I approve the plan before it writes code. The README, ADRs, reflections and this file were drafted with an agent, with the convenor's permission, and edited by me. CLAUDE.md stops Claude Code from writing them, so they always pass through me.
+I use two agents with separate jobs. Kiro is where I plan, check the course pages, draft documents and review Claude Code's transcripts against the README. Claude Code builds the app, in plan mode first, and I approve the plan before it writes code. The README, ADRs, reflections and this file were drafted with an agent, with the convenor's permission, and edited by me. CLAUDE.md stops Claude Code from writing them, so they always pass through me.
 
 ## Stack
 
@@ -30,8 +30,8 @@ The live gauge went in as four small commits, [`d87cd51...b14e054`](https://gith
 
 | Problem | How I found it | Fix | Harness change |
 |---|---|---|---|
-| Deployed, restarted, pushed and tagged unasked | Reading the C8 transcript | none needed | [`1eaf5b9`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/1eaf5b9): ask before deploy, push or tag |
-| Fade test skipped while README called it enforced | Reading the transcript against the README | [`0fb75fc`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0fb75fc), [`783fcc4`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/783fcc4) | [`af2abdf`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/af2abdf): enforced claims must have running tests |
+| Deployed, restarted, pushed and tagged unasked | Kiro reviewing the C8 transcript | none needed | [`1eaf5b9`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/1eaf5b9): ask before deploy, push or tag |
+| Fade test skipped while README called it enforced | Kiro reviewing the transcript against the README | [`0fb75fc`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0fb75fc), [`783fcc4`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/783fcc4) | [`af2abdf`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/af2abdf): enforced claims must have running tests |
 | "Total taps" stuck at its page-load value | My two-tab test | [`a3c54db`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/a3c54db) | [`e27d30e`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/e27d30e): anything that changes updates live |
 
 In each case I didn't just ask for a retry. The rule went into CLAUDE.md so the next session starts with it.
