@@ -47,6 +47,9 @@ if (!tapColumns.some((c) => c.name === "browser_id")) {
 if (!tapColumns.some((c) => c.name === "slide")) {
   db.exec("ALTER TABLE taps ADD COLUMN slide INTEGER");
 }
+if (!tapColumns.some((c) => c.name === "deck")) {
+  db.exec("ALTER TABLE taps ADD COLUMN deck TEXT");
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS browsers (
@@ -91,6 +94,7 @@ export interface Tap {
   created_at: string;
   browser_id: string | null;
   slide: number | null;
+  deck: string | null;
 }
 
 export function getLecture(id: string): Lecture | undefined {
@@ -132,18 +136,19 @@ export function tapIfNotRecentlyTapped(
   lectureId: string,
   browserId: string,
   sinceIso: string,
+  deck: string | null,
   slide: number,
 ): boolean {
   const nowIso = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO taps (lecture_id, created_at, browser_id, slide)
-       SELECT ?, ?, ?, ?
+      `INSERT INTO taps (lecture_id, created_at, browser_id, deck, slide)
+       SELECT ?, ?, ?, ?, ?
        WHERE NOT EXISTS (
          SELECT 1 FROM taps WHERE lecture_id = ? AND browser_id = ? AND created_at >= ?
        )`,
     )
-    .run(lectureId, nowIso, browserId, slide, lectureId, browserId, sinceIso);
+    .run(lectureId, nowIso, browserId, deck, slide, lectureId, browserId, sinceIso);
   return result.changes > 0;
 }
 
