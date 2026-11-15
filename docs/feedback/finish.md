@@ -31,3 +31,9 @@ It worked, and people liked that they couldn't spam "I'm lost". Their suggestion
 | Lecturer view hard to find | A "Lecturer view" link on every lecture page. The demo shows its code, DEMO |
 | Reasons stay after "I get it now" | "Glad it clicked. You're no longer counted as lost.", then "What helped it click?" with a fixed list |
 | Spam, and one tap per slide | One "I'm lost" per browser per slide. The countdown is replaced by "You've said you're lost on this slide" |
+
+## Lecturer view
+
+It showed only the slide, people here, lost right now and the total. No reasons, no notes, no explanation of why. Most likely the privacy threshold was hiding them, but the lecturer couldn't tell that from the page. Wanted: a dashboard with real statistics, notes filterable by slide, and a way to help students who are very lost. Also, after choosing a reason, the other reasons should grey out.
+
+I considered labelling students ("Student 1") with their own history, and emailing very lost students. I rejected both: a pseudonym with a history is a profile a lecturer can match to a person, and emailing someone means knowing who they are. Instead, a student who is lost on three or more slides sees the lecturer's help link themselves, so the student reaches out and the lecturer never learns who.
