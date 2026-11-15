@@ -16,6 +16,7 @@
 - Every behaviour change comes with a test in spec/. Run pnpm check before saying it's done.
 - When I correct you, suggest a rule for this file or a test in spec/ so it can't happen again.
 - If README.md says a claim is enforced, its test must run in pnpm check. Never skip it. (Added in C9, when the fade test was skipped while the README called it enforced.)
+- Anything on a page that can change must update live in every open session. (Added in C9, when the total stayed stale after a tap.)
 
 ## Ask first
 - Ask before any deploy, machine restart, push or tag, even if a plan mentions it. (Added after C8, when the agent did all four unasked.)
