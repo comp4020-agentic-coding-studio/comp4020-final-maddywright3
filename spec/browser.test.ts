@@ -308,19 +308,19 @@ it("live updates name the deck and slide the same way the server does", async ()
       await other.context.close();
     }
 
-    await expect.poll(() => lecturer.page.locator("#slide-label").textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ \(live\)$/);
-    await expect.poll(() => lecturer.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
-    await expect.poll(() => student.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
+    await expect.poll(() => lecturer.page.locator("#slide-label").textContent(), { timeout: 3000 }).toMatch(/^Week 4 \u00b7 slide \d+ \(live\)$/);
+    await expect.poll(() => lecturer.page.locator("#bars td", { hasText: "Week 6 \u00b7 slide 9" }).count(), { timeout: 3000 }).toBe(1);
+    await expect.poll(() => student.page.locator("#bars td", { hasText: "Week 6 \u00b7 slide 9" }).count(), { timeout: 3000 }).toBe(1);
 
     // Browsing away drops "(live)", and the marker names the deck.
     const label = student.page.locator("#slide-label");
-    await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ of 10 \(live\)$/);
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4 \u00b7 slide \d+ of 10 \(live\)$/);
     const live = Number((await label.textContent())!.match(/slide (\d+)/)![1]);
     await student.page.keyboard.press(live > 1 ? "ArrowLeft" : "ArrowRight");
     const viewed = live > 1 ? live - 1 : live + 1;
-    await expect.poll(() => label.textContent()).toBe(`Week 4, slide ${viewed} of 10`);
+    await expect.poll(() => label.textContent()).toBe(`Week 4 \u00b7 slide ${viewed} of 10`);
     expect(await student.page.locator("#live-marker").textContent()).toBe(
-      `You're on Week 4, slide ${viewed}. The lecture is on Week 4, slide ${live}.`,
+      `You're on Week 4 \u00b7 slide ${viewed}. The lecture is on Week 4 \u00b7 slide ${live}.`,
     );
 
     expect(student.problems).toEqual([]);

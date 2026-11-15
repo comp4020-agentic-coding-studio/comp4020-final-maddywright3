@@ -52,6 +52,7 @@ import type { Bar } from "./realtime.ts";
 import {
   DECK_IDS,
   DECK_SHORT_NAMES,
+  DECK_SLIDE_SEPARATOR,
   DECK_TITLES,
   LIVE_DECK,
   currentSlideIndex,
@@ -259,10 +260,11 @@ const GAUGE_CLIENT_JS = `
 // live update.
 const SLIDE_NAME_CLIENT_JS = `
         var deckShortNames = ${JSON.stringify(DECK_SHORT_NAMES)};
+        var deckSlideSeparator = ${JSON.stringify(DECK_SLIDE_SEPARATOR)};
         function slideName(deck, slide, options) {
           options = options || {};
           var short = deck ? deckShortNames[deck] : undefined;
-          var name = short ? short + ", slide " + slide : "Slide " + slide;
+          var name = short ? short + deckSlideSeparator + "slide " + slide : "Slide " + slide;
           var of = options.of !== undefined ? " of " + options.of : "";
           return name + of + (options.live ? " (live)" : "");
         }
