@@ -211,7 +211,11 @@ it("a note's text never appears anywhere in the server's log output", async () =
 // horizontally without this rule — found while hand-checking the 390x844
 // layout for Phase 5, fixed on body so it covers every free-text field
 // (note text, the lecture title), not just this one element.
+// Since Phase 5 the CSS lives in /style.css, so this checks the page links
+// it and that the body rule there carries the wrap.
 it("the page CSS wraps long unbroken text instead of letting it overflow", async () => {
   const html = await (await fetch(new URL("/", baseUrl))).text();
-  expect(html).toContain("overflow-wrap: break-word");
+  expect(html).toContain('<link rel="stylesheet" href="/style.css">');
+  const css = await (await fetch(new URL("/style.css", baseUrl))).text();
+  expect(css).toMatch(/\nbody\s*\{[^}]*overflow-wrap: break-word/);
 });
