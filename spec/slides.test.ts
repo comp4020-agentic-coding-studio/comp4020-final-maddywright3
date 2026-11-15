@@ -309,6 +309,10 @@ function visibleSlide(html: string, deckId: string): number {
   return Number(shown[0][1]);
 }
 
+function liveMarker(html: string): string | undefined {
+  return html.match(/<p id="live-marker">([^<]*)<\/p>/)?.[1].replace(/&#39;/g, "'");
+}
+
 async function demoPage(path: string, cookie: string): Promise<string> {
   return (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text();
 }
@@ -371,6 +375,10 @@ it(
       expect(joined.slide).toBe(2);
       const week4Html = await demoPage("/l/demo?deck=week-4", cookieB);
       expect(visibleSlide(week4Html, "week-4")).toBe(2);
+      expect(liveMarker(week4Html)).toBe("Live");
+      expect(liveMarker(await demoPage("/l/demo?deck=week-4&slide=1", cookieB))).toBe(
+        "You're on slide 1. The lecture is on slide 2.",
+      );
 
       // Nobody is watching week-6 yet: a page render shows its slide 1, and
       // the first stream on it starts its own clock there — while week-4's
@@ -414,6 +422,17 @@ it("a stream with an invalid deck watches the default deck", async () => {
   } finally {
     await stream.close();
   }
+});
+
+it("the live marker says Live on an unwatched deck's slide 1, and where the lecture is when browsing", async () => {
+  const cookie = await newBrowserCookie("demo");
+  expect(liveMarker(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Live");
+  expect(liveMarker(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe(
+    "You're on slide 3. The lecture is on slide 1.",
+  );
+  // A created lecture has no clock of its own to be off, so no marker.
+  const lecture = await createLectureAndLogIn("Live marker test");
+  expect(liveMarker(await demoPage(`/l/${lecture.id}`, lecture.cookie))).toBeUndefined();
 });
 
 it("switching to week-6 shows its own content, not week-4's", async () => {
@@ -484,6 +503,7 @@ it("Back to live from a browsed week-6 slide returns to week-6's live slide", as
   expect(deckIsVisible(backHtml, "week-6")).toBe(true);
   expect(deckIsVisible(backHtml, "week-4")).toBe(false);
   expect(visibleSlide(backHtml, "week-6")).toBe(1); // nobody is watching week-6
+  expect(liveMarker(backHtml)).toBe("Live");
   // On the live slide, the link is still in the markup (so the script can
   // reveal it when the clock moves on), just hidden.
   expect(backHtml).toMatch(/<a href="\/l\/demo\?deck=week-6" id="back-to-live-link" hidden>/);

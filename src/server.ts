@@ -367,6 +367,17 @@ function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number
   `;
 }
 
+// Says whether this viewer is on the live slide, or where the lecture is if
+// they've browsed away. Rendered here so it's right without JS; the script
+// rewrites the same text on browsing and on every stream frame. Plain text,
+// not aria-live: the clock moves every 40s, and announcing that each time
+// would chatter.
+function liveMarkerText(viewedSlide: number, liveSlide: number): string {
+  return viewedSlide === liveSlide
+    ? "Live"
+    : `You're on slide ${viewedSlide}. The lecture is on slide ${liveSlide}.`;
+}
+
 // Reason buttons appear after tapping, while the caller's own tap is live.
 // A fixed list, checked server-side — no free text for students, per
 // CLAUDE.md. Each is a tiny one-field <form>, so it works with no JS as a
@@ -497,6 +508,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     ${deckMenuHtml(id, viewedDeck)}
     ${slideProgressLabel(id, viewedDeck, viewedSlide)}
     ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
+    ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedSlide, liveSlide))}</p>` : ""}
     ${slideSectionHtml(id, viewedDeck, viewedSlide)}
     <section id="gauge">
       <span id="gauge-present">${escapeHtml(presentTextNow)}</span>,
@@ -535,6 +547,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var deckForm = document.getElementById("deck-form");
         var connectionStatus = document.getElementById("connection-status");
 
+        var liveMarker = document.getElementById("live-marker");
+
         // Kept separate: the deck/slide this browser is looking at (what a
         // tap records, what the arrows move), and the live slide of that
         // deck's shared clock (what "Back to live" returns to in one step).
@@ -557,6 +571,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
 
         function updateLiveState() {
           var onLive = viewedSlide === liveSlide;
+          if (liveMarker) {
+            liveMarker.textContent = onLive
+              ? "Live"
+              : "You're on slide " + viewedSlide + ". The lecture is on slide " + liveSlide + ".";
+          }
           var backLink = document.getElementById("back-to-live-link");
           if (backLink) {
             backLink.hidden = onLive;
