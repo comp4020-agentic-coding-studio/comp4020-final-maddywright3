@@ -24,6 +24,7 @@
 - No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
 - No per-person history is ever shown. Taps are shown as counts per minute.
 - Lecturer and student state travel on separate routes.
+- Below min_present, no tap data leaves the server, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
 
 ## Ask first
 - Ask before any deploy, machine restart, push or tag, even if a plan mentions it. (Added after C8, when the agent did all four unasked.)
