@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
-import { addTap, getLecture, tapCount, tapsNewestFirst } from "./db.ts";
+import { addTap, getLecture, tapCount } from "./db.ts";
 import {
   addConnection,
   broadcast,
@@ -83,14 +83,9 @@ async function handleLecture(id: string): Promise<Response> {
     });
   }
 
-  const count = tapCount(id);
-  const taps = tapsNewestFirst(id);
-  const tapItems = taps
-    .map((t) => `<li>${escapeHtml(new Date(t.created_at).toLocaleString())}</li>`)
-    .join("\n");
-
-  const state = computeState(id) ?? { present: 0, live: 0, shown: false };
+  const state = computeState(id) ?? { present: 0, live: 0, shown: false, totalTaps: tapCount(id), taps: [] };
   const gaugeText = gaugeMessage(state, lecture.min_present);
+  const tapItems = state.taps.map((iso) => `<li>${escapeHtml(new Date(iso).toLocaleString())}</li>`).join("\n");
 
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
@@ -98,8 +93,8 @@ async function handleLecture(id: string): Promise<Response> {
     <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
       <button class="tap-button" type="submit">I'm lost</button>
     </form>
-    <p id="tap-count">Total taps: ${count}</p>
-    <ul class="taps">
+    <p id="tap-count">Total taps: ${state.totalTaps}</p>
+    <ul class="taps" id="tap-list">
 ${tapItems}
     </ul>
     <script>
@@ -107,6 +102,8 @@ ${tapItems}
         var minPresent = ${JSON.stringify(lecture.min_present)};
         var gauge = document.getElementById("gauge");
         var form = document.getElementById("tap-form");
+        var tapCount = document.getElementById("tap-count");
+        var tapList = document.getElementById("tap-list");
 
         function render(state) {
           if (state.shown) {
@@ -114,6 +111,13 @@ ${tapItems}
           } else {
             gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
           }
+          tapCount.textContent = "Total taps: " + state.totalTaps;
+          tapList.innerHTML = "";
+          state.taps.forEach(function (iso) {
+            var li = document.createElement("li");
+            li.textContent = new Date(iso).toLocaleString();
+            tapList.appendChild(li);
+          });
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/events`)});

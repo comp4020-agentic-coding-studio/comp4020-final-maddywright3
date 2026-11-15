@@ -6,6 +6,8 @@ interface MeterState {
   present: number;
   live: number;
   shown: boolean;
+  totalTaps: number;
+  taps: string[];
 }
 
 // A small SSE client over fetch's streaming body: reads "data: {...}\n\n"
@@ -91,6 +93,18 @@ it("a tap shows up on an open /events stream within 1 second", async () => {
     await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
     const after = await stream.waitFor((s) => s.live >= before.live + 1, 1000);
     expect(after.live).toBeGreaterThanOrEqual(before.live + 1);
+  } finally {
+    await stream.close();
+  }
+});
+
+it("the total taps count goes up on an open stream after a tap", async () => {
+  const stream = await SseStream.open("/l/demo/events");
+  try {
+    const before = await stream.next();
+    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
+    const after = await stream.waitFor((s) => s.totalTaps > before.totalTaps, 1000);
+    expect(after.totalTaps).toBe(before.totalTaps + 1);
   } finally {
     await stream.close();
   }

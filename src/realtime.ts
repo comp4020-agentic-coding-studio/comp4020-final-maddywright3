@@ -1,5 +1,5 @@
 import type { ServerResponse } from "node:http";
-import { getLecture, liveTapInfo } from "./db.ts";
+import { getLecture, liveTapInfo, tapCount, tapsNewestFirst } from "./db.ts";
 
 const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -8,6 +8,8 @@ export interface MeterState {
   present: number;
   live: number;
   shown: boolean;
+  totalTaps: number;
+  taps: string[];
 }
 
 const connections = new Map<string, Set<ServerResponse>>();
@@ -43,7 +45,9 @@ export function computeState(lectureId: string): MeterState | undefined {
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
   const present = presentCount(lectureId);
-  return { present, live, shown: present >= lecture.min_present };
+  const totalTaps = tapCount(lectureId);
+  const taps = tapsNewestFirst(lectureId).map((t) => t.created_at);
+  return { present, live, shown: present >= lecture.min_present, totalTaps, taps };
 }
 
 export function broadcast(lectureId: string): void {
