@@ -274,3 +274,60 @@ it("resize mid-tap: tap at 1920x1080, shrink to 390x844 while Sending..., the ta
     await w.context.close();
   }
 }, 30_000);
+
+// The page scripts re-render slide names on every live update; they must
+// use the same wording as the server, deck and "(live)" included. Each
+// check clears the server-rendered text first, so only the script can put
+// it back.
+it("live updates name the deck and slide the same way the server does", async () => {
+  const student = await openWatched(1920, 1080);
+  const lecturer = await openWatched(1920, 1080);
+  const tapper = await openWatched(1920, 1080);
+  try {
+    // Two browsers lost on week-6 slide 9, so the bars have a demo row.
+    for (const ctx of [student.context, tapper.context]) {
+      await ctx.request.get(new URL("/l/demo", baseUrl).toString());
+      await ctx.request.post(new URL("/l/demo/tap", baseUrl).toString(), { form: { deck: "week-6", slide: "9" } });
+    }
+
+    await logInAsDemoLecturer(lecturer.context);
+    await student.page.goto(new URL("/l/demo", baseUrl).toString());
+    await lecturer.page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
+    for (const page of [student.page, lecturer.page]) {
+      await page.evaluate(() => {
+        document.getElementById("slide-label")!.textContent = "";
+        document.getElementById("bars")!.innerHTML = "";
+      });
+    }
+    // Any tap broadcasts a frame to every open page.
+    const other = await openWatched(1920, 1080);
+    try {
+      await other.context.request.get(new URL("/l/demo", baseUrl).toString());
+      await other.context.request.post(new URL("/l/demo/tap", baseUrl).toString(), { form: { deck: "week-4", slide: "1" } });
+    } finally {
+      await other.context.close();
+    }
+
+    await expect.poll(() => lecturer.page.locator("#slide-label").textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ \(live\)$/);
+    await expect.poll(() => lecturer.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
+    await expect.poll(() => student.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
+
+    // Browsing away drops "(live)", and the marker names the deck.
+    const label = student.page.locator("#slide-label");
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ of 10 \(live\)$/);
+    const live = Number((await label.textContent())!.match(/slide (\d+)/)![1]);
+    await student.page.keyboard.press(live > 1 ? "ArrowLeft" : "ArrowRight");
+    const viewed = live > 1 ? live - 1 : live + 1;
+    await expect.poll(() => label.textContent()).toBe(`Week 4, slide ${viewed} of 10`);
+    expect(await student.page.locator("#live-marker").textContent()).toBe(
+      `You're on Week 4, slide ${viewed}. The lecture is on Week 4, slide ${live}.`,
+    );
+
+    expect(student.problems).toEqual([]);
+    expect(lecturer.problems).toEqual([]);
+  } finally {
+    await student.context.close();
+    await lecturer.context.close();
+    await tapper.context.close();
+  }
+}, 30_000);
