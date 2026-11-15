@@ -51,6 +51,8 @@ export function createLecturerSession(lectureId: string): string {
   return token;
 }
 
+const LECTURER_SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
 export function validateLecturerSession(
   lectureId: string,
   cookieHeader: string | null | undefined,
@@ -58,27 +60,37 @@ export function validateLecturerSession(
   const cookies = parseCookies(cookieHeader);
   const token = cookies[LECTURER_COOKIE];
   if (!token) return false;
-  return lecturerSessionValid(token, lectureId);
+  const since = new Date(Date.now() - LECTURER_SESSION_MAX_AGE_MS).toISOString();
+  return lecturerSessionValid(token, lectureId, since);
 }
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
 const failedAttempts = new Map<string, number[]>();
 
-// Rejects without even checking the code once a lecture has hit the limit —
-// avoids needless scrypt cost under hammering. Both outcomes (rate-limited,
-// wrong code) look identical to the caller, so this isn't a timing oracle.
-export function checkLoginRateLimit(lectureId: string): boolean {
+// Keyed by browser+lecture, not lecture alone — a per-lecture limit means
+// ten wrong guesses from any one browser locks every browser out of that
+// lecture's lecturer view for a minute (ADR 003's own "what it costs" list).
+// Keying by the pair confines a lockout to the browser that earned it.
+function rateLimitKey(lectureId: string, browserId: string | undefined): string {
+  return `${lectureId}:${browserId ?? "no-cookie"}`;
+}
+
+// Rejects without even checking the code once this browser has hit the
+// limit for this lecture — avoids needless scrypt cost under hammering.
+// Both outcomes (rate-limited, wrong code) look identical to the caller, so
+// this isn't a timing oracle.
+export function checkLoginRateLimit(lectureId: string, browserId: string | undefined): boolean {
+  const key = rateLimitKey(lectureId, browserId);
   const now = Date.now();
-  const attempts = (failedAttempts.get(lectureId) ?? []).filter(
-    (t) => now - t < RATE_LIMIT_WINDOW_MS,
-  );
-  failedAttempts.set(lectureId, attempts);
+  const attempts = (failedAttempts.get(key) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  failedAttempts.set(key, attempts);
   return attempts.length < RATE_LIMIT_MAX;
 }
 
-export function recordFailedLogin(lectureId: string): void {
-  const attempts = failedAttempts.get(lectureId) ?? [];
+export function recordFailedLogin(lectureId: string, browserId: string | undefined): void {
+  const key = rateLimitKey(lectureId, browserId);
+  const attempts = failedAttempts.get(key) ?? [];
   attempts.push(Date.now());
-  failedAttempts.set(lectureId, attempts);
+  failedAttempts.set(key, attempts);
 }

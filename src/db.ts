@@ -355,10 +355,13 @@ export function insertLecturerSession(token: string, lectureId: string): void {
   );
 }
 
-export function lecturerSessionValid(token: string, lectureId: string): boolean {
+// sinceIso is the cutoff below which a session has expired (now - 12h),
+// computed by the caller — same pattern as every other since-based query in
+// this file, rather than trusting SQLite's own clock.
+export function lecturerSessionValid(token: string, lectureId: string, sinceIso: string): boolean {
   const row = db
-    .prepare("SELECT 1 FROM lecturer_sessions WHERE token = ? AND lecture_id = ?")
-    .get(token, lectureId);
+    .prepare("SELECT 1 FROM lecturer_sessions WHERE token = ? AND lecture_id = ? AND created_at >= ?")
+    .get(token, lectureId, sinceIso);
   return row !== undefined;
 }
 
