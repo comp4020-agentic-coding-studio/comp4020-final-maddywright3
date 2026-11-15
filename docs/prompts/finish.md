@@ -314,3 +314,65 @@ move anyone else; a second tap on the same slide is ignored, a tap on another sl
 counts, and two parallel taps on one slide count once. Playwright once the UI branch
 has merged: the dashboard and timeline at both viewports, keyboard only, no overflow.
 Commit in small steps with messages saying why.
+
+## Colour and layout
+
+Start a NEW subagent in its own git worktree, branch colour-and-layout off the
+current main. PORT=8084, APP_URL=http://localhost:8084, DATA_DIR=/tmp/meter-d.
+The lecture-features agent is working separately. Don't touch its branch. You own
+/style.css, the page header, the home page and the lecturer page layout shell. It
+owns behaviour and the SVG graph markup. No new dependencies.
+Save this message word for word to docs/prompts/finish.md under
+"## Colour and layout" (its own commit). Take screenshots into
+docs/screenshots/before-colour/ at 390x844 and 1920x1080 before changing anything.
+
+The UI is too plain and has no colour. Make it calm but engaging. Being lost is
+normal, so never use red or alarm colours for it.
+
+1. Design tokens in /style.css, with exactly these names (the other agent uses them):
+   Light:
+   --paper #F6F1E7   --surface #FFFDF8   --ink #1E2733   --ink-muted #5A6370
+   --line #E2DACB    --accent #2F6F5E (eucalypt: links, focus, Live marker)
+   --lost #6A4BB5 (violet: the I'm lost button, gauge, lost bars)
+   --clicked #C98A12 (wattle: "I get it now" and what helped)
+   --sky #3B78B5     --on-colour #FFFFFF
+   Dark (prefers-color-scheme):
+   --paper #12171E   --surface #1B222C   --ink #ECE7DC   --ink-muted #A7AFBA
+   --line #2C3542    --accent #6CC3A6    --lost #A68DF0   --clicked #E9B949
+   --sky #7FB2E5     --on-colour #12171E
+   Categorical order for graphs: --lost, --accent, --clicked, --sky.
+   Check contrast with axe: 4.5:1 for text, 3:1 for graph marks and borders. If a value
+   fails, adjust its lightness only, and tell me what changed.
+   Colour is never the only signal: every bar and segment also has a label.
+
+2. Feel:
+   - Cards on --surface over --paper, radius 14px, a 1px --line border and a very soft
+     shadow. Spacing on an 8px grid.
+   - System font stack. Headings weight 650. Numbers use tabular-nums.
+   - The I'm lost button: a full-width violet pill, at least 56px tall, white text,
+     sticky at the bottom on phones.
+   - The gauge: a thick rounded track in --line with a --lost fill, and the words beside it.
+   - Slide card: large readable text, a small chip "Week 4 · slide 3 of 9", and a
+     "LIVE" pill in --accent when on the live slide.
+   - Transitions under 150ms, none with prefers-reduced-motion.
+
+3. Header and home on every page:
+   - A header with the app name (links home) and nav: Home, Join the demo,
+     Lecturer view, Create a lecture, How it works (/readme/). Keyboard reachable,
+     collapses neatly at 390px.
+   - Home page: three cards: "I'm a student" (join the demo), "I'm a lecturer"
+     (the demo lecturer view with code DEMO, or create your own), and
+     "How it works" (/readme/). One short line on each.
+
+4. Lecturer layout (it's currently far too zoomed in):
+   - Normal type size by default, max width about 1200px.
+   - A row of stat tiles at the top. Below it, a 2x2 grid of empty graph slots with ids
+     graph-lost, graph-reasons, graph-helped, graph-resolved. A right column for the live
+     slide and notes. A full-width activity log section (id activity-log) at the bottom.
+     Stacks to one column at 390px.
+   - A "Projector mode" link (?projector=1, works without JS) that scales type 1.5x.
+
+Keep every existing test green, and add Playwright checks: no overflow at either
+viewport, the header nav reachable by keyboard, axe passing in light and dark.
+Then take screenshots into docs/screenshots/after-colour/. Commit in small steps.
+Ask before pushing or deploying.
