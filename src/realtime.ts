@@ -4,22 +4,24 @@ import { getLecture, hasLiveTap, liveTapInfo, perMinuteTimeline, tapCount, yourT
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 
-export interface MeterState {
-  present: number;
-  live: number;
-  shown: boolean;
-  totalTaps: number;
-  yourTapCount: number;
-  youAreCounted: boolean;
-}
+// Below min_present, live/totalTaps/timeline are never present on the
+// object at all (not just zeroed or hidden on screen) — the point of
+// "safety in numbers" is that a tap below threshold leaves no trace
+// anywhere a request can see, not just that the gauge text looks blank.
+export type MeterState =
+  | { present: number; shown: false; yourTapCount: number; youAreCounted: boolean }
+  | {
+      present: number;
+      shown: true;
+      live: number;
+      totalTaps: number;
+      yourTapCount: number;
+      youAreCounted: boolean;
+    };
 
-export interface LecturerState {
-  present: number;
-  live: number;
-  shown: boolean;
-  totalTaps: number;
-  timeline: { minute: string; count: number }[];
-}
+export type LecturerState =
+  | { present: number; shown: false }
+  | { present: number; shown: true; live: number; totalTaps: number; timeline: { minute: string; count: number }[] };
 
 // Student/presence connections, keyed by lecture then by browser, so
 // "present" counts unique browsers rather than open tabs or connections.
@@ -84,32 +86,26 @@ export function computeState(lectureId: string, browserId: string): MeterState |
   const lecture = getLecture(lectureId);
   if (!lecture) return undefined;
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  const { count: live } = liveTapInfo(lectureId, since);
   const present = presentCount(lectureId);
-  const totalTaps = tapCount(lectureId);
-  return {
-    present,
-    live,
-    shown: present >= lecture.min_present,
-    totalTaps,
+  const shown = present >= lecture.min_present;
+  const yours = {
     yourTapCount: yourTapCount(lectureId, browserId),
     youAreCounted: hasLiveTap(lectureId, browserId, since),
   };
+  if (!shown) return { present, shown, ...yours };
+  const { count: live } = liveTapInfo(lectureId, since);
+  return { present, shown, live, totalTaps: tapCount(lectureId), ...yours };
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
   const lecture = getLecture(lectureId);
   if (!lecture) return undefined;
+  const present = presentCount(lectureId);
+  const shown = present >= lecture.min_present;
+  if (!shown) return { present, shown };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  const present = presentCount(lectureId);
-  return {
-    present,
-    live,
-    shown: present >= lecture.min_present,
-    totalTaps: tapCount(lectureId),
-    timeline: perMinuteTimeline(lectureId),
-  };
+  return { present, shown, live, totalTaps: tapCount(lectureId), timeline: perMinuteTimeline(lectureId) };
 }
 
 export function broadcast(lectureId: string): void {

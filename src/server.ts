@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
-import { createLecture, getLecture, tapCount, tapIfNotRecentlyTapped } from "./db.ts";
+import { createLecture, getLecture, tapIfNotRecentlyTapped } from "./db.ts";
 import {
   BROWSER_COOKIE,
   LECTURER_COOKIE,
@@ -121,7 +121,10 @@ async function handleHome(): Promise<Response> {
   });
 }
 
-function gaugeMessage(state: { present: number; live: number; shown: boolean }, minPresent: number): string {
+function gaugeMessage(
+  state: { present: number; shown: false } | { present: number; shown: true; live: number },
+  minPresent: number,
+): string {
   if (state.shown) {
     return `${state.present} people here, ${state.live} lost right now`;
   }
@@ -137,9 +140,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
 
   const state = computeState(id, browserId) ?? {
     present: 0,
-    live: 0,
-    shown: false,
-    totalTaps: tapCount(id),
+    shown: false as const,
     yourTapCount: 0,
     youAreCounted: false,
   };
@@ -149,6 +150,11 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     ? `<button class="tap-button" id="tap-button" type="submit" disabled>You're already counted</button>`
     : `<button class="tap-button" id="tap-button" type="submit">I'm lost</button>`;
 
+  // Below min_present, "Total taps" isn't rendered at all — not blanked,
+  // not zeroed, just absent — since a hidden gauge still leaking the real
+  // total in a sibling element would defeat the point of hiding it.
+  const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
+
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
@@ -156,7 +162,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       ${buttonHtml}
     </form>
     <p id="tap-feedback" aria-live="polite"></p>
-    <p id="tap-count">Total taps: ${state.totalTaps}</p>
+    ${tapCountHtml}
     <p id="your-count">You've said you're lost ${state.yourTapCount} time${state.yourTapCount === 1 ? "" : "s"} in this lecture</p>
     <script>
       (function () {
@@ -171,10 +177,19 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         function render(state) {
           if (state.shown) {
             gauge.textContent = state.present + " people here, " + state.live + " lost right now";
+            if (!tapCount) {
+              tapCount = document.createElement("p");
+              tapCount.id = "tap-count";
+              feedback.insertAdjacentElement("afterend", tapCount);
+            }
+            tapCount.textContent = "Total taps: " + state.totalTaps;
           } else {
             gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
+            if (tapCount) {
+              tapCount.remove();
+              tapCount = null;
+            }
           }
-          tapCount.textContent = "Total taps: " + state.totalTaps;
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
           if (state.youAreCounted) {
             button.disabled = true;
@@ -340,7 +355,9 @@ function lecturerLoginForm(id: string, error?: string): string {
 
 function lecturerDashboard(
   id: string,
-  state: { present: number; live: number; shown: boolean; totalTaps: number; timeline: { minute: string; count: number }[] },
+  state:
+    | { present: number; shown: false }
+    | { present: number; shown: true; live: number; totalTaps: number; timeline: { minute: string; count: number }[] },
   minPresent: number,
 ): string {
   const formatter = new Intl.DateTimeFormat("en-AU", {
@@ -348,48 +365,72 @@ function lecturerDashboard(
     dateStyle: "short",
     timeStyle: "short",
   });
-  const rows = state.timeline
-    .map(
-      (bucket) =>
-        `<tr><td>${escapeHtml(formatter.format(new Date(bucket.minute)))}</td><td>${bucket.count}</td></tr>`,
-    )
-    .join("\n");
-  return `
-    <h1>Lecturer view</h1>
-    <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
+
+  // Below min_present, the total and the timeline aren't rendered at all —
+  // not blanked, not empty placeholders — so there's nothing in the markup
+  // for a curious viewer to read past a merely-hidden gauge. The script
+  // creates/removes the same elements on each live update, rather than
+  // ever having them present-but-empty in the DOM.
+  const extrasHtml = state.shown
+    ? `
     <p id="tap-count">Total taps: ${state.totalTaps}</p>
     <table class="timeline" id="timeline">
       <thead><tr><th>Minute (Sydney time)</th><th>Taps</th></tr></thead>
       <tbody>
-${rows}
+${state.timeline
+  .map((bucket) => `<tr><td>${escapeHtml(formatter.format(new Date(bucket.minute)))}</td><td>${bucket.count}</td></tr>`)
+  .join("\n")}
       </tbody>
-    </table>
+    </table>`
+    : "";
+
+  return `
+    <h1>Lecturer view</h1>
+    <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
+${extrasHtml}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
         var gauge = document.getElementById("gauge");
-        var tapCount = document.getElementById("tap-count");
-        var tbody = document.querySelector("#timeline tbody");
         var formatter = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Sydney", dateStyle: "short", timeStyle: "short" });
 
         function render(state) {
           if (state.shown) {
             gauge.textContent = state.present + " people here, " + state.live + " lost right now";
+            var tapCount = document.getElementById("tap-count");
+            if (!tapCount) {
+              tapCount = document.createElement("p");
+              tapCount.id = "tap-count";
+              gauge.insertAdjacentElement("afterend", tapCount);
+            }
+            tapCount.textContent = "Total taps: " + state.totalTaps;
+            var table = document.getElementById("timeline");
+            if (!table) {
+              table = document.createElement("table");
+              table.className = "timeline";
+              table.id = "timeline";
+              table.innerHTML = "<thead><tr><th>Minute (Sydney time)</th><th>Taps</th></tr></thead><tbody></tbody>";
+              tapCount.insertAdjacentElement("afterend", table);
+            }
+            var tbody = table.querySelector("tbody");
+            tbody.innerHTML = "";
+            state.timeline.forEach(function (bucket) {
+              var tr = document.createElement("tr");
+              var tdMinute = document.createElement("td");
+              tdMinute.textContent = formatter.format(new Date(bucket.minute));
+              var tdCount = document.createElement("td");
+              tdCount.textContent = String(bucket.count);
+              tr.appendChild(tdMinute);
+              tr.appendChild(tdCount);
+              tbody.appendChild(tr);
+            });
           } else {
             gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
+            var oldTapCount = document.getElementById("tap-count");
+            if (oldTapCount) oldTapCount.remove();
+            var oldTable = document.getElementById("timeline");
+            if (oldTable) oldTable.remove();
           }
-          tapCount.textContent = "Total taps: " + state.totalTaps;
-          tbody.innerHTML = "";
-          state.timeline.forEach(function (bucket) {
-            var tr = document.createElement("tr");
-            var tdMinute = document.createElement("td");
-            tdMinute.textContent = formatter.format(new Date(bucket.minute));
-            var tdCount = document.createElement("td");
-            tdCount.textContent = String(bucket.count);
-            tr.appendChild(tdMinute);
-            tr.appendChild(tdCount);
-            tbody.appendChild(tr);
-          });
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -424,13 +465,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
   }
 
-  const state = computeLecturerState(id) ?? {
-    present: 0,
-    live: 0,
-    shown: false,
-    totalTaps: tapCount(id),
-    timeline: [],
-  };
+  const state = computeLecturerState(id) ?? { present: 0, shown: false as const };
   return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present)), {
     status: 200,
     headers,
