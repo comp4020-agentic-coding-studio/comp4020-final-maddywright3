@@ -25,7 +25,7 @@
 - No per-person history is ever shown. Taps are shown as counts per slide, by distinct browser.
 - Lecturer and student state travel on separate routes.
 - Live numbers (live, total, reasons) only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.) A history bar for a slide is only sent once >= min_present distinct browsers have tapped on that slide. A browser may always see its own counts. (Refined in ADR 004 so a returning visitor still sees history.)
-- Never add free-text input for students. Reasons come from a fixed list checked on the server.
+- Student text (notes) is only ever shown to the lecturer, per slide, once at least min_present distinct browsers have written a note on that slide. Never send note text to students, never log it, never send it to any third party. Reasons still come from a fixed list checked on the server. (Changed in the ADR 004 amendment.)
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
 - Every page must work without JavaScript.
 
