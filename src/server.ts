@@ -163,6 +163,35 @@ const notFoundResponse = (): Response =>
 
 const isHttps = (req: Request): boolean => req.headers.get("x-forwarded-proto") === "https";
 
+interface BrowserIdentity {
+  browserId: string;
+  headers: Headers;
+}
+
+// Every GET/POST handler that renders a page needs a browser identity and,
+// if one was just minted, a Set-Cookie for it — the same five-plus lines
+// were repeated verbatim in handleLecture, handleLecturerGet,
+// handleLecturerPost, and both /new handlers. Returns headers already
+// carrying the content-type and (if minted) the cookie, so a caller only
+// ever needs to add anything further, never rebuild this part.
+function ensureBrowserIdentity(req: Request): BrowserIdentity {
+  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
+  if (minted) {
+    headers.append(
+      "set-cookie",
+      serializeCookie(BROWSER_COOKIE, browserId, {
+        httpOnly: true,
+        sameSite: "Lax",
+        path: "/",
+        secure: isHttps(req),
+        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
+      }),
+    );
+  }
+  return { browserId, headers };
+}
+
 // decodeURIComponent throws on malformed percent-encoding (a lone %E0 isn't
 // valid UTF-8) rather than failing softly, and a lecture id comes straight
 // from the URL path — so a bad request must not look like a bug that takes
@@ -399,7 +428,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
 
-  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
+  const { browserId, headers } = ensureBrowserIdentity(req);
   logAction("page_view", id, browserId);
 
   const liveSlide = currentSlideIndex(lecture);
@@ -901,19 +930,6 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </script>
   `;
 
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
-  if (minted) {
-    headers.append(
-      "set-cookie",
-      serializeCookie(BROWSER_COOKIE, browserId, {
-        httpOnly: true,
-        sameSite: "Lax",
-        path: "/",
-        secure: isHttps(req),
-        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
-      }),
-    );
-  }
   return new Response(page(lecture.title, body), { status: 200, headers });
 }
 
@@ -1563,20 +1579,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
 
-  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
-  if (minted) {
-    headers.append(
-      "set-cookie",
-      serializeCookie(BROWSER_COOKIE, browserId, {
-        httpOnly: true,
-        sameSite: "Lax",
-        path: "/",
-        secure: isHttps(req),
-        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
-      }),
-    );
-  }
+  const { headers } = ensureBrowserIdentity(req);
 
   if (!validateLecturerSession(id, req.headers.get("cookie"))) {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
@@ -1600,20 +1603,7 @@ async function handleLecturerPost(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
 
-  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
-  if (minted) {
-    headers.append(
-      "set-cookie",
-      serializeCookie(BROWSER_COOKIE, browserId, {
-        httpOnly: true,
-        sameSite: "Lax",
-        path: "/",
-        secure: isHttps(req),
-        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
-      }),
-    );
-  }
+  const { browserId, headers } = ensureBrowserIdentity(req);
 
   if (!checkLoginRateLimit(id, browserId)) {
     logAction("lecturer_login_failed", id, browserId);
@@ -1697,38 +1687,12 @@ const LECTURE_TITLE_MAX_LENGTH = 100;
 const LECTURE_TOTAL_CAP = 500;
 
 async function handleNewGet(req: Request): Promise<Response> {
-  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
-  if (minted) {
-    headers.append(
-      "set-cookie",
-      serializeCookie(BROWSER_COOKIE, browserId, {
-        httpOnly: true,
-        sameSite: "Lax",
-        path: "/",
-        secure: isHttps(req),
-        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
-      }),
-    );
-  }
+  const { headers } = ensureBrowserIdentity(req);
   return new Response(page("Start a lecture", newLectureForm()), { status: 200, headers });
 }
 
 async function handleNewPost(req: Request): Promise<Response> {
-  const { id: browserId, minted } = ensureBrowserId(req.headers.get("cookie"));
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8" });
-  if (minted) {
-    headers.append(
-      "set-cookie",
-      serializeCookie(BROWSER_COOKIE, browserId, {
-        httpOnly: true,
-        sameSite: "Lax",
-        path: "/",
-        secure: isHttps(req),
-        maxAgeSeconds: BROWSER_COOKIE_MAX_AGE,
-      }),
-    );
-  }
+  const { browserId, headers } = ensureBrowserIdentity(req);
 
   const body = await req.text();
   const title = new URLSearchParams(body).get("title")?.trim();
