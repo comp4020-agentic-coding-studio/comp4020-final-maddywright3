@@ -11,7 +11,13 @@ export type LogAction =
   | "lecturer_login_failed"
   | "lecture_created"
   | "slide_changed"
-  | "slide_change_rejected";
+  | "slide_change_rejected"
+  | "reason_set"
+  | "reason_rejected"
+  | "tap_resolved"
+  | "note_submitted"
+  | "note_rejected"
+  | "note_hidden";
 
 // `who` is never the raw browser ID: a real ID is hashed (one-way, so repeat
 // activity from the same browser still correlates in the logs); a missing
