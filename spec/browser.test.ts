@@ -356,3 +356,55 @@ it("live updates name the deck and slide the same way the server does", async ()
     await tapper.context.close();
   }
 }, 30_000);
+
+// A created lecture's slide is wherever the lecturer's Next/Prev leaves it.
+// The student page has no slides of its own to browse, so it must follow:
+// the label, and the slide a tap records, move when the lecturer presses
+// Next, with no reload.
+it("a created lecture's student page follows the lecturer's Next live", async () => {
+  const lecturer = await openWatched(1920, 1080);
+  const student = await openWatched(390, 844);
+  try {
+    const created = await lecturer.context.request.post(new URL("/new", baseUrl).toString(), { form: { title: "Follow Next test" } });
+    const createdHtml = await created.text();
+    const lectureId = createdHtml.match(/\/l\/([a-f0-9]+)/)![1];
+    const code = createdHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
+    await lecturer.context.request.post(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString(), { form: { code }, maxRedirects: 0 });
+
+    await student.page.goto(new URL(`/l/${lectureId}`, baseUrl).toString());
+    const label = student.page.locator("#slide-label");
+    await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
+
+    await lecturer.page.goto(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString());
+    await lecturer.page.locator("#slide-next-form button").click();
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toBe("Slide 2 (live)");
+    expect(await student.page.locator("#slide-input").inputValue()).toBe("2");
+
+    // A tap now records slide 2, the one the lecturer moved to.
+    await student.page.locator("#tap-button").click();
+    await expect.poll(() => student.page.locator("#tap-said").isVisible(), { timeout: 3000 }).toBe(true);
+    // The browser's own record of its taps says slide 2, nothing else.
+    const yourSlides = await student.page.evaluate(
+      (id) =>
+        new Promise((resolve) => {
+          const source = new EventSource(`/l/${id}/events`);
+          source.onmessage = (e) => {
+            source.close();
+            resolve(JSON.parse(e.data).yourSlides);
+          };
+        }),
+      lectureId,
+    );
+    expect(yourSlides).toEqual([{ deck: null, slide: 2, live: true }]);
+    await lecturer.page.locator("#slide-next-form button").click();
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toBe("Slide 3 (live)");
+    // A new slide offers "I'm lost" again.
+    await expect.poll(() => student.page.locator("#tap-button").textContent()).toBe("I'm lost");
+
+    expect(student.problems).toEqual([]);
+    expect(lecturer.problems).toEqual([]);
+  } finally {
+    await lecturer.context.close();
+    await student.context.close();
+  }
+}, 30_000);
