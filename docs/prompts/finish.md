@@ -90,3 +90,51 @@ PHASE 5 - accessibility and hardening
 
 Not in scope: accounts, names, free text, editing or deleting lectures, anything third-party.
 Show me the plan for all phases first.
+
+## Amendment: from the lectures
+
+Add these to the plan for Phases 4 and 5, from the course lectures. Append this
+message word for word to docs/prompts/finish.md under "## Amendment: from the
+lectures" (its own commit). Then carry on with the current phase.
+
+Show your work (Week 5)
+- Never report "it works" without the artefact. For every hand check you claim,
+  paste the response body, status code, console output or a screenshot.
+- Every Playwright test also fails if the browser console logs any error or
+  failed request on any page. A page can look fine and throw anyway.
+
+Two people at once (Week 10)
+- Add a test where two browsers act on the same thing at the same moment:
+  the lecturer hides a note while its author replaces it, and two lecturers
+  press Next at once. Decide what should win, say why in the commit message,
+  and test it.
+- Log every server error with enough context to reproduce it (route, lecture,
+  hashed who, error message), never request bodies or note text.
+
+What survives a restart (Week 7)
+- List every piece of in-memory state (open streams, rate limits, the /new limit,
+  fade timers) and what happens to it on a restart or redeploy. Write the list to
+  docs/state.md. Anything a user would notice losing goes in the database instead,
+  or into the list as an accepted cost.
+
+Owning the code (Week 12)
+- At the end of Phase 4, do a deduplication pass with the tests underneath. For
+  example, browser-cookie minting is repeated in handleLecture, handleLecturerGet
+  and handleLecturerPost. Behaviour must not change, and pnpm check must pass
+  before and after. Its own commit.
+- Then write docs/walkthrough.md: a linear walkthrough of src/realtime.ts and
+  src/server.ts in the order I'd need to read them to change how a tap reaches
+  every open page. Entry point first, and what each part is there for.
+
+Harness hygiene (Weeks 4 and 6)
+- CLAUDE.md must stay under 200 lines. At the end of Phase 5, remove anything
+  stale or superseded, and merge duplicate rules. Keep every bracketed reason.
+  Show me the diff before committing.
+- Every commit message says why, not just what.
+
+The README's second job (Week 12)
+- /readme/ is also the usage guide, because markers start there with only the URL.
+  At the end of Phase 5, check that every step in "Try it" works exactly as written
+  in two fresh Chrome profiles, and tell me which steps needed changes.
+
+Ask before any dependency, CI change, deploy, push or tag.
