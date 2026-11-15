@@ -10,7 +10,8 @@
     "check": "pnpm typecheck && pnpm test",
     "check:evidence": "node scripts/check-evidence.ts",
     "test": "vitest run",
-    "load": "node scripts/load-test.ts"
+    "load": "node scripts/load-test.ts",
+    "persist": "node scripts/persistence-check.ts"
   },
   "dependencies": {
     "marked": "^18.2.0"
