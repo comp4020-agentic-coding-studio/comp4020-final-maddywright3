@@ -562,7 +562,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       </div>
       <div class="tap-bar">
         <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
-          <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
+          ${id === "demo" ? `<input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">` : ""}
           <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
           ${buttonHtml}
         </form>
@@ -1072,6 +1072,15 @@ ${SLIDE_NAME_CLIENT_JS}
   return new Response(page(lecture.title, body, "lecture"), { status: 200, headers });
 }
 
+// The deck a tap or note is filed under. Only the demo has decks: a created
+// lecture's slides are just numbers, so any deck sent for one (a stale page,
+// a hand-made request) is dropped rather than stored, or its taps would
+// group apart from its notes on the same slide.
+function deckFor(lectureId: string, submitted: string | null): string | undefined {
+  if (lectureId !== "demo") return undefined;
+  return submitted !== null && submitted !== "" ? submitted : undefined;
+}
+
 async function handleTap(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -1096,7 +1105,7 @@ async function handleTap(id: string, req: Request): Promise<Response> {
   const body = await req.text();
   const params = new URLSearchParams(body);
   const submittedDeckRaw = params.get("deck");
-  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedDeck = deckFor(lecture.id, submittedDeckRaw);
   const submittedSlideRaw = params.get("slide");
   const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
   if (!isValidSlide(lecture, submittedDeck, submittedSlide)) {
@@ -1247,7 +1256,7 @@ async function handleNote(id: string, req: Request): Promise<Response> {
   const body = await req.text();
   const params = new URLSearchParams(body);
   const submittedDeckRaw = params.get("deck");
-  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedDeck = deckFor(lecture.id, submittedDeckRaw);
   const submittedSlideRaw = params.get("slide");
   const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
   const text = params.get("text") ?? "";
