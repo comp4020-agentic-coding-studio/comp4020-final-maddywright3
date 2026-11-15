@@ -33,6 +33,7 @@ import {
   scheduleSlideAdvance,
   startHeartbeat,
 } from "./realtime.ts";
+import type { Bar } from "./realtime.ts";
 import {
   DECK_IDS,
   DECK_TITLES,
@@ -73,14 +74,19 @@ const STYLE = `
     margin: 1.5rem 0;
     min-height: 3.5rem;
   }
-  table.timeline {
+  table.bars {
     border-collapse: collapse;
     width: 100%;
   }
-  table.timeline th, table.timeline td {
+  table.bars th, table.bars td {
     border-bottom: 1px solid #ccc;
     padding: 0.25rem 0.5rem;
     text-align: left;
+  }
+  svg.bar-chart {
+    width: 100%;
+    height: auto;
+    display: block;
   }
 `;
 
@@ -142,6 +148,46 @@ function gaugeMessage(
     return `${state.present} people here, ${state.live} lost right now`;
   }
   return `Waiting for ${Math.max(0, minPresent - state.present)} more people`;
+}
+
+function barLabel(bar: Bar): string {
+  return bar.deck !== null ? `${bar.deck} / slide ${bar.slide}` : `Slide ${bar.slide}`;
+}
+
+// Bars are rendered twice: an inline SVG chart (viewBox-based, so it scales
+// to any width without a fixed pixel size — keeps it from forcing
+// horizontal scroll at 390px) and a text <table> alternative for screen
+// readers. A bar with 0 entries renders neither — there's nothing in the
+// markup for a curious viewer to read past an empty chart, same discipline
+// as every other gated element on this page.
+function barsHtml(bars: Bar[]): string {
+  if (bars.length === 0) return "";
+  const sorted = [...bars].sort((a, b) => (a.deck ?? "").localeCompare(b.deck ?? "") || a.slide - b.slide);
+  const maxCount = Math.max(...sorted.map((b) => b.distinctBrowsers));
+  const barWidth = 80;
+  const gap = 20;
+  const chartWidth = sorted.length * (barWidth + gap) + gap;
+  const chartHeight = 200;
+  const maxBarHeight = 150;
+  const rects = sorted
+    .map((bar, i) => {
+      const height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
+      const x = gap + i * (barWidth + gap);
+      const y = chartHeight - height - 20;
+      return `<rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="currentColor"><title>${escapeHtml(barLabel(bar))}: ${bar.distinctBrowsers}</title></rect><text x="${x + barWidth / 2}" y="${chartHeight - 4}" text-anchor="middle" font-size="12">${i + 1}</text>`;
+    })
+    .join("\n");
+  return `
+    <svg class="bar-chart" id="bars-chart" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-label="Distinct people lost, per slide">
+      ${rects}
+    </svg>
+    <table class="bars" id="bars-table">
+      <thead><tr><th>Slide</th><th>People lost here</th></tr></thead>
+      <tbody>
+${sorted.map((bar) => `<tr><td>${escapeHtml(barLabel(bar))}</td><td>${bar.distinctBrowsers}</td></tr>`).join("\n")}
+      </tbody>
+    </table>
+  `;
 }
 
 // The demo lecture has two decks. Both are rendered entirely server-side,
@@ -266,6 +312,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     present: 0,
     shown: false as const,
     slide: liveSlide,
+    bars: [] as Bar[],
     yourTapCount: 0,
     youAreCounted: false,
   };
@@ -294,6 +341,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </form>
     <p id="tap-feedback" aria-live="polite"></p>
     ${tapCountHtml}
+    <div id="bars">${barsHtml(state.bars)}</div>
     <p id="your-count">You've said you're lost ${state.yourTapCount} time${state.yourTapCount === 1 ? "" : "s"} in this lecture</p>
     <script>
       (function () {
@@ -409,6 +457,71 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           if (event.key === "ArrowRight" && (!maxSlide || viewedSlide < maxSlide)) showSlide(viewedDeck, viewedSlide + 1);
         });
 
+        function renderBars(bars) {
+          var container = document.getElementById("bars");
+          if (!container) return;
+          if (!bars || bars.length === 0) {
+            container.innerHTML = "";
+            return;
+          }
+          var sorted = bars.slice().sort(function (a, b) {
+            return (a.deck || "").localeCompare(b.deck || "") || a.slide - b.slide;
+          });
+          var maxCount = Math.max.apply(null, sorted.map(function (b) { return b.distinctBrowsers; }));
+          var barWidth = 80, gap = 20, chartHeight = 200, maxBarHeight = 150;
+          var chartWidth = sorted.length * (barWidth + gap) + gap;
+          var svgNS = "http://www.w3.org/2000/svg";
+          var svg = document.createElementNS(svgNS, "svg");
+          svg.setAttribute("class", "bar-chart");
+          svg.setAttribute("viewBox", "0 0 " + chartWidth + " " + chartHeight);
+          svg.setAttribute("role", "img");
+          svg.setAttribute("aria-label", "Distinct people lost, per slide");
+          sorted.forEach(function (bar, i) {
+            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
+            var x = gap + i * (barWidth + gap);
+            var y = chartHeight - height - 20;
+            var rect = document.createElementNS(svgNS, "rect");
+            rect.setAttribute("x", String(x));
+            rect.setAttribute("y", String(y));
+            rect.setAttribute("width", String(barWidth));
+            rect.setAttribute("height", String(height));
+            rect.setAttribute("fill", "currentColor");
+            var title = document.createElementNS(svgNS, "title");
+            title.textContent = label + ": " + bar.distinctBrowsers;
+            rect.appendChild(title);
+            svg.appendChild(rect);
+            var text = document.createElementNS(svgNS, "text");
+            text.setAttribute("x", String(x + barWidth / 2));
+            text.setAttribute("y", String(chartHeight - 4));
+            text.setAttribute("text-anchor", "middle");
+            text.setAttribute("font-size", "12");
+            text.textContent = String(i + 1);
+            svg.appendChild(text);
+          });
+          var table = document.createElement("table");
+          table.className = "bars";
+          var thead = document.createElement("thead");
+          thead.innerHTML = "<tr><th>Slide</th><th>People lost here</th></tr>";
+          var tbody = document.createElement("tbody");
+          sorted.forEach(function (bar) {
+            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var tr = document.createElement("tr");
+            var tdLabel = document.createElement("td");
+            tdLabel.textContent = label;
+            var tdCount = document.createElement("td");
+            tdCount.textContent = String(bar.distinctBrowsers);
+            tr.appendChild(tdLabel);
+            tr.appendChild(tdCount);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(thead);
+          table.appendChild(tbody);
+          container.innerHTML = "";
+          container.appendChild(svg);
+          container.appendChild(table);
+        }
+
         function render(state) {
           liveSlide = state.slide;
           var backLink = document.getElementById("back-to-live-link");
@@ -429,6 +542,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
               tapCount = null;
             }
           }
+          renderBars(state.bars);
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
           if (state.youAreCounted) {
             button.disabled = true;
@@ -624,40 +738,16 @@ function lecturerLoginForm(id: string, error?: string): string {
 function lecturerDashboard(
   id: string,
   state:
-    | { present: number; shown: false; slide: number }
-    | {
-        present: number;
-        shown: true;
-        slide: number;
-        live: number;
-        totalTaps: number;
-        timeline: { minute: string; count: number }[];
-      },
+    | { present: number; shown: false; slide: number; bars: Bar[] }
+    | { present: number; shown: true; slide: number; bars: Bar[]; live: number; totalTaps: number },
   minPresent: number,
 ): string {
-  const formatter = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "Australia/Sydney",
-    dateStyle: "short",
-    timeStyle: "short",
-  });
-
-  // Below min_present, the total and the timeline aren't rendered at all —
-  // not blanked, not empty placeholders — so there's nothing in the markup
-  // for a curious viewer to read past a merely-hidden gauge. The script
-  // creates/removes the same elements on each live update, rather than
-  // ever having them present-but-empty in the DOM.
-  const extrasHtml = state.shown
-    ? `
-    <p id="tap-count">Total taps: ${state.totalTaps}</p>
-    <table class="timeline" id="timeline">
-      <thead><tr><th>Minute (Sydney time)</th><th>Taps</th></tr></thead>
-      <tbody>
-${state.timeline
-  .map((bucket) => `<tr><td>${escapeHtml(formatter.format(new Date(bucket.minute)))}</td><td>${bucket.count}</td></tr>`)
-  .join("\n")}
-      </tbody>
-    </table>`
-    : "";
+  // Below min_present, the total isn't rendered at all — not blanked, not
+  // an empty placeholder — so there's nothing in the markup for a curious
+  // viewer to read past a merely-hidden gauge. Bars are gated separately,
+  // per (deck, slide) pair, independently of shown — barsHtml already
+  // renders nothing for an empty array, so this needs no extra branching.
+  const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
 
   // The demo's slide is clock-driven (ADR 004): there's nothing for a
   // lecturer to control, so no Previous/Next controls are rendered for it.
@@ -677,12 +767,77 @@ ${state.timeline
     <h1>Lecturer view</h1>
 ${slideControlsHtml}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
-${extrasHtml}
+${tapCountHtml}
+    <div id="bars">${barsHtml(state.bars)}</div>
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
         var gauge = document.getElementById("gauge");
-        var formatter = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Sydney", dateStyle: "short", timeStyle: "short" });
+
+        function renderBars(bars) {
+          var container = document.getElementById("bars");
+          if (!container) return;
+          if (!bars || bars.length === 0) {
+            container.innerHTML = "";
+            return;
+          }
+          var sorted = bars.slice().sort(function (a, b) {
+            return (a.deck || "").localeCompare(b.deck || "") || a.slide - b.slide;
+          });
+          var maxCount = Math.max.apply(null, sorted.map(function (b) { return b.distinctBrowsers; }));
+          var barWidth = 80, gap = 20, chartHeight = 200, maxBarHeight = 150;
+          var chartWidth = sorted.length * (barWidth + gap) + gap;
+          var svgNS = "http://www.w3.org/2000/svg";
+          var svg = document.createElementNS(svgNS, "svg");
+          svg.setAttribute("class", "bar-chart");
+          svg.setAttribute("viewBox", "0 0 " + chartWidth + " " + chartHeight);
+          svg.setAttribute("role", "img");
+          svg.setAttribute("aria-label", "Distinct people lost, per slide");
+          sorted.forEach(function (bar, i) {
+            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
+            var x = gap + i * (barWidth + gap);
+            var y = chartHeight - height - 20;
+            var rect = document.createElementNS(svgNS, "rect");
+            rect.setAttribute("x", String(x));
+            rect.setAttribute("y", String(y));
+            rect.setAttribute("width", String(barWidth));
+            rect.setAttribute("height", String(height));
+            rect.setAttribute("fill", "currentColor");
+            var title = document.createElementNS(svgNS, "title");
+            title.textContent = label + ": " + bar.distinctBrowsers;
+            rect.appendChild(title);
+            svg.appendChild(rect);
+            var text = document.createElementNS(svgNS, "text");
+            text.setAttribute("x", String(x + barWidth / 2));
+            text.setAttribute("y", String(chartHeight - 4));
+            text.setAttribute("text-anchor", "middle");
+            text.setAttribute("font-size", "12");
+            text.textContent = String(i + 1);
+            svg.appendChild(text);
+          });
+          var table = document.createElement("table");
+          table.className = "bars";
+          var thead = document.createElement("thead");
+          thead.innerHTML = "<tr><th>Slide</th><th>People lost here</th></tr>";
+          var tbody = document.createElement("tbody");
+          sorted.forEach(function (bar) {
+            var label = bar.deck ? bar.deck + " / slide " + bar.slide : "Slide " + bar.slide;
+            var tr = document.createElement("tr");
+            var tdLabel = document.createElement("td");
+            tdLabel.textContent = label;
+            var tdCount = document.createElement("td");
+            tdCount.textContent = String(bar.distinctBrowsers);
+            tr.appendChild(tdLabel);
+            tr.appendChild(tdCount);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(thead);
+          table.appendChild(tbody);
+          container.innerHTML = "";
+          container.appendChild(svg);
+          container.appendChild(table);
+        }
 
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
@@ -696,33 +851,12 @@ ${extrasHtml}
               gauge.insertAdjacentElement("afterend", tapCount);
             }
             tapCount.textContent = "Total taps: " + state.totalTaps;
-            var table = document.getElementById("timeline");
-            if (!table) {
-              table = document.createElement("table");
-              table.className = "timeline";
-              table.id = "timeline";
-              table.innerHTML = "<thead><tr><th>Minute (Sydney time)</th><th>Taps</th></tr></thead><tbody></tbody>";
-              tapCount.insertAdjacentElement("afterend", table);
-            }
-            var tbody = table.querySelector("tbody");
-            tbody.innerHTML = "";
-            state.timeline.forEach(function (bucket) {
-              var tr = document.createElement("tr");
-              var tdMinute = document.createElement("td");
-              tdMinute.textContent = formatter.format(new Date(bucket.minute));
-              var tdCount = document.createElement("td");
-              tdCount.textContent = String(bucket.count);
-              tr.appendChild(tdMinute);
-              tr.appendChild(tdCount);
-              tbody.appendChild(tr);
-            });
           } else {
             gauge.textContent = "Waiting for " + Math.max(0, minPresent - state.present) + " more people";
             var oldTapCount = document.getElementById("tap-count");
             if (oldTapCount) oldTapCount.remove();
-            var oldTable = document.getElementById("timeline");
-            if (oldTable) oldTable.remove();
           }
+          renderBars(state.bars);
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -761,6 +895,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     present: 0,
     shown: false as const,
     slide: currentSlideIndex(lecture),
+    bars: [] as Bar[],
   };
   return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present)), {
     status: 200,
