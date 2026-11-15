@@ -4,7 +4,16 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { marked } from "marked";
-import { createLecture, getLecture, setCurrentSlide, tapIfNotRecentlyTapped } from "./db.ts";
+import {
+  createLecture,
+  getLecture,
+  hideNoteById,
+  resolveTap,
+  setCurrentSlide,
+  setNote,
+  setTapReason,
+  tapIfNotRecentlyTapped,
+} from "./db.ts";
 import {
   BROWSER_COOKIE,
   LECTURER_COOKIE,
@@ -87,6 +96,41 @@ const STYLE = `
     width: 100%;
     height: auto;
     display: block;
+  }
+  table.reason-counts {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  table.reason-counts th, table.reason-counts td {
+    border-bottom: 1px solid #ccc;
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+  }
+  #reasons {
+    border: none;
+    padding: 0;
+    margin: 1rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  #reasons .reason-form {
+    margin: 0;
+  }
+  #note-form textarea {
+    width: 100%;
+    min-height: 4rem;
+    font: inherit;
+  }
+  ul#notes-list {
+    list-style: none;
+    padding: 0;
+  }
+  li.note {
+    border: 1px solid #ccc;
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
   }
 `;
 
@@ -282,6 +326,64 @@ function slideNavHtml(
   `;
 }
 
+// Reason buttons appear after tapping, while the caller's own tap is live.
+// A fixed list, checked server-side — no free text for students, per
+// CLAUDE.md. Each is a tiny one-field <form>, so it works with no JS as a
+// full page POST; the enhancement script intercepts submit to send it via
+// fetch instead, same pattern as the tap form. A reason can be changed
+// while live by just submitting a different one.
+function reasonButtonsHtml(lectureId: string, youAreCounted: boolean): string {
+  if (!youAreCounted) return "";
+  const base = `/l/${encodeURIComponent(lectureId)}`;
+  const buttons = REASONS.map(
+    (reason) => `<form method="post" action="${base}/reason" class="reason-form">
+      <input type="hidden" name="reason" value="${escapeHtml(reason)}">
+      <button type="submit">${escapeHtml(reason)}</button>
+    </form>`,
+  ).join("\n");
+  return `
+    <fieldset id="reasons">
+      <legend>What kind of lost?</legend>
+      ${buttons}
+    </fieldset>
+  `;
+}
+
+// The no-JS unlock time is computed once, server-side, as an absolute
+// instant ("You can tap again at 3:45pm") — a static page has no ticking
+// countdown to show, so there's no point sending a relative duration here.
+function unlockTimeLabel(liveForMs: number): string {
+  const unlockAt = new Date(Date.now() + liveForMs);
+  const formatter = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Sydney",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `You can tap again at ${formatter.format(unlockAt)}`;
+}
+
+// The note field: optional, appears alongside the reason buttons while a
+// tap is live. "Only your lecturer sees this" is not just a UI claim —
+// MeterState never carries note text at all, so a student page has nothing
+// to leak even if this copy were wrong.
+function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number, youAreCounted: boolean): string {
+  if (!youAreCounted) return "";
+  const base = `/l/${encodeURIComponent(lectureId)}`;
+  const deckInput = deck !== undefined ? `<input type="hidden" name="deck" value="${deck}">` : "";
+  return `
+    <form method="post" action="${base}/note" id="note-form">
+      ${deckInput}
+      <input type="hidden" name="slide" value="${slide}">
+      <label for="note-text">What part of this didn't make sense?</label>
+      <p id="note-hint">Only your lecturer sees this, and only alongside other people's notes.</p>
+      <textarea id="note-text" name="text" maxlength="200" placeholder="e.g. when the budget suddenly included the tool output"></textarea>
+      <p id="note-counter">0/200</p>
+      <button type="submit" id="note-send">Send</button>
+      <p id="note-status" aria-live="polite"></p>
+    </form>
+  `;
+}
+
 async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -318,14 +420,30 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   };
   const gaugeText = gaugeMessage(state, lecture.min_present);
 
-  const buttonHtml = state.youAreCounted
-    ? `<button class="tap-button" id="tap-button" type="submit" disabled>You're already counted</button>`
-    : `<button class="tap-button" id="tap-button" type="submit">I'm lost</button>`;
+  // Without JS, the unlock instant is printed as static text ("You can tap
+  // again at 3:45pm") — a static page has no countdown to tick. With JS,
+  // the script below counts down locally from liveForMs instead. The
+  // countdown paragraph and "I get it now" form are always in the DOM
+  // (hidden when the tap isn't live), rather than created only when the
+  // page happens to render with youAreCounted already true — another tab's
+  // tap reaching this one over SSE needs stable elements to update, not
+  // ones it has to build from scratch mid-stream.
+  const youAreCountedNow = state.youAreCounted;
+  const liveForMsNow = "liveForMs" in state ? state.liveForMs : undefined;
+  const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${youAreCountedNow ? " disabled" : ""}>${youAreCountedNow ? "You're already counted" : "I'm lost"}</button>
+       <p id="tap-countdown"${youAreCountedNow ? "" : " hidden"}>${liveForMsNow !== undefined ? escapeHtml(unlockTimeLabel(liveForMsNow)) : ""}</p>
+       <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${youAreCountedNow ? "" : " hidden"}>
+         <button type="submit">I get it now</button>
+       </form>`;
 
   // Below min_present, "Total taps" isn't rendered at all — not blanked,
   // not zeroed, just absent — since a hidden gauge still leaking the real
   // total in a sibling element would defeat the point of hiding it.
   const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
+  const topReasonHtml =
+    "topReason" in state && state.topReason !== undefined
+      ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
+      : "";
 
   const body = `
     <h1>${escapeHtml(lecture.title)}</h1>
@@ -334,11 +452,15 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     ${slideNavHtml(id, viewedDeck, viewedSlide, LIVE_DECK, liveSlide)}
     ${slideSectionHtml(id, viewedDeck, viewedSlide)}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeText)}</section>
+    ${topReasonHtml}
     <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
       <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
       <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
       ${buttonHtml}
     </form>
+    <p id="tap-hint">Other tabs in this browser count as you.</p>
+    ${reasonButtonsHtml(id, state.youAreCounted)}
+    ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, state.youAreCounted)}
     <p id="tap-feedback" aria-live="polite"></p>
     ${tapCountHtml}
     <div id="bars">${barsHtml(state.bars)}</div>
@@ -522,6 +644,150 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           container.appendChild(table);
         }
 
+        var countdownTimer = null;
+
+        function stopCountdown() {
+          if (countdownTimer) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+          }
+        }
+
+        // Ticks down locally from the most recently received liveForMs,
+        // rather than diffing against the device clock — a wrong or skewed
+        // clock doesn't give a wrong countdown this way.
+        function startCountdown(liveForMs) {
+          stopCountdown();
+          var remainingMs = liveForMs;
+          var countdownEl = document.getElementById("tap-countdown");
+          function tick() {
+            if (!countdownEl) return;
+            var seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+            var m = Math.floor(seconds / 60);
+            var s = seconds % 60;
+            countdownEl.textContent = "You can tap again in " + m + ":" + (s < 10 ? "0" : "") + s;
+            remainingMs -= 1000;
+            if (remainingMs < -1000) stopCountdown();
+          }
+          tick();
+          countdownTimer = setInterval(tick, 1000);
+        }
+
+        function attachReasonHandlers() {
+          var forms = document.querySelectorAll(".reason-form");
+          for (var i = 0; i < forms.length; i++) {
+            forms[i].addEventListener("submit", function (event) {
+              event.preventDefault();
+              var reasonForm = event.target;
+              var reasonInput = reasonForm.querySelector("input[name=reason]");
+              fetch(reasonForm.action, {
+                method: "POST",
+                body: new URLSearchParams({ reason: reasonInput.value }),
+              }).catch(function () {});
+            });
+          }
+        }
+        attachReasonHandlers();
+
+        function attachNoteHandlers() {
+          var noteFormEl = document.getElementById("note-form");
+          var noteTextEl = document.getElementById("note-text");
+          var noteCounterEl = document.getElementById("note-counter");
+          var noteStatusEl = document.getElementById("note-status");
+          if (noteTextEl && noteCounterEl) {
+            noteTextEl.addEventListener("input", function () {
+              noteCounterEl.textContent = noteTextEl.value.length + "/200";
+            });
+          }
+          if (noteFormEl) {
+            noteFormEl.addEventListener("submit", function (event) {
+              event.preventDefault();
+              if (noteStatusEl) noteStatusEl.textContent = "";
+              fetch(noteFormEl.action, { method: "POST", body: new URLSearchParams(new FormData(noteFormEl)) })
+                .then(function (res) {
+                  if (!res.ok) throw new Error("note failed");
+                  if (noteStatusEl) noteStatusEl.textContent = "Sent";
+                  if (noteTextEl) noteTextEl.value = "";
+                  if (noteCounterEl) noteCounterEl.textContent = "0/200";
+                })
+                .catch(function () {
+                  if (noteStatusEl) noteStatusEl.textContent = "Couldn't send. Try again.";
+                });
+            });
+          }
+        }
+
+        var tapBaseUrl = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
+        var reasonsList = ${JSON.stringify(REASONS)};
+        var isDemo = ${JSON.stringify(id === "demo")};
+
+        function buildReasonsHtml() {
+          var html = '<fieldset id="reasons"><legend>What kind of lost?</legend>';
+          for (var i = 0; i < reasonsList.length; i++) {
+            var r = reasonsList[i];
+            html += '<form method="post" action="' + tapBaseUrl + '/reason" class="reason-form">'
+              + '<input type="hidden" name="reason" value="' + r + '">'
+              + '<button type="submit">' + r + '</button></form>';
+          }
+          html += '</fieldset>';
+          return html;
+        }
+
+        function buildNoteFormHtml() {
+          var deckInputHtml = isDemo ? '<input type="hidden" name="deck" value="' + viewedDeck + '">' : "";
+          return '<form method="post" action="' + tapBaseUrl + '/note" id="note-form">'
+            + deckInputHtml
+            + '<input type="hidden" name="slide" value="' + viewedSlide + '">'
+            + '<label for="note-text">What part of this didn\\'t make sense?</label>'
+            + '<p id="note-hint">Only your lecturer sees this, and only alongside other people\\'s notes.</p>'
+            + '<textarea id="note-text" name="text" maxlength="200" placeholder="e.g. when the budget suddenly included the tool output"></textarea>'
+            + '<p id="note-counter">0/200</p>'
+            + '<button type="submit" id="note-send">Send</button>'
+            + '<p id="note-status" aria-live="polite"></p>'
+            + '</form>';
+        }
+
+        // Builds the reason fieldset and note form fresh each time a tap
+        // goes live (another tab's tap reaching this one via SSE included,
+        // not just this tab's own submit) — removed entirely, not merely
+        // hidden, once the tap is no longer live, same discipline as every
+        // other gated-on-a-condition element on this page.
+        function renderReasonsAndNote(youAreCounted) {
+          var existingReasons = document.getElementById("reasons");
+          var existingNote = document.getElementById("note-form");
+          if (!youAreCounted) {
+            if (existingReasons) existingReasons.remove();
+            if (existingNote) existingNote.remove();
+            return;
+          }
+          if (!existingReasons) {
+            var wrapper = document.createElement("div");
+            wrapper.innerHTML = buildReasonsHtml();
+            feedback.insertAdjacentElement("beforebegin", wrapper.firstElementChild);
+            attachReasonHandlers();
+          }
+          if (!existingNote) {
+            var noteWrapper = document.createElement("div");
+            noteWrapper.innerHTML = buildNoteFormHtml();
+            feedback.insertAdjacentElement("beforebegin", noteWrapper.firstElementChild);
+            attachNoteHandlers();
+          }
+        }
+
+        var resolveForm = document.getElementById("resolve-form");
+        if (resolveForm) {
+          resolveForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+            fetch(resolveForm.action, { method: "POST" })
+              .then(function () {
+                stopCountdown();
+              })
+              .catch(function () {});
+          });
+        }
+
+        attachNoteHandlers();
+
         function render(state) {
           liveSlide = state.slide;
           var backLink = document.getElementById("back-to-live-link");
@@ -543,14 +809,37 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
             }
           }
           renderBars(state.bars);
+          var topReasonEl = document.getElementById("top-reason");
+          if (state.topReason) {
+            if (!topReasonEl) {
+              topReasonEl = document.createElement("p");
+              topReasonEl.id = "top-reason";
+              gauge.insertAdjacentElement("afterend", topReasonEl);
+            }
+            topReasonEl.textContent = "Most people here say: " + state.topReason;
+          } else if (topReasonEl) {
+            topReasonEl.remove();
+          }
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
+          var countdownEl2 = document.getElementById("tap-countdown");
+          var resolveFormEl = document.getElementById("resolve-form");
           if (state.youAreCounted) {
             button.disabled = true;
             button.textContent = "You're counted";
+            if (countdownEl2) countdownEl2.hidden = false;
+            if (resolveFormEl) resolveFormEl.hidden = false;
+            if (typeof state.liveForMs === "number") startCountdown(state.liveForMs);
           } else {
             button.disabled = false;
             button.textContent = "I'm lost";
+            stopCountdown();
+            if (countdownEl2) {
+              countdownEl2.hidden = true;
+              countdownEl2.textContent = "";
+            }
+            if (resolveFormEl) resolveFormEl.hidden = true;
           }
+          renderReasonsAndNote(state.youAreCounted);
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/events`)});
@@ -652,6 +941,172 @@ async function handleTap(id: string, req: Request): Promise<Response> {
   });
 }
 
+const REASONS = ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
+
+async function handleReason(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!browserId) {
+    logAction("tap_rejected", id, rawBrowserCookie(cookieHeader));
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const body = await req.text();
+  const reason = new URLSearchParams(body).get("reason") ?? "";
+  if (!REASONS.includes(reason)) {
+    logAction("reason_rejected", id, browserId);
+    return new Response("Invalid reason", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  setTapReason(id, browserId, since, reason);
+  logAction("reason_set", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}` },
+  });
+}
+
+// "I get it now": ends the caller's own live tap at once, independent of
+// the 60s window. The tap's slide is untouched, so Phase 2's bars
+// (distinct-browser-ever-tapped) are unaffected — a resolved/not-live tap
+// was still a real moment of being lost on that slide.
+async function handleResolve(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!browserId) {
+    logAction("tap_rejected", id, rawBrowserCookie(cookieHeader));
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  resolveTap(id, browserId, since);
+  logAction("tap_resolved", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}` },
+  });
+}
+
+const NOTE_MAX_LENGTH = 200;
+// These three patterns double as the mechanism that "stops people
+// identifying themselves by accident" (ADR 004's amendment) — a URL, email
+// or phone number in a note could point back to the writer as easily as a
+// name would.
+const URL_PATTERN = /https?:\/\/|www\./i;
+const EMAIL_PATTERN = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const PHONE_PATTERN = /(\+?[\d\s().-]*\d[\d\s().-]*){7,}/;
+
+function validateNoteText(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return "A note can't be empty.";
+  if (trimmed.length > NOTE_MAX_LENGTH) return `Notes are limited to ${NOTE_MAX_LENGTH} characters.`;
+  if (URL_PATTERN.test(trimmed)) return "Notes can't contain a URL.";
+  if (EMAIL_PATTERN.test(trimmed)) return "Notes can't contain an email address.";
+  if (PHONE_PATTERN.test(trimmed.replace(/[^\d+().\s-]/g, ""))) return "Notes can't contain a phone number.";
+  return undefined;
+}
+
+// Lecturer-only: a note's text never reaches broadcast(id) (the
+// student-facing broadcast), only broadcastToLecturer(id) — notes never
+// reach students, by construction, not by filtering.
+async function handleNote(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!browserId) {
+    logAction("tap_rejected", id, rawBrowserCookie(cookieHeader));
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const body = await req.text();
+  const params = new URLSearchParams(body);
+  const submittedDeckRaw = params.get("deck");
+  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedSlideRaw = params.get("slide");
+  const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
+  const text = params.get("text") ?? "";
+
+  if (!isValidSlide(lecture, submittedDeck, submittedSlide)) {
+    logAction("note_rejected", id, browserId);
+    return new Response("Invalid slide", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const rejectionMessage = validateNoteText(text);
+  if (rejectionMessage !== undefined) {
+    logAction("note_rejected", id, browserId);
+    return new Response(rejectionMessage, {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  setNote(id, submittedDeck ?? null, browserId, submittedSlide, text.trim());
+  logAction("note_submitted", id, browserId);
+  broadcastToLecturer(id);
+
+  const deckParam = submittedDeck !== undefined ? `deck=${submittedDeck}&` : "";
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}?${deckParam}slide=${submittedSlide}` },
+  });
+}
+
+// The note id in the URL is an opaque row id the lecturer only ever sees
+// inside their own already-authenticated dashboard — never derivable by a
+// student — so it doesn't leak anything by existing as a path segment.
+async function handleHideNote(id: string, noteId: number, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  if (!validateLecturerSession(id, cookieHeader)) {
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const browserId = validateBrowserId(cookieHeader);
+  hideNoteById(noteId);
+  logAction("note_hidden", id, browserId);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}/lecturer` },
+  });
+}
+
 // Student-only: a lecturer's own bid+lsess cookies must still get student
 // state and count as present here, since this is the route a student page
 // connects to — lecturer state lives on its own route (handleLecturerEvents)
@@ -735,18 +1190,103 @@ function lecturerLoginForm(id: string, error?: string): string {
   `;
 }
 
+interface DashboardReasonCount {
+  deck: string | null;
+  slide: number;
+  reason: string;
+  count: number;
+}
+
+interface DashboardNote {
+  deck: string | null;
+  slide: number;
+  id: number;
+  text: string;
+  created_at: string;
+}
+
+function reasonCountsHtml(reasonCounts: DashboardReasonCount[]): string {
+  if (reasonCounts.length === 0) return "";
+  const sorted = [...reasonCounts].sort(
+    (a, b) => (a.deck ?? "").localeCompare(b.deck ?? "") || a.slide - b.slide || b.count - a.count,
+  );
+  const rows = sorted
+    .map((entry) => {
+      const label = entry.deck !== null ? `${entry.deck} / slide ${entry.slide}` : `Slide ${entry.slide}`;
+      return `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(entry.reason)}</td><td>${entry.count}</td></tr>`;
+    })
+    .join("\n");
+  return `
+    <table class="reason-counts" id="reason-counts">
+      <thead><tr><th>Slide</th><th>Reason</th><th>Count</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+// Each note's Hide button posts to a lecturer-only route; the note's id in
+// the URL is an opaque row id the lecturer only ever sees inside their own
+// already-authenticated dashboard. A hidden note is removed from the DOM
+// entirely on the next broadcast, not just visually hidden — same privacy
+// discipline as every other gated element on this page.
+function notesHtml(lectureId: string, notes: DashboardNote[]): string {
+  if (notes.length === 0) return "";
+  const sorted = [...notes].sort(
+    (a, b) =>
+      (a.deck ?? "").localeCompare(b.deck ?? "") ||
+      a.slide - b.slide ||
+      b.created_at.localeCompare(a.created_at),
+  );
+  const base = `/l/${encodeURIComponent(lectureId)}`;
+  const items = sorted
+    .map((note) => {
+      const label = note.deck !== null ? `${note.deck} / slide ${note.slide}` : `Slide ${note.slide}`;
+      return `<li class="note" data-note-id="${note.id}">
+        <p class="note-slide">${escapeHtml(label)}</p>
+        <p class="note-text">${escapeHtml(note.text)}</p>
+        <form method="post" action="${base}/lecturer/note/${note.id}/hide" class="hide-note-form">
+          <button type="submit">Hide</button>
+        </form>
+      </li>`;
+    })
+    .join("\n");
+  return `
+    <section id="notes">
+      <h2>What didn't make sense</h2>
+      <ul id="notes-list">${items}</ul>
+    </section>
+  `;
+}
+
 function lecturerDashboard(
   id: string,
   state:
-    | { present: number; shown: false; slide: number; bars: Bar[] }
-    | { present: number; shown: true; slide: number; bars: Bar[]; live: number; totalTaps: number },
+    | {
+        present: number;
+        shown: false;
+        slide: number;
+        bars: Bar[];
+        reasonCounts: DashboardReasonCount[];
+        notes: DashboardNote[];
+      }
+    | {
+        present: number;
+        shown: true;
+        slide: number;
+        bars: Bar[];
+        live: number;
+        totalTaps: number;
+        reasonCounts: DashboardReasonCount[];
+        notes: DashboardNote[];
+      },
   minPresent: number,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
-  // viewer to read past a merely-hidden gauge. Bars are gated separately,
-  // per (deck, slide) pair, independently of shown — barsHtml already
-  // renders nothing for an empty array, so this needs no extra branching.
+  // viewer to read past a merely-hidden gauge. Bars, reasonCounts and notes
+  // are all gated separately, per (deck, slide) or (deck, slide, reason),
+  // independently of shown — each helper already renders nothing for an
+  // empty array, so this needs no extra branching.
   const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
 
   // The demo's slide is clock-driven (ADR 004): there's nothing for a
@@ -769,6 +1309,8 @@ ${slideControlsHtml}
     <section id="gauge" aria-live="polite">${escapeHtml(gaugeMessage(state, minPresent))}</section>
 ${tapCountHtml}
     <div id="bars">${barsHtml(state.bars)}</div>
+    <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
+${notesHtml(id, state.notes)}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -839,6 +1381,109 @@ ${tapCountHtml}
           container.appendChild(table);
         }
 
+        function attachHideNoteHandlers() {
+          var forms = document.querySelectorAll(".hide-note-form");
+          for (var i = 0; i < forms.length; i++) {
+            forms[i].addEventListener("submit", function (event) {
+              event.preventDefault();
+              fetch(event.target.action, { method: "POST" }).catch(function () {});
+            });
+          }
+        }
+        attachHideNoteHandlers();
+
+        function renderReasonCounts(reasonCounts) {
+          var container = document.getElementById("reason-counts-container");
+          if (!container) return;
+          if (!reasonCounts || reasonCounts.length === 0) {
+            container.innerHTML = "";
+            return;
+          }
+          var sorted = reasonCounts.slice().sort(function (a, b) {
+            return (a.deck || "").localeCompare(b.deck || "") || a.slide - b.slide || b.count - a.count;
+          });
+          var table = document.createElement("table");
+          table.className = "reason-counts";
+          table.id = "reason-counts";
+          var thead = document.createElement("thead");
+          thead.innerHTML = "<tr><th>Slide</th><th>Reason</th><th>Count</th></tr>";
+          var tbody = document.createElement("tbody");
+          sorted.forEach(function (entry) {
+            var label = entry.deck ? entry.deck + " / slide " + entry.slide : "Slide " + entry.slide;
+            var tr = document.createElement("tr");
+            var tdLabel = document.createElement("td");
+            tdLabel.textContent = label;
+            var tdReason = document.createElement("td");
+            tdReason.textContent = entry.reason;
+            var tdCount = document.createElement("td");
+            tdCount.textContent = String(entry.count);
+            tr.appendChild(tdLabel);
+            tr.appendChild(tdReason);
+            tr.appendChild(tdCount);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(thead);
+          table.appendChild(tbody);
+          container.innerHTML = "";
+          container.appendChild(table);
+        }
+
+        // A hidden note is removed from the DOM entirely on the next
+        // broadcast, not just visually hidden — same privacy discipline as
+        // every other gated element on this page.
+        function renderNotes(notes) {
+          var existing = document.getElementById("notes");
+          if (!notes || notes.length === 0) {
+            if (existing) existing.remove();
+            return;
+          }
+          var sorted = notes.slice().sort(function (a, b) {
+            return (
+              (a.deck || "").localeCompare(b.deck || "") ||
+              a.slide - b.slide ||
+              b.created_at.localeCompare(a.created_at)
+            );
+          });
+          var list = document.createElement("ul");
+          list.id = "notes-list";
+          sorted.forEach(function (note) {
+            var label = note.deck ? note.deck + " / slide " + note.slide : "Slide " + note.slide;
+            var li = document.createElement("li");
+            li.className = "note";
+            li.dataset.noteId = String(note.id);
+            var slideP = document.createElement("p");
+            slideP.className = "note-slide";
+            slideP.textContent = label;
+            var textP = document.createElement("p");
+            textP.className = "note-text";
+            textP.textContent = note.text;
+            var hideForm = document.createElement("form");
+            hideForm.method = "post";
+            hideForm.action = ${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/note/`)} + note.id + "/hide";
+            hideForm.className = "hide-note-form";
+            var hideButton = document.createElement("button");
+            hideButton.type = "submit";
+            hideButton.textContent = "Hide";
+            hideForm.appendChild(hideButton);
+            li.appendChild(slideP);
+            li.appendChild(textP);
+            li.appendChild(hideForm);
+            list.appendChild(li);
+          });
+          if (existing) {
+            existing.querySelector("#notes-list").replaceWith(list);
+          } else {
+            var section = document.createElement("section");
+            section.id = "notes";
+            var heading = document.createElement("h2");
+            heading.textContent = "What didn't make sense";
+            section.appendChild(heading);
+            section.appendChild(list);
+            document.querySelector("main").appendChild(section);
+          }
+          attachHideNoteHandlers();
+        }
+
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) slideLabel.textContent = "Slide " + state.slide;
@@ -857,6 +1502,8 @@ ${tapCountHtml}
             if (oldTapCount) oldTapCount.remove();
           }
           renderBars(state.bars);
+          renderReasonCounts(state.reasonCounts);
+          renderNotes(state.notes);
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -896,6 +1543,8 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     shown: false as const,
     slide: currentSlideIndex(lecture),
     bars: [] as Bar[],
+    reasonCounts: [] as DashboardReasonCount[],
+    notes: [] as DashboardNote[],
   };
   return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present)), {
     status: 200,
@@ -1110,6 +1759,34 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(tapMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleTap(id, req);
+  }
+
+  const reasonMatch = pathname.match(/^\/l\/([^/]+)\/reason$/);
+  if (method === "POST" && reasonMatch) {
+    const id = safeDecode(reasonMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleReason(id, req);
+  }
+
+  const resolveMatch = pathname.match(/^\/l\/([^/]+)\/resolve$/);
+  if (method === "POST" && resolveMatch) {
+    const id = safeDecode(resolveMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleResolve(id, req);
+  }
+
+  const noteMatch = pathname.match(/^\/l\/([^/]+)\/note$/);
+  if (method === "POST" && noteMatch) {
+    const id = safeDecode(noteMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleNote(id, req);
+  }
+
+  const hideNoteMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/note\/(\d+)\/hide$/);
+  if (method === "POST" && hideNoteMatch) {
+    const id = safeDecode(hideNoteMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleHideNote(id, Number(hideNoteMatch[2]), req);
   }
 
   if (method === "GET" && pathname.startsWith("/docs/")) return handleDocs(pathname);
