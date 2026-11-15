@@ -1,4 +1,5 @@
 import { expect, inject, it } from "vitest";
+import { newBrowserCookie } from "./test-helpers.ts";
 
 const baseUrl = inject("baseUrl");
 
@@ -7,12 +8,14 @@ interface MeterState {
   live: number;
   shown: boolean;
   totalTaps: number;
-  taps: string[];
+  yourTapCount: number;
+  youAreCounted: boolean;
 }
 
 // A small SSE client over fetch's streaming body: reads "data: {...}\n\n"
 // frames one at a time, decoupled from any global EventSource (not available
-// in the Node test runner).
+// in the Node test runner). C10 requires a valid browser cookie to open a
+// stream at all, so every open() call needs one.
 class SseStream {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
   private decoder = new TextDecoder();
@@ -23,9 +26,12 @@ class SseStream {
     this.reader = reader;
   }
 
-  static async open(path: string): Promise<SseStream> {
+  static async open(path: string, cookie: string): Promise<SseStream> {
     const stream = new SseStream(null as never);
-    const res = await fetch(new URL(path, baseUrl), { signal: stream.controller.signal });
+    const res = await fetch(new URL(path, baseUrl), {
+      signal: stream.controller.signal,
+      headers: { cookie },
+    });
     if (!res.body) throw new Error("no response body for SSE stream");
     stream.reader = res.body.getReader();
     return stream;
@@ -87,10 +93,11 @@ class SseStream {
 }
 
 it("a tap shows up on an open /events stream within 1 second", async () => {
-  const stream = await SseStream.open("/l/demo/events");
+  const cookie = await newBrowserCookie("demo");
+  const stream = await SseStream.open("/l/demo/events", cookie);
   try {
     const before = await stream.next();
-    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
+    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
     const after = await stream.waitFor((s) => s.live >= before.live + 1, 1000);
     expect(after.live).toBeGreaterThanOrEqual(before.live + 1);
   } finally {
@@ -99,22 +106,30 @@ it("a tap shows up on an open /events stream within 1 second", async () => {
 });
 
 it("the total taps count goes up on an open stream after a tap", async () => {
-  const stream = await SseStream.open("/l/demo/events");
+  const streamCookie = await newBrowserCookie("demo");
+  const tapCookie = await newBrowserCookie("demo");
+  const stream = await SseStream.open("/l/demo/events", streamCookie);
   try {
     const before = await stream.next();
-    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
+    await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie: tapCookie } });
+    // >= rather than an exact +1: other spec files tap this same shared
+    // demo lecture concurrently, so a second, unrelated tap can land in the
+    // same window. What this test needs to prove is that the total updates
+    // live on an already-open stream at all, which >= still establishes.
     const after = await stream.waitFor((s) => s.totalTaps > before.totalTaps, 1000);
-    expect(after.totalTaps).toBe(before.totalTaps + 1);
+    expect(after.totalTaps).toBeGreaterThanOrEqual(before.totalTaps + 1);
   } finally {
     await stream.close();
   }
 });
 
 it("present goes up when a second stream connects", async () => {
-  const a = await SseStream.open("/l/demo/events");
+  const cookieA = await newBrowserCookie("demo");
+  const cookieB = await newBrowserCookie("demo");
+  const a = await SseStream.open("/l/demo/events", cookieA);
   try {
     const initial = await a.next();
-    const b = await SseStream.open("/l/demo/events");
+    const b = await SseStream.open("/l/demo/events", cookieB);
     try {
       const updated = await a.waitFor((s) => s.present === initial.present + 1);
       expect(updated.present).toBe(initial.present + 1);
@@ -127,12 +142,14 @@ it("present goes up when a second stream connects", async () => {
 });
 
 it("shown is false below min_present, true once enough people are present", async () => {
-  const a = await SseStream.open("/l/demo/events");
+  const cookieA = await newBrowserCookie("demo");
+  const cookieB = await newBrowserCookie("demo");
+  const a = await SseStream.open("/l/demo/events", cookieA);
   try {
     const initial = await a.next();
     expect(initial.shown).toBe(false); // demo's min_present is 2
 
-    const b = await SseStream.open("/l/demo/events");
+    const b = await SseStream.open("/l/demo/events", cookieB);
     try {
       const updated = await a.waitFor((s) => s.shown);
       expect(updated.shown).toBe(true);
@@ -151,9 +168,10 @@ it("shown is false below min_present, true once enough people are present", asyn
 it(
   "a tap fades out of `live` 60 seconds after it was made",
   async () => {
-    const stream = await SseStream.open("/l/demo/events");
+    const cookie = await newBrowserCookie("demo");
+    const stream = await SseStream.open("/l/demo/events", cookie);
     try {
-      await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST" });
+      await fetch(new URL("/l/demo/tap", baseUrl), { method: "POST", headers: { cookie } });
       const afterTap = await stream.next(1000);
       expect(afterTap.live).toBeGreaterThanOrEqual(1);
 
