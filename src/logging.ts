@@ -1,0 +1,32 @@
+import { createHash } from "node:crypto";
+
+export type LogAction =
+  | "page_view"
+  | "tap"
+  | "tap_ignored"
+  | "tap_rejected"
+  | "stream_open"
+  | "stream_close"
+  | "lecturer_login_ok"
+  | "lecturer_login_failed"
+  | "lecture_created";
+
+// `who` is never the raw browser ID: a real ID is hashed (one-way, so repeat
+// activity from the same browser still correlates in the logs); a missing
+// cookie is the sentinel "no-cookie" rather than sha256(""), which is a
+// fixed, real-looking hash that could be mistaken for genuine data.
+function who(browserId: string | undefined): string {
+  if (!browserId) return "no-cookie";
+  return createHash("sha256").update(browserId).digest("hex").slice(0, 8);
+}
+
+export function logAction(action: LogAction, lectureId: string, browserId: string | undefined): void {
+  console.log(
+    JSON.stringify({
+      time: new Date().toISOString(),
+      action,
+      lecture: lectureId,
+      who: who(browserId),
+    }),
+  );
+}
