@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -82,7 +83,42 @@ const escapeHtml = (s: string): string =>
 // style="" attribute, so there is exactly one place the look lives.
 const STYLESHEET = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 
-const page = (title: string, bodyHtml: string, mainClass?: string): string => `<!doctype html>
+// The Content-Security-Policy every response carries (CLAUDE.md: never
+// weaken it). Scripts run only with this response's nonce, so an inline
+// script the server didn't write, or an on*="" attribute, never runs;
+// nothing loads from another site; no page can be framed. Styles fall under
+// default-src 'self', which /style.css satisfies: no page has inline styles.
+function contentSecurityPolicy(nonce: string): string {
+  return [
+    "default-src 'self'",
+    "img-src 'self'",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+  ].join("; ");
+}
+
+// One nonce per request, made in handleRequest and held here for the rest
+// of that request, so page() can stamp it on every inline script without
+// each handler passing it along. A page built outside a request (there are
+// none today) gets a fresh nonce that no header names, so its scripts
+// simply don't run rather than running unchecked.
+const requestNonce = new AsyncLocalStorage<string>();
+
+function currentNonce(): string {
+  return requestNonce.getStore() ?? randomBytes(16).toString("base64");
+}
+
+// Every inline <script> in a page gets this request's nonce, here in one
+// place, so a script added anywhere inside page() (this branch's or the
+// colour branch's) is covered without remembering to add it.
+function withNonce(html: string): string {
+  const nonce = currentNonce();
+  return html.replace(/<script>/g, `<script nonce="${nonce}">`);
+}
+
+const page = (title: string, bodyHtml: string, mainClass?: string): string => withNonce(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -95,7 +131,7 @@ const page = (title: string, bodyHtml: string, mainClass?: string): string => `<
 ${bodyHtml}
 </main>
 </body>
-</html>`;
+</html>`);
 
 const notFoundPage = (): string =>
   page("Not found", `<h1>Not found</h1><p>There's nothing here. <a href="/">Back home</a>.</p>`);
@@ -2241,6 +2277,14 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Set before anything is written, so every response this request makes
+  // carries the policy: pages, redirects, errors, streams and the stylesheet.
+  const nonce = randomBytes(16).toString("base64");
+  res.setHeader("content-security-policy", contentSecurityPolicy(nonce));
+  await requestNonce.run(nonce, () => routeRequest(req, res));
+}
+
+async function routeRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
   const { pathname } = new URL(url);
 

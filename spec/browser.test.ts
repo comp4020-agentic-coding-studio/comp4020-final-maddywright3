@@ -41,6 +41,16 @@ async function openWatched(width: number, height: number, expectedNotFound?: str
     if (msg.type() === "error") problems.push(`console error: ${msg.text()}`);
   });
   page.on("pageerror", (err) => problems.push(`page error: ${err.message}`));
+  // A blocked script or load under the Content-Security-Policy, named
+  // rather than only showing up as a console error.
+  await page.exposeFunction("__reportCspViolation", (detail: string) => problems.push(`CSP violation: ${detail}`));
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      (window as unknown as { __reportCspViolation: (d: string) => void }).__reportCspViolation(
+        `${e.violatedDirective} blocked ${e.blockedURI || "inline"}`,
+      );
+    });
+  });
   page.on("request", (req) => {
     const url = new URL(req.url());
     if ((url.protocol === "http:" || url.protocol === "https:") && url.origin !== origin) {
@@ -80,7 +90,10 @@ async function logInAsDemoLecturer(context: BrowserContext): Promise<void> {
 }
 
 async function axeViolations(page: Page): Promise<string[]> {
-  await page.addScriptTag({ content: axeSource });
+  // The page's Content-Security-Policy rightly blocks an injected <script>
+  // tag (addScriptTag), so axe is evaluated through DevTools instead, which
+  // the page's policy doesn't govern. The policy itself is never relaxed.
+  await page.evaluate(axeSource);
   const violations = await page.evaluate(async () => {
     const axe = (window as unknown as { axe: { run: () => Promise<{ violations: { id: string; nodes: { html: string }[] }[] }> } }).axe;
     const results = await axe.run();

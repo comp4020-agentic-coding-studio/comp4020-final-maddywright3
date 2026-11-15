@@ -645,7 +645,7 @@ it("no gated field (live, total, or any bar below its own threshold) appears bel
 // to read. The scripts carry the deck names for live updates, so a raw
 // search of the HTML would find them on every page.
 function renderedMarkup(html: string): string {
-  return html.replace(/<script>[\s\S]*?<\/script>/g, "");
+  return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "");
 }
 
 function slideLabel(html: string): string | undefined {
