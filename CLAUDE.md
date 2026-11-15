@@ -22,10 +22,9 @@
 
 ## Privacy (from the README's one idea)
 - No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
-- No per-person history is ever shown. Taps are shown as counts per minute.
+- No per-person history is ever shown. Taps are shown as counts per slide, by distinct browser.
 - Lecturer and student state travel on separate routes.
-- Below min_present, no tap data leaves the server, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
-- Live numbers (live, total, reasons) only leave the server when present >= min_present. A history bar for a slide is only sent once >= min_present distinct browsers have tapped on that slide. A browser may always see its own counts. (Refined in ADR 004 so a returning visitor still sees history.)
+- Live numbers (live, total, reasons) only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.) A history bar for a slide is only sent once >= min_present distinct browsers have tapped on that slide. A browser may always see its own counts. (Refined in ADR 004 so a returning visitor still sees history.)
 - Never add free-text input for students. Reasons come from a fixed list checked on the server.
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
 - Every page must work without JavaScript.
