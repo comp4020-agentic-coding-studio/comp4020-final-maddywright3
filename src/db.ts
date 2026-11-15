@@ -9,6 +9,15 @@ mkdirSync(dataDir, { recursive: true });
 
 const db = new DatabaseSync(join(dataDir, "meter.db"));
 
+// WAL with synchronous=NORMAL: a tap's insert dropped from ~7.5ms (a full
+// disk sync per write) to ~0.1ms. The cost, accepted in ADR 005: a power
+// loss can drop the last moment of taps, and meter.db-wal and meter.db-shm
+// sit beside meter.db and must be kept with it.
+db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA synchronous = NORMAL");
+const { journal_mode: journalMode } = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+if (journalMode !== "wal") throw new Error(`expected WAL journal mode, got ${journalMode}`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS lectures (
     id TEXT PRIMARY KEY,
