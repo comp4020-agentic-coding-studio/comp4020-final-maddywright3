@@ -55,12 +55,12 @@ Two browsers tapped the same slide, chose the same reason and each wrote a note.
  "bars":[{"deck":"week-4","slide":3,"distinctBrowsers":2}],
  "live":2,"totalTaps":2,
  "reasonCounts":[{"deck":"week-4","slide":3,"reason":"Missed a step","count":2}],
- "notes"🙁 two notes on week-4 slide 3 ]}
+ "notes": [ two notes on week-4 slide 3 ]}
 ~
 
 So it was the threshold, not a bug. With the two browsers on different slides, nothing cleared min_present, and the page showed nothing at all: no heading, no table, no message. The lecturer saw a blank screen with no reason given. "Slide 6" was also week 4's clock with no deck named, while each student tapped whatever slide they were viewing.
 
-*A real bug found on the way.* Without JavaScript, choosing a reason or "I get it now" redirected to a bare /l/demo, so the next note was filed against the live slide instead of the one tapped. The failing test went in first ([`ee36c8a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/ee36c8a)).
+*A real bug found on the way.* Without JavaScript, choosing a reason or "I get it now" redirected to a bare /l/demo, so the next note was filed against the live slide instead of the one tapped. The failing test went in first (commit link added after merge).
 
 ## Load test, 50 browsers
 
