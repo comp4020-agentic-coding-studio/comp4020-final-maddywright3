@@ -1,22 +1,32 @@
 import type { ServerResponse } from "node:http";
-import { getLecture, hasLiveTap, liveTapInfo, perMinuteTimeline, tapCount, yourTapCount } from "./db.ts";
+import { getLecture, hasLiveTap, liveTapInfo, slideTapCounts, tapCount, yourTapCount } from "./db.ts";
 import { currentSlideIndex, msUntilNextSlideChange } from "./slides.ts";
 
 export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 
-// Below min_present, live/totalTaps/timeline are never present on the
-// object at all (not just zeroed or hidden on screen) — the point of
-// "safety in numbers" is that a tap below threshold leaves no trace
-// anywhere a request can see, not just that the gauge text looks blank.
-// `slide` is ungated on both types — slide position isn't privacy-sensitive,
-// unlike tap counts.
+export interface Bar {
+  deck: string | null;
+  slide: number;
+  distinctBrowsers: number;
+}
+
+// Below min_present, live/totalTaps are never present on the object at all
+// (not just zeroed or hidden on screen) — the point of "safety in numbers"
+// is that a tap below threshold leaves no trace anywhere a request can see,
+// not just that the gauge text looks blank. `slide` and `bars` are gated
+// differently: `slide` is ungated (position isn't privacy-sensitive, unlike
+// tap counts); `bars` is gated per-entry, independently of `present`/`shown`
+// — a slide clears the bar threshold once >= min_present distinct browsers
+// have ever tapped it, whoever is present right now (ADR 004's refined
+// privacy rule), so `bars` is present on both branches of this union.
 export type MeterState =
-  | { present: number; shown: false; slide: number; yourTapCount: number; youAreCounted: boolean }
+  | { present: number; shown: false; slide: number; bars: Bar[]; yourTapCount: number; youAreCounted: boolean }
   | {
       present: number;
       shown: true;
       slide: number;
+      bars: Bar[];
       live: number;
       totalTaps: number;
       yourTapCount: number;
@@ -24,15 +34,24 @@ export type MeterState =
     };
 
 export type LecturerState =
-  | { present: number; shown: false; slide: number }
+  | { present: number; shown: false; slide: number; bars: Bar[] }
   | {
       present: number;
       shown: true;
       slide: number;
+      bars: Bar[];
       live: number;
       totalTaps: number;
-      timeline: { minute: string; count: number }[];
     };
+
+// Bars are gated per (deck, slide) pair, independently of present/shown: a
+// slide with fewer qualifying browsers is simply absent from the array —
+// not zeroed, not hidden, absent — same discipline as the shown:false
+// branch. A lone returning visitor still sees bars for any slide that
+// individually cleared the threshold.
+function gatedBars(lectureId: string, minPresent: number): Bar[] {
+  return slideTapCounts(lectureId).filter((bar) => bar.distinctBrowsers >= minPresent);
+}
 
 // Student/presence connections, keyed by lecture then by browser, so
 // "present" counts unique browsers rather than open tabs or connections.
@@ -101,13 +120,14 @@ export function computeState(lectureId: string, browserId: string): MeterState |
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = currentSlideIndex(lecture);
+  const bars = gatedBars(lectureId, lecture.min_present);
   const yours = {
     yourTapCount: yourTapCount(lectureId, browserId),
     youAreCounted: hasLiveTap(lectureId, browserId, since),
   };
-  if (!shown) return { present, shown, slide, ...yours };
+  if (!shown) return { present, shown, slide, bars, ...yours };
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, live, totalTaps: tapCount(lectureId), ...yours };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), ...yours };
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
@@ -116,17 +136,11 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = currentSlideIndex(lecture);
-  if (!shown) return { present, shown, slide };
+  const bars = gatedBars(lectureId, lecture.min_present);
+  if (!shown) return { present, shown, slide, bars };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return {
-    present,
-    shown,
-    slide,
-    live,
-    totalTaps: tapCount(lectureId),
-    timeline: perMinuteTimeline(lectureId),
-  };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId) };
 }
 
 export function broadcast(lectureId: string): void {
