@@ -108,7 +108,7 @@ it("the home page has three cards: student, lecturer, how it works, each with a 
   expect(d.body.textContent).not.toMatch(/\bDEMO\b/);
 });
 
-it("the lecturer page has the layout slots: stat tiles, four empty graph slots, the live column and the activity log", async () => {
+it("the lecturer page has the layout slots: stat tiles, four graph slots, the live column and the activity log", async () => {
   const d = doc((await get("/l/demo/lecturer", await demoLecturerCookie())).html);
   expect(d.querySelectorAll(".stat-tiles .stat-tile").length).toBeGreaterThanOrEqual(3);
   const slots = [
@@ -125,12 +125,14 @@ it("the lecturer page has the layout slots: stat tiles, four empty graph slots, 
     expect(slot!.getAttribute("aria-labelledby"), id).toBe(slot!.querySelector("h2")!.id);
     expect(slot!.querySelector(".slot-body"), id).not.toBeNull();
   }
-  // Until the graphs arrive, the bars and reason tables sit in their slots;
-  // the other two slot bodies are empty, for the graph markup to fill.
-  expect(d.querySelector("#graph-lost #bars")).not.toBeNull();
-  expect(d.querySelector("#graph-reasons #reason-counts-container")).not.toBeNull();
-  expect(d.querySelector("#graph-helped .slot-body")!.innerHTML).toBe("");
-  expect(d.querySelector("#graph-resolved .slot-body")!.innerHTML).toBe("");
+  // The graphs have landed in their slots: each slot body holds either its
+  // SVG graph with a table alternative, or its threshold message.
+  for (const [id] of slots) {
+    const body = d.querySelector(`#${id} .slot-body`)!;
+    const graphed = body.querySelector("svg") !== null && body.querySelector("table") !== null;
+    const waiting = body.querySelector("p.graph-empty") !== null;
+    expect(graphed || waiting, id).toBe(true);
+  }
 
   const log = d.getElementById("activity-log")!;
   expect(log.tagName).toBe("SECTION");
@@ -145,12 +147,12 @@ it("the lecturer page has the layout slots: stat tiles, four empty graph slots, 
   expect(d.querySelector(".lecturer-layout")!.compareDocumentPosition(log) & 4).toBe(4);
 
   // Everything the page showed before is still here: the gauge, the slide
-  // label, the current slide's section and the other slides' notes.
-  for (const id of ["gauge", "gauge-words", "slide-label", "now", "now-bar", "other-notes", "connection-status"]) {
+  // label, the current slide's section and the notes, now grouped by slide.
+  for (const id of ["gauge", "gauge-words", "slide-label", "now", "now-bar", "notes", "connection-status"]) {
     expect(d.getElementById(id), id).not.toBeNull();
   }
   expect(d.querySelector(".live-column #now")).not.toBeNull();
-  expect(d.querySelector(".live-column #other-notes")).not.toBeNull();
+  expect(d.querySelector(".live-column #notes")).not.toBeNull();
 });
 
 it("projector mode is server-rendered: ?projector=1 adds the class and its link turns it off", async () => {

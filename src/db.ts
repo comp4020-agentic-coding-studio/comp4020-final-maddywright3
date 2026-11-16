@@ -560,6 +560,64 @@ export function resolveTap(tapId: number): boolean {
   );
 }
 
+// Distinct browsers that have said they're lost on any slide. Raw; the
+// dashboard shows it only at min_present or more.
+export function distinctLostCount(lectureId: string, run: number = currentRun(lectureId)): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT browser_id) AS count FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL`,
+    )
+    .get(lectureId, run) as { count: number };
+  return row.count;
+}
+
+export interface SlideResolvedCount {
+  deck: string | null;
+  slide: number;
+  // Distinct browsers whose tap on this slide hasn't had "I get it now".
+  stillLost: number;
+  // Distinct browsers who said "I get it now" on this slide.
+  resolved: number;
+}
+
+// Per (deck, slide): still lost against "I get it now". One counted tap
+// per browser per slide (legacy_duplicate = 0), so the two never overlap.
+export function slideResolvedCounts(lectureId: string, run: number = currentRun(lectureId)): SlideResolvedCount[] {
+  return db
+    .prepare(
+      `SELECT deck, slide,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NULL THEN browser_id END) AS stillLost,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NOT NULL THEN browser_id END) AS resolved
+       FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL AND legacy_duplicate = 0
+       GROUP BY deck, slide`,
+    )
+    .all(lectureId, run) as unknown as SlideResolvedCount[];
+}
+
+export interface ResolvedTotals {
+  // Counted taps (one per browser per slide) resolved / not resolved.
+  resolvedTaps: number;
+  stillLostTaps: number;
+  // Distinct browsers behind each, for the gate.
+  resolvedBrowsers: number;
+  stillLostBrowsers: number;
+}
+
+export function resolvedTotals(lectureId: string, run: number = currentRun(lectureId)): ResolvedTotals {
+  return db
+    .prepare(
+      `SELECT COUNT(CASE WHEN resolved_at IS NOT NULL THEN 1 END) AS resolvedTaps,
+              COUNT(CASE WHEN resolved_at IS NULL THEN 1 END) AS stillLostTaps,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NOT NULL THEN browser_id END) AS resolvedBrowsers,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NULL THEN browser_id END) AS stillLostBrowsers
+       FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL AND legacy_duplicate = 0`,
+    )
+    .get(lectureId, run) as unknown as ResolvedTotals;
+}
+
 export interface ReasonCount {
   deck: string | null;
   slide: number;
