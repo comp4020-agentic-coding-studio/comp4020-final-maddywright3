@@ -13,6 +13,8 @@ import {
   lectureCount,
   liveTapOn,
   resolveTap,
+  runsOf,
+  startRun,
   stepCurrentSlide,
   setNote,
   setTapReason,
@@ -42,6 +44,7 @@ import {
   broadcast,
   broadcastToLecturer,
   computeLecturerState,
+  computePastRunState,
   computeState,
   removeConnection,
   removeLecturerConnection,
@@ -50,7 +53,7 @@ import {
   sendInitialState,
   startHeartbeat,
 } from "./realtime.ts";
-import type { Bar } from "./realtime.ts";
+import type { Bar, PastRunState } from "./realtime.ts";
 import {
   DECK_IDS,
   DECK_SHORT_NAMES,
@@ -1610,6 +1613,7 @@ function lecturerDashboard(
   id: string,
   state:
     | {
+        run: number;
         present: number;
         shown: false;
         slide: number;
@@ -1618,6 +1622,7 @@ function lecturerDashboard(
         notes: DashboardNote[];
       }
     | {
+        run: number;
         present: number;
         shown: true;
         slide: number;
@@ -1662,6 +1667,7 @@ function lecturerDashboard(
       <h1>Lecturer view</h1>
 ${slideControlsHtml}
     </div>
+${runControlsHtml(id, state.run)}
     <div class="lecturer-layout">
       <div class="now-panel">
         ${gaugeHtml(state, minPresent)}
@@ -1976,10 +1982,20 @@ ${SLIDE_NAME_CLIENT_JS}
           renderOtherNotes((state.notes || []).filter(function (n) { return !isNow(n, state.slide); }));
         }
 
+        // A fresh run started (here or in another session): the run
+        // picker, the slide and every count change at once, so the page is
+        // fetched again rather than patched.
+        var renderedRun = ${JSON.stringify(state.run)};
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
         source.onmessage = function (event) {
           if (connectionStatus) connectionStatus.textContent = "";
-          render(JSON.parse(event.data));
+          var state = JSON.parse(event.data);
+          if (state.run !== renderedRun) {
+            source.close();
+            window.location.reload();
+            return;
+          }
+          render(state);
         };
         source.onerror = function () {
           if (connectionStatus) connectionStatus.textContent = "Reconnecting...";
@@ -1987,6 +2003,156 @@ ${SLIDE_NAME_CLIENT_JS}
       })();
     </script>
   `;
+}
+
+const DEMO_RUN_MESSAGE = "The shared demo keeps its history. Create your own lecture to try a fresh run.";
+
+// The run picker and the fresh-run button, in their own block near the top
+// of the lecturer view (ADR 006 section 3). Plain links, so they work
+// without JS. The current run links to the live view; earlier runs to
+// ?run=N. `viewing` is the run on screen, marked aria-current.
+function runControlsHtml(id: string, viewing: number): string {
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  const runs = runsOf(id);
+  const current = runs.length > 0 ? runs[runs.length - 1].number : 1;
+  const items = runs
+    .map((run) => {
+      const isCurrent = run.number === current;
+      const label = `Run ${run.number}${isCurrent ? " (live)" : ""}`;
+      const href = isCurrent ? base : `${base}?run=${run.number}`;
+      const ariaCurrent = run.number === viewing ? ` aria-current="page"` : "";
+      return `<li><a href="${href}"${ariaCurrent}>${label}</a></li>`;
+    })
+    .join("");
+  const freshRun =
+    id === "demo"
+      ? `<p id="runs-demo">${escapeHtml(DEMO_RUN_MESSAGE)}</p>`
+      : `<form method="get" action="${base}/runs/new" id="fresh-run-form">
+        <button type="submit">Start a fresh run</button>
+      </form>`;
+  return `
+    <section id="runs" class="runs" aria-labelledby="runs-heading">
+      <h2 id="runs-heading">Runs</h2>
+      <ul class="run-picker">${items}</ul>
+      ${freshRun}
+    </section>`;
+}
+
+// Notes in a past run: the same gated list, with no Hide button, since a
+// past run is read-only.
+function readOnlyNotesHtml(notes: DashboardNote[]): string {
+  if (notes.length === 0) return "";
+  const sorted = [...notes].sort(
+    (a, b) =>
+      (a.deck ?? "").localeCompare(b.deck ?? "") || a.slide - b.slide || b.created_at.localeCompare(a.created_at),
+  );
+  const items = sorted
+    .map(
+      (note) => `<li class="note">
+        <p class="note-slide">${escapeHtml(slideName(note.deck, note.slide))}</p>
+        <p class="note-text">${escapeHtml(note.text)}</p>
+      </li>`,
+    )
+    .join("\n");
+  return `<section id="notes"><h3>What didn't make sense</h3><ul id="notes-list" class="notes-list">${items}</ul></section>`;
+}
+
+// An earlier run, read-only: a static render with no stream and no
+// controls, gated exactly as the live view is.
+function pastRunHtml(id: string, past: PastRunState): string {
+  const totalHtml =
+    past.totalTaps !== undefined ? `<p id="tap-count">Total taps in run ${past.run}: ${past.totalTaps}</p>` : "";
+  const empty =
+    past.bars.length === 0 && past.reasonCounts.length === 0 && past.notes.length === 0
+      ? `<p>No slide in this run reached the threshold to show.</p>`
+      : "";
+  return `
+    <div class="lecturer-head">
+      <h1>Lecturer view</h1>
+      <p id="run-label">Run ${past.run}, read-only</p>
+      <p><a href="/l/${encodeURIComponent(id)}/lecturer">Back to the live run</a></p>
+    </div>
+${runControlsHtml(id, past.run)}
+    <div class="lecturer-layout">
+      <div class="all-panel">
+        <h2>Every slide in run ${past.run}</h2>
+        ${totalHtml}
+        ${empty}
+        <div id="bars">${barsHtml(past.bars)}</div>
+        <div id="reason-counts-container">${reasonCountsHtml(past.reasonCounts)}</div>
+        ${readOnlyNotesHtml(past.notes)}
+      </div>
+    </div>
+  `;
+}
+
+function forbiddenText(): Response {
+  return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+function demoRefusal(title: string, message: string): Response {
+  return new Response(
+    page(
+      title,
+      `<h1>${escapeHtml(title)}</h1><p class="form-error">${escapeHtml(message)}</p><p><a href="/l/demo/lecturer">Back to the lecturer view</a> &middot; <a href="/new">Create your own lecture</a></p>`,
+    ),
+    { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+// "Start a fresh run", step 1: a confirmation page saying what happens. The
+// form names the run it replaces, so submitting it twice makes one run.
+async function handleFreshRunGet(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  if (id === "demo") {
+    logAction("run_start_rejected", id, validateBrowserId(cookieHeader));
+    return demoRefusal("Start a fresh run", DEMO_RUN_MESSAGE);
+  }
+  if (!validateLecturerSession(id, cookieHeader)) return forbiddenText();
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  const next = lecture.run + 1;
+  const body = `
+    <h1>Start a fresh run?</h1>
+    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the run picker. Nothing is deleted.</p>
+    <p>Run ${next} starts empty, on slide 1. Every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <form method="post" action="${base}/runs" id="fresh-run-confirm">
+      <input type="hidden" name="run" value="${lecture.run}">
+      <button type="submit">Start run ${next}</button>
+    </form>
+    <p><a href="${base}">Cancel, back to the lecturer view</a></p>
+  `;
+  return new Response(page("Start a fresh run", body), {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+// Step 2: inserts one row into runs and deletes nothing (CLAUDE.md: reset
+// never deletes). Everything live then reads the new run.
+async function handleFreshRunPost(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (id === "demo") {
+    logAction("run_start_rejected", id, browserId);
+    return demoRefusal("Start a fresh run", DEMO_RUN_MESSAGE);
+  }
+  if (!validateLecturerSession(id, cookieHeader)) {
+    logAction("run_start_rejected", id, browserId);
+    return forbiddenText();
+  }
+  const runRaw = new URLSearchParams(await req.text()).get("run") ?? "";
+  if (!/^[1-9][0-9]{0,8}$/.test(runRaw)) {
+    return new Response("Invalid run", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (startRun(id, Number(runRaw))) {
+    logAction("run_started", id, browserId);
+    broadcast(id);
+  }
+  return new Response(null, { status: 303, headers: { location: `/l/${encodeURIComponent(id)}/lecturer` } });
 }
 
 async function handleLecturerGet(id: string, req: Request): Promise<Response> {
@@ -1999,7 +2165,22 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
   }
 
+  // ?run=N names an earlier run, shown read-only. The current run's number
+  // (or none) is the live view; anything else isn't a run of this lecture.
+  const runParam = new URL(req.url).searchParams.get("run");
+  if (runParam !== null) {
+    const run = /^[1-9][0-9]{0,8}$/.test(runParam) ? Number(runParam) : NaN;
+    if (!(run >= 1 && run <= lecture.run)) return notFoundResponse();
+    if (run < lecture.run) {
+      return new Response(
+        page(`Lecturer view, run ${run}`, pastRunHtml(id, computePastRunState(lecture, run)), "lecturer"),
+        { status: 200, headers },
+      );
+    }
+  }
+
   const state = computeLecturerState(id) ?? {
+    run: lecture.run,
     present: 0,
     shown: false as const,
     slide: currentSlideIndex(lecture),
@@ -2261,6 +2442,20 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(noteMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleNote(id, req);
+  }
+
+  const freshRunMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/runs\/new$/);
+  if (method === "GET" && freshRunMatch) {
+    const id = safeDecode(freshRunMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleFreshRunGet(id, req);
+  }
+
+  const runsMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/runs$/);
+  if (method === "POST" && runsMatch) {
+    const id = safeDecode(runsMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleFreshRunPost(id, req);
   }
 
   const hideNoteMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/note\/(\d+)\/hide$/);
