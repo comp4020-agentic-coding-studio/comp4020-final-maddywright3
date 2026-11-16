@@ -106,10 +106,10 @@ class RawStream {
   }
 }
 
-it("the demo is seeded with the course page as its help link", async () => {
+it("the demo is seeded with the course's communication page as its help link", async () => {
   const lecturerCookie = await logIn("demo", "DEMO");
   const view = await page("/l/demo/lecturer", lecturerCookie);
-  expect(view).toContain("https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/");
+  expect(view).toContain("https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/communication/");
 });
 
 it("a browser lost on 3 slides sees the help link on its own page and stream; one on 2 doesn't", async () => {

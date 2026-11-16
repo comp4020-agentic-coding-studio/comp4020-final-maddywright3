@@ -239,16 +239,19 @@ db.exec(`
   )
 `);
 
-// The demo's help link is the course page, set once: when the demo is first
-// made, or when the column is first added. A lecturer who later changes or
-// clears it isn't overridden on the next start.
-const DEMO_HELP_URL = "https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/";
+// The demo's help link is the course's communication page, set once: when
+// the demo is first made, or when the column is first added. A lecturer who
+// later changes or clears it isn't overridden on the next start. A demo
+// still on the earlier link (the course home page) moves to this one once.
+const DEMO_HELP_URL = "https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/communication/";
+const EARLIER_DEMO_HELP_URL = "https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/";
 db.prepare(
   "INSERT OR IGNORE INTO lectures (id, title, created_at, help_url) VALUES (?, ?, ?, ?)",
 ).run("demo", "Demo lecture", new Date().toISOString(), DEMO_HELP_URL);
 if (addingHelpUrl) {
   db.prepare("UPDATE lectures SET help_url = ? WHERE id = 'demo'").run(DEMO_HELP_URL);
 }
+db.prepare("UPDATE lectures SET help_url = ? WHERE id = 'demo' AND help_url = ?").run(DEMO_HELP_URL, EARLIER_DEMO_HELP_URL);
 
 db.prepare("UPDATE lectures SET min_present = 2 WHERE id = 'demo'").run();
 
