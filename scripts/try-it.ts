@@ -77,7 +77,9 @@ async function main(): Promise<void> {
     watch(a, "profile A");
     const readmeRes = await a.goto(new URL("/readme/", baseUrl).toString());
     check(s0, "/readme/ answers 200", readmeRes?.status() === 200, String(readmeRes?.status()));
-    const demoLink = a.locator('a[href="/l/demo"]').first();
+    // The README's own link, inside the rendered README (main), absolute or
+    // relative; not the site header's nav link to the demo.
+    const demoLink = a.locator('main a[href$="/l/demo"]').first();
     check(s0, "/readme/ links to /l/demo", (await demoLink.count()) > 0);
     await shot(a, "0-readme", s0);
 
