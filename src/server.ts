@@ -19,6 +19,7 @@ import {
   resolvedTapOn,
   setTapHelped,
   yourAnswersOn,
+  currentRun,
   runsOf,
   setHelpUrl,
   startRun,
@@ -2265,6 +2266,7 @@ ${runControlsHtml(id, state.run)}
       </div>
     </div>
 ${activityLogHtml(activity.lecture, activity.lines, activity.filter)}
+${helpLinkSectionHtml(id)}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -2480,36 +2482,49 @@ const DEMO_RUN_MESSAGE = "The shared demo keeps its history. Create your own lec
 const DEMO_HELP_LINK_MESSAGE =
   "The shared demo's help link is fixed, because its code is public. Create your own lecture to set one.";
 
-// The run picker and the fresh-run button, in their own block near the top
-// of the lecturer view (ADR 006 section 3). Plain links, so they work
-// without JS. The current run links to the live view; earlier runs to
-// ?run=N. `viewing` is the run on screen, marked aria-current.
+// The runs box, near the top of the lecturer view (ADR 006 section 3): what
+// a run is, which run is current, a plain link to every earlier one, and
+// the reset button, which starts a fresh run and deletes nothing. Plain
+// links and a GET form, so it all works without JS. `viewing` is the run on
+// screen, marked aria-current and labelled "on screen".
+const RUN_EXPLANATION = "A run is one sitting of this lecture. Starting a fresh run keeps every earlier run, viewable here.";
+const RESET_EXPLANATION = "Every count, graph and note starts from zero. Earlier runs aren't deleted: view them below.";
+
 function runControlsHtml(id: string, viewing: number): string {
   const base = `/l/${encodeURIComponent(id)}/lecturer`;
   const runs = runsOf(id);
   const current = runs.length > 0 ? runs[runs.length - 1].number : 1;
-  const items = runs
+  const items = [...runs]
+    .reverse()
     .map((run) => {
       const isCurrent = run.number === current;
       const label = `Run ${run.number}${isCurrent ? " (live)" : ""}`;
       const href = isCurrent ? base : `${base}?run=${run.number}`;
-      const ariaCurrent = run.number === viewing ? ` aria-current="page"` : "";
-      return `<li><a href="${href}"${ariaCurrent}>${label}</a></li>`;
+      const onScreen = run.number === viewing;
+      const ariaCurrent = onScreen ? ` aria-current="page"` : "";
+      const marker = onScreen ? ` <span class="run-onscreen">on screen</span>` : "";
+      return `<li><a href="${href}"${ariaCurrent}>${label}</a>${marker}</li>`;
     })
     .join("");
+  const earlierNote = runs.length <= 1 ? `<p class="runs-none">No earlier runs yet.</p>` : "";
   const freshRun =
     id === "demo"
       ? `<p id="runs-demo">${escapeHtml(DEMO_RUN_MESSAGE)}</p>`
-      : `<form method="get" action="${base}/runs/new" id="fresh-run-form">
-        <button type="submit">Start a fresh run</button>
-      </form>`;
+      : `<div class="fresh-run">
+        <form method="get" action="${base}/runs/new" id="fresh-run-form">
+          <button type="submit">Reset statistics: start a fresh run</button>
+        </form>
+        <p id="fresh-run-explain">${escapeHtml(RESET_EXPLANATION)}</p>
+      </div>`;
   return `
-    <section id="runs" class="runs" aria-labelledby="runs-heading">
+    <section id="runs" class="card runs" aria-labelledby="runs-heading">
       <h2 id="runs-heading">Runs</h2>
-      <ul class="run-picker">${items}</ul>
+      <p>${escapeHtml(RUN_EXPLANATION)}</p>
+      <p id="run-current">The current run is run ${current}.</p>
       ${freshRun}
-    </section>
-${helpLinkSectionHtml(id)}`;
+      <ul class="run-picker">${items}</ul>
+      ${earlierNote}
+    </section>`;
 }
 
 // The lecturer's help link, editable here (the demo's is fixed). Students
@@ -2571,9 +2586,11 @@ function pastRunHtml(id: string, past: PastRunState): string {
   return `
     <div class="lecturer-head">
       <h1>Lecturer view</h1>
-      <p id="run-label">Run ${past.run}, read-only</p>
-      <p><a href="/l/${encodeURIComponent(id)}/lecturer">Back to the live run</a></p>
     </div>
+    <section id="run-viewing" class="card run-viewing" aria-label="Run on screen">
+      <p id="run-label">You're viewing Run ${past.run}, read-only.</p>
+      <p><a href="/l/${encodeURIComponent(id)}/lecturer" id="run-back" class="pill-link primary">Back to the current run, run ${currentRun(id)}</a></p>
+    </section>
 ${runControlsHtml(id, past.run)}
     <div class="lecturer-layout">
       <div class="all-panel">
@@ -2616,16 +2633,16 @@ async function handleFreshRunGet(id: string, req: Request): Promise<Response> {
   const base = `/l/${encodeURIComponent(id)}/lecturer`;
   const next = lecture.run + 1;
   const body = `
-    <h1>Start a fresh run?</h1>
-    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the run picker. Nothing is deleted.</p>
-    <p>Run ${next} starts empty, on slide 1. Every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <h1>Reset statistics?</h1>
+    <p>Every count, graph and note starts from zero in run ${next}. It starts on slide 1, every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the Runs box. Nothing is deleted.</p>
     <form method="post" action="${base}/runs" id="fresh-run-confirm">
       <input type="hidden" name="run" value="${lecture.run}">
-      <button type="submit">Start run ${next}</button>
+      <button type="submit">Reset statistics: start run ${next}</button>
     </form>
     <p><a href="${base}">Cancel, back to the lecturer view</a></p>
   `;
-  return new Response(page("Start a fresh run", body), {
+  return new Response(page("Reset statistics", body), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });

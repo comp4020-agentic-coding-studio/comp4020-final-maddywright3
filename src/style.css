@@ -1151,6 +1151,70 @@ main.lecturer.projector {
   margin: 0;
 }
 
+/* The runs box: what a run is, the reset button with what it does beside
+   it, and every run as a link, the one on screen marked. */
+.runs {
+  margin-bottom: var(--space-3);
+}
+
+.runs h2 {
+  margin-top: 0;
+  font-size: var(--step-1);
+}
+
+.fresh-run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.fresh-run form,
+.fresh-run p {
+  margin: 0;
+}
+
+.fresh-run p {
+  flex: 1 1 16rem;
+  color: var(--ink-muted);
+}
+
+.run-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  list-style: none;
+  padding: 0;
+}
+
+.run-picker a[aria-current="page"] {
+  font-weight: 650;
+}
+
+.run-onscreen {
+  padding: 0 var(--space-1);
+  border-radius: var(--pill);
+  background: var(--accent);
+  color: var(--on-colour);
+  font-size: var(--small);
+}
+
+.runs-none {
+  color: var(--ink-muted);
+}
+
+/* An earlier run on screen says so, and links back, before anything else. */
+.run-viewing {
+  margin-bottom: var(--space-3);
+  border-left: 4px solid var(--accent);
+}
+
+#run-label {
+  font-size: var(--step-1);
+  font-weight: 650;
+}
+
 /* The lecturer's live slide, named large at the top, behind the student
    page's LIVE pill. */
 .live-now {
