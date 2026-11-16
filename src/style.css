@@ -415,8 +415,11 @@ form {
   color: var(--on-colour);
 }
 
+/* Not the tap button: between "counted" (violet on white) and "I'm lost"
+   (white on violet) its text and background swap, so a fade passes through
+   violet on violet. axe caught that mid-fade in CI. It switches at once. */
 @media (prefers-reduced-motion: no-preference) {
-  button,
+  button:not(.tap-button),
   a {
     transition:
       background-color 120ms ease,
