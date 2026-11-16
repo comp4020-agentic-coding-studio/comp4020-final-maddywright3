@@ -112,6 +112,14 @@ if (!tapColumns.some((c) => c.name === "legacy_duplicate")) {
 if (!tapColumns.some((c) => c.name === "helped")) {
   db.exec("ALTER TABLE taps ADD COLUMN helped TEXT");
 }
+// When the reason and what-helped answers were given, for the per-press
+// activity log. Rows from before this stay NULL ("time not recorded").
+if (!tapColumns.some((c) => c.name === "reason_at")) {
+  db.exec("ALTER TABLE taps ADD COLUMN reason_at TEXT");
+}
+if (!tapColumns.some((c) => c.name === "helped_at")) {
+  db.exec("ALTER TABLE taps ADD COLUMN helped_at TEXT");
+}
 
 // One "I'm lost" per (lecture, run, deck, slide, browser), held by a unique
 // index rather than by a check in the insert. Two things make the index
@@ -631,14 +639,18 @@ export function resolvedTapOn(lectureId: string, browserId: string, slideRef: Sl
 // Answers lock once sent (ADR 006): "AND reason IS NULL" in the same UPDATE
 // means a second answer changes nothing, even two arriving at once.
 export function setTapReason(tapId: number, reason: string): boolean {
-  return db.prepare("UPDATE taps SET reason = ? WHERE id = ? AND reason IS NULL").run(reason, tapId).changes > 0;
+  return (
+    db
+      .prepare("UPDATE taps SET reason = ?, reason_at = ? WHERE id = ? AND reason IS NULL")
+      .run(reason, new Date().toISOString(), tapId).changes > 0
+  );
 }
 
 export function setTapHelped(tapId: number, helped: string): boolean {
   return (
     db
-      .prepare("UPDATE taps SET helped = ? WHERE id = ? AND helped IS NULL AND resolved_at IS NOT NULL")
-      .run(helped, tapId).changes > 0
+      .prepare("UPDATE taps SET helped = ?, helped_at = ? WHERE id = ? AND helped IS NULL AND resolved_at IS NOT NULL")
+      .run(helped, new Date().toISOString(), tapId).changes > 0
   );
 }
 
