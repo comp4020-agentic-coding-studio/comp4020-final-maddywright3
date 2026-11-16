@@ -1,6 +1,6 @@
 # ADR 003: Who counts as a person, and who may see what
 
-Status: accepted, 15 November 2026 (C10 milestone)
+Status: accepted, 15 November 2026 (C10 milestone). Three costs below were later fixed: the code lockout is per browser and lecture and sessions expire after 12 hours ([`193f89d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/193f89d)), and /new is limited to 3 lectures per browser per hour and 500 in all ([`da6a814`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/da6a814)).
 
 ## Context
 

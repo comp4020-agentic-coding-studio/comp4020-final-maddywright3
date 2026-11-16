@@ -1,6 +1,6 @@
 # ADR 004: A lecture to be lost in
 
-Status: accepted, 15 November 2026 (after C10)
+Status: accepted, 15 November 2026 (after C10). Its timing is superseded by ADR 006: each demo slide now has its own duration, and a demo tap is live for 20 seconds (60 on a created lecture).
 
 ## Context
 
