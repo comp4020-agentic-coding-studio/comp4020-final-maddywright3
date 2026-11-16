@@ -123,3 +123,21 @@ These are known and written down, not missed:
 - *Notes can still be recognised.* A lecturer who knows a student's writing might guess a note's author. Batching makes it harder, not impossible.
 - *Batching delays the first notes.* A lecturer can't react to a note until enough people have written one on that slide.
 - *Real lectures depend on the lecturer pressing Next.* If they forget, taps land on the wrong slide.
+
+## After the merge
+
+*A decision reversed.* I had rejected labelling students. After using the lecturer view, I decided an anonymous "Person N" log was worth having, because it shows how one person's confusion moves through a lecture without saying who they are. It's numbered afresh each run, never shows note text, and only reaches the lecturer once enough people are present, because in a small room timing alone could point to someone. ADR 006 records the change, and the CLAUDE.md privacy rules were updated to match.
+
+*The log leaked below the threshold.* The consistency check found the activity log reached the lecturer even with one person present. The failing test went in first ([`7538165`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/7538165)), then the fix ([`0085a6d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0085a6d)).
+
+*A flaky fade.* The fade timer fired at the exact end of a tap's live window, while the tap still counted, so the fade test failed now and then, once in CI. It now fires 1 ms later ([`0bc55cd`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0bc55cd)).
+
+*A contrast failure I couldn't reproduce.* Axe once flagged the "I'm lost" button in CI. The best explanation is that it checked mid-fade, when text and background were both violet. I couldn't reproduce it, even with the CPU slowed 6x, so the cause isn't confirmed, but the fade passed through low contrast either way and is gone ([`3170be7`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/3170be7)).
+
+*Bursts got slower again.* The final Fly run took about 1.35 s for every stream to see 50 taps, worst 1.47 s, up from 580 to 670 ms after ADR 005. The later features add work to every update. Single taps still arrive well inside a second. I accepted this rather than optimise again before submission, and the README gives the burst figure.
+
+*Persistence on the final build.* Every field survived a redeploy ([report](../persistence-report.md)). The run couldn't test a machine stop, because two demo tabs stayed connected the whole time, so I repeated the stop by hand.
+
+*The burst test's own assumption.* "At most 2 updates" assumed a burst always lands inside one 50 ms window. On a busy machine it sometimes spans two, and the throttle correctly sends a third. The cause was measured before the test changed, and the limit now comes from the windows the burst actually spans.
+
+*Live checks.* 39 of 39 passed on the deployed build, with no axe violations, in both themes and at both viewports ([docs/checks/](../checks/)).
