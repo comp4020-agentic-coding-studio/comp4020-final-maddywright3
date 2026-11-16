@@ -19,6 +19,8 @@ import {
   msUntilNextSlideChange,
   startDeckClock,
 } from "./slides.ts";
+import { activityLog } from "./activity.ts";
+import type { ActivityLine } from "./activity.ts";
 import type { DeckId } from "./slides.ts";
 
 const HEARTBEAT_MS = 20_000;
@@ -88,6 +90,8 @@ export type MeterState =
       topReason?: string;
     };
 
+// activityLog (src/activity.ts) is lecturer-only, gated line by line: each
+// line is about min_present more people, so it's present on both branches.
 export type LecturerState =
   | {
       present: number;
@@ -97,6 +101,7 @@ export type LecturerState =
       reasonCounts: ReasonCountEntry[];
       helpedCounts: HelpedCount[];
       notes: NoteEntry[];
+      activityLog: ActivityLine[];
     }
   | {
       present: number;
@@ -108,6 +113,7 @@ export type LecturerState =
       reasonCounts: ReasonCountEntry[];
       helpedCounts: HelpedCount[];
       notes: NoteEntry[];
+      activityLog: ActivityLine[];
     };
 
 // Bars are gated per (deck, slide) pair, independently of present/shown: a
@@ -376,10 +382,11 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
   const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes };
+  const log = activityLog(lecture);
+  if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes, activityLog: log };
   const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, helpedCounts, notes };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, helpedCounts, notes, activityLog: log };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
