@@ -50,7 +50,9 @@ import {
   sendInitialState,
   startHeartbeat,
 } from "./realtime.ts";
-import type { Bar } from "./realtime.ts";
+import type { Bar, LecturerState } from "./realtime.ts";
+import { dashboardClientJs, dashboardSectionsHtml, parseNotesFilter } from "./dashboard.ts";
+import type { NotesFilter } from "./dashboard.ts";
 import {
   DECK_IDS,
   DECK_SHORT_NAMES,
@@ -1510,25 +1512,6 @@ interface DashboardNote {
   created_at: string;
 }
 
-function reasonCountsHtml(reasonCounts: DashboardReasonCount[]): string {
-  if (reasonCounts.length === 0) return "";
-  const sorted = [...reasonCounts].sort(
-    (a, b) => (a.deck ?? "").localeCompare(b.deck ?? "") || a.slide - b.slide || b.count - a.count,
-  );
-  const rows = sorted
-    .map((entry) => {
-      const label = slideName(entry.deck, entry.slide);
-      return `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(entry.reason)}</td><td>${entry.count}</td></tr>`;
-    })
-    .join("\n");
-  return `
-    <table class="reason-counts" id="reason-counts">
-      <thead><tr><th>Slide</th><th>Reason</th><th>Count</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
-}
-
 // Each note's Hide button posts to a lecturer-only route; the note's id in
 // the URL is an opaque row id the lecturer only ever sees inside their own
 // already-authenticated dashboard. A hidden note is removed from the DOM
@@ -1554,18 +1537,6 @@ function noteItemsHtml(lectureId: string, notes: DashboardNote[]): string {
       </li>`;
     })
     .join("\n");
-}
-
-// Notes on every slide except the current one (those lead the page, in
-// #now). The whole section is absent when there are none.
-function notesHtml(lectureId: string, notes: DashboardNote[]): string {
-  if (notes.length === 0) return "";
-  return `
-    <section id="notes">
-      <h2>What didn't make sense, on other slides</h2>
-      <ul id="notes-list" class="notes-list">${noteItemsHtml(lectureId, notes)}</ul>
-    </section>
-  `;
 }
 
 interface SlideKey {
@@ -1608,25 +1579,9 @@ function nowSectionInnerHtml(
 
 function lecturerDashboard(
   id: string,
-  state:
-    | {
-        present: number;
-        shown: false;
-        slide: number;
-        bars: Bar[];
-        reasonCounts: DashboardReasonCount[];
-        notes: DashboardNote[];
-      }
-    | {
-        present: number;
-        shown: true;
-        slide: number;
-        bars: Bar[];
-        live: number;
-        totalTaps: number;
-        reasonCounts: DashboardReasonCount[];
-        notes: DashboardNote[];
-      },
+  state: LecturerState,
+  lecture: Lecture,
+  notesFilter: NotesFilter,
   minPresent: number,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
@@ -1655,7 +1610,6 @@ function lecturerDashboard(
     </form>`;
 
   const nowKey: SlideKey = { deck: id === "demo" ? LIVE_DECK : null, slide: state.slide };
-  const isNow = onSlide(nowKey);
 
   return `
     <div class="lecturer-head">
@@ -1670,10 +1624,7 @@ ${tapCountHtml}
         <section id="now" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
       </div>
       <div class="all-panel">
-        <h2>Every slide so far</h2>
-        <div id="bars">${barsHtml(state.bars)}</div>
-        <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
-        <div id="other-notes">${notesHtml(id, state.notes.filter((n) => !isNow(n)))}</div>
+        ${dashboardSectionsHtml(lecture, state, notesFilter)}
       </div>
     </div>
     <script>
@@ -1685,117 +1636,15 @@ ${GAUGE_CLIENT_JS}
 ${SLIDE_NAME_CLIENT_JS}
         var connectionStatus = document.getElementById("connection-status");
 
-        function renderBars(bars) {
-          var container = document.getElementById("bars");
-          if (!container) return;
-          if (!bars || bars.length === 0) {
-            container.innerHTML = "";
-            return;
-          }
-          var sorted = bars.slice().sort(function (a, b) {
-            return (a.deck || "").localeCompare(b.deck || "") || a.slide - b.slide;
-          });
-          var maxCount = Math.max.apply(null, sorted.map(function (b) { return b.distinctBrowsers; }));
-          var barWidth = 80, gap = 20, chartHeight = 200, maxBarHeight = 150;
-          var chartWidth = sorted.length * (barWidth + gap) + gap;
-          var svgNS = "http://www.w3.org/2000/svg";
-          var svg = document.createElementNS(svgNS, "svg");
-          svg.setAttribute("class", "bar-chart");
-          svg.setAttribute("viewBox", "0 0 " + chartWidth + " " + chartHeight);
-          svg.setAttribute("role", "img");
-          svg.setAttribute("aria-label", "Distinct people lost, per slide");
-          sorted.forEach(function (bar, i) {
-            var label = slideName(bar.deck, bar.slide);
-            var height = maxCount > 0 ? Math.round((bar.distinctBrowsers / maxCount) * maxBarHeight) : 0;
-            var x = gap + i * (barWidth + gap);
-            var y = chartHeight - height - 20;
-            var rect = document.createElementNS(svgNS, "rect");
-            rect.setAttribute("x", String(x));
-            rect.setAttribute("y", String(y));
-            rect.setAttribute("width", String(barWidth));
-            rect.setAttribute("height", String(height));
-            rect.setAttribute("fill", "currentColor");
-            var title = document.createElementNS(svgNS, "title");
-            title.textContent = label + ": " + bar.distinctBrowsers;
-            rect.appendChild(title);
-            svg.appendChild(rect);
-            var text = document.createElementNS(svgNS, "text");
-            text.setAttribute("x", String(x + barWidth / 2));
-            text.setAttribute("y", String(chartHeight - 4));
-            text.setAttribute("text-anchor", "middle");
-            text.setAttribute("font-size", "16");
-            text.textContent = String(i + 1);
-            svg.appendChild(text);
-          });
-          var table = document.createElement("table");
-          table.className = "bars";
-          var thead = document.createElement("thead");
-          thead.innerHTML = "<tr><th>Slide</th><th>People lost here</th></tr>";
-          var tbody = document.createElement("tbody");
-          sorted.forEach(function (bar) {
-            var label = slideName(bar.deck, bar.slide);
-            var tr = document.createElement("tr");
-            var tdLabel = document.createElement("td");
-            tdLabel.textContent = label;
-            var tdCount = document.createElement("td");
-            tdCount.textContent = String(bar.distinctBrowsers);
-            tr.appendChild(tdLabel);
-            tr.appendChild(tdCount);
-            tbody.appendChild(tr);
-          });
-          table.appendChild(thead);
-          table.appendChild(tbody);
-          container.innerHTML = "";
-          container.appendChild(svg);
-          container.appendChild(table);
-        }
-
-        function attachHideNoteHandlers() {
-          var forms = document.querySelectorAll(".hide-note-form");
-          for (var i = 0; i < forms.length; i++) {
-            forms[i].addEventListener("submit", function (event) {
-              event.preventDefault();
-              fetch(event.target.action, { method: "POST" }).catch(function () {});
-            });
-          }
-        }
-        attachHideNoteHandlers();
-
-        function renderReasonCounts(reasonCounts) {
-          var container = document.getElementById("reason-counts-container");
-          if (!container) return;
-          if (!reasonCounts || reasonCounts.length === 0) {
-            container.innerHTML = "";
-            return;
-          }
-          var sorted = reasonCounts.slice().sort(function (a, b) {
-            return (a.deck || "").localeCompare(b.deck || "") || a.slide - b.slide || b.count - a.count;
-          });
-          var table = document.createElement("table");
-          table.className = "reason-counts";
-          table.id = "reason-counts";
-          var thead = document.createElement("thead");
-          thead.innerHTML = "<tr><th>Slide</th><th>Reason</th><th>Count</th></tr>";
-          var tbody = document.createElement("tbody");
-          sorted.forEach(function (entry) {
-            var label = slideName(entry.deck, entry.slide);
-            var tr = document.createElement("tr");
-            var tdLabel = document.createElement("td");
-            tdLabel.textContent = label;
-            var tdReason = document.createElement("td");
-            tdReason.textContent = entry.reason;
-            var tdCount = document.createElement("td");
-            tdCount.textContent = String(entry.count);
-            tr.appendChild(tdLabel);
-            tr.appendChild(tdReason);
-            tr.appendChild(tdCount);
-            tbody.appendChild(tr);
-          });
-          table.appendChild(thead);
-          table.appendChild(tbody);
-          container.innerHTML = "";
-          container.appendChild(table);
-        }
+${dashboardClientJs(notesFilter, minPresent)}
+        // One listener for every Hide button, including ones a live update
+        // adds later. Without JS each is a plain POST form.
+        document.addEventListener("submit", function (event) {
+          var hideForm = event.target;
+          if (!hideForm.classList || !hideForm.classList.contains("hide-note-form")) return;
+          event.preventDefault();
+          fetch(hideForm.action, { method: "POST" }).catch(function () {});
+        });
 
         function isNow(entry, slide) {
           return (entry.deck || null) === nowDeck && entry.slide === slide;
@@ -1847,25 +1696,6 @@ ${SLIDE_NAME_CLIENT_JS}
             list.appendChild(li);
           });
           return list;
-        }
-
-        // Notes on every slide but the current one. A hidden note is
-        // removed from the DOM entirely on the next broadcast, not just
-        // visually hidden — same privacy discipline as every other gated
-        // element on this page.
-        function renderOtherNotes(notes) {
-          var container = document.getElementById("other-notes");
-          if (!container || !notesChanged("other", notes)) return;
-          container.innerHTML = "";
-          if (notes.length === 0) return;
-          var section = document.createElement("section");
-          section.id = "notes";
-          var heading = document.createElement("h2");
-          heading.textContent = "What didn't make sense, on other slides";
-          section.appendChild(heading);
-          section.appendChild(buildNotesList(notes, "notes-list"));
-          container.appendChild(section);
-          attachHideNoteHandlers();
         }
 
         // The current slide first: its bar, its reasons, its notes, each
@@ -1945,7 +1775,6 @@ ${SLIDE_NAME_CLIENT_JS}
               h.textContent = "What didn't make sense";
               now.appendChild(h);
               now.appendChild(buildNotesList(nowNotes, "now-notes"));
-              attachHideNoteHandlers();
             }
           }
         }
@@ -1971,9 +1800,7 @@ ${SLIDE_NAME_CLIENT_JS}
             if (oldTapCount) oldTapCount.remove();
           }
           renderNow(state);
-          renderBars(state.bars);
-          renderReasonCounts(state.reasonCounts);
-          renderOtherNotes((state.notes || []).filter(function (n) { return !isNow(n, state.slide); }));
+          renderDashboard(state);
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -1999,15 +1826,12 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
   }
 
-  const state = computeLecturerState(id) ?? {
-    present: 0,
-    shown: false as const,
-    slide: currentSlideIndex(lecture),
-    bars: [] as Bar[],
-    reasonCounts: [] as DashboardReasonCount[],
-    notes: [] as DashboardNote[],
-  };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
+  // computeLecturerState only misses for a lecture that doesn't exist,
+  // which was checked above.
+  const state = computeLecturerState(id);
+  if (!state) return notFoundResponse();
+  const notesFilter = parseNotesFilter(lecture, new URL(req.url).searchParams);
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture, notesFilter, lecture.min_present), "lecturer"), {
     status: 200,
     headers,
   });
