@@ -520,6 +520,14 @@ function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number
   `;
 }
 
+// A lecturer who lands on the student page can find their own view. The
+// demo's code is public on purpose (CLAUDE.md, ADR 003), so it's shown
+// beside the link; no other lecture's code is ever shown after creation.
+function lecturerLinkHtml(lectureId: string): string {
+  const code = lectureId === "demo" ? ` <span class="lecturer-code">Code: DEMO</span>` : "";
+  return `<p class="lecturer-link"><a href="/l/${encodeURIComponent(lectureId)}/lecturer">Lecturer view</a>${code}</p>`;
+}
+
 async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -597,6 +605,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     <div class="lecture-head">
       <h1>${escapeHtml(lecture.title)}</h1>
       ${deckMenuHtml(id, viewedDeck)}
+      ${lecturerLinkHtml(id)}
     </div>
     <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
       <div class="slide-col">
