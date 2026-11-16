@@ -79,3 +79,7 @@ What it costs:
 ## Amendment, 16 November 2026: every created lecture is timed
 
 In my hand test I wanted every lecture to run on time, but still to be mine to steer. So /new no longer offers "I'll press Next": every lecture made there is timed, from total minutes (5 to 180, pre-filled 60) or from per-slide minutes. The lecturer keeps Previous and Next on a timed lecture. On a started lecture, pressing one moves the clock's origin (started_at) so the chosen slide starts now and the timer carries on from it. The slide is still computed only from started_at, so it survives a restart. Before Start, Previous and Next move the slide, and Start runs the clock from there. Lectures already stored with pacing "next" keep working as they did. Students now get Previous/Next links on a created lecture, as on the demo, and browsing moves only their own view.
+
+## Amendment, 16 November 2026: the activity log is a per-press trail
+
+The user replaced the grouped activity log (a line each time min_present more people did something on a slide) with a trail of every press: each "I'm lost", reason, "I get it now", what helped and note is its own line, newest first, with an AEST time, labelled only "Person N", numbered per run in order of first press. The label is never a browser ID or derived from one, never reaches a student, and note text never appears in it (CLAUDE.md, b35eaa3). The cost: the min_present guarantee no longer covers the log, so a lecturer watching the room can match Person N to someone by timing, and then read that person's later presses.
