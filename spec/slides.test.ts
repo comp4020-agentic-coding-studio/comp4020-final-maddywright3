@@ -1,3 +1,4 @@
+import { JSDOM } from "jsdom";
 import { expect, inject, it } from "vitest";
 import { newBrowserCookie } from "./test-helpers.ts";
 
@@ -106,7 +107,7 @@ async function createLectureAndLogIn(title: string): Promise<NewLecture> {
   const createRes = await fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: `title=${encodeURIComponent(title)}`,
+    body: `title=${encodeURIComponent(title)}&slides=60&minutes=60`,
   });
   const createHtml = await createRes.text();
   const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
@@ -435,9 +436,13 @@ it("the live marker says Live on an unwatched deck's slide 1, and where the lect
   expect(liveMarker(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe(
     "You're on Week 6 \u00b7 slide 3. The lecture is on Week 6 \u00b7 slide 1.",
   );
-  // A created lecture has no clock of its own to be off, so no marker.
+  // A created lecture can be browsed too (ADR 006 amendment), so it has the
+  // same marker, naming slides without a deck.
   const lecture = await createLectureAndLogIn("Live marker test");
-  expect(liveMarker(await demoPage(`/l/${lecture.id}`, lecture.cookie))).toBeUndefined();
+  expect(liveMarker(await demoPage(`/l/${lecture.id}`, lecture.cookie))).toBe("Live");
+  expect(liveMarker(await demoPage(`/l/${lecture.id}?slide=3`, lecture.cookie))).toBe(
+    "You're on Slide 3. The lecture is on Slide 1.",
+  );
 });
 
 it("switching to week-6 shows its own content, not week-4's", async () => {
@@ -765,4 +770,96 @@ it("the demo shows its lecture time out of 5:00, condensed 12x from 60 minutes",
   const created = await demoPage(`/l/${lecture.id}`, lecture.cookie);
   expect(lectureTime(created)).toBeUndefined();
   expect(condensedNote(created)).toBeUndefined();
+});
+
+// ---------- A created lecture's students browse with Previous and Next ----------
+
+// A created lecture with the given fields, as a lecturer would make it at
+// /new, and the lecturer's session for it.
+async function createWith(fields: Record<string, string>): Promise<NewLecture> {
+  const createRes = await fetch(new URL("/new", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ minutes: "60", ...fields }),
+  });
+  const createHtml = await createRes.text();
+  const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
+  const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
+  if (!id || !code) throw new Error("couldn't parse the new lecture's id/code");
+  const cookie = await newBrowserCookie(id);
+  const loginRes = await fetch(new URL(`/l/${id}/lecturer`, baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: `code=${code}`,
+    redirect: "manual",
+  });
+  const lsessCookie = loginRes.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("lsess="))
+    ?.split(";")[0];
+  if (!lsessCookie) throw new Error("lecturer login failed");
+  return { id, code, cookie, lecturerCookie: `${cookie}; ${lsessCookie}` };
+}
+
+async function studentDoc(path: string, cookie: string): Promise<Document> {
+  const html = await (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text();
+  return new JSDOM(html).window.document;
+}
+
+it("a created lecture's student page has Previous and Next links that work without JS", async () => {
+  const lecture = await createWith({ title: "Created arrows", slides: "5" });
+  const cookie = await newBrowserCookie(lecture.id);
+  const base = `/l/${lecture.id}`;
+
+  const live = await studentDoc(base, cookie);
+  const nav = live.querySelector("nav#slide-nav")!;
+  expect(nav).not.toBeNull();
+  const prev = live.getElementById("slide-prev-link")!;
+  expect(prev.tagName).toBe("SPAN");
+  expect(prev.getAttribute("aria-disabled")).toBe("true");
+  expect(live.getElementById("slide-next-link")!.getAttribute("href")).toBe(`${base}?slide=2`);
+  const back = live.getElementById("back-to-live-link")!;
+  expect(back.getAttribute("href")).toBe(base);
+  expect(back.hasAttribute("hidden")).toBe(true);
+  expect(live.getElementById("live-marker")!.textContent).toBe("Live");
+
+  // Following the link is a full page load onto slide 2.
+  const two = await studentDoc(`${base}?slide=2`, cookie);
+  expect(two.getElementById("slide-label")!.textContent).toBe("Slide 2");
+  expect((two.getElementById("slide-input") as HTMLInputElement).value).toBe("2");
+  expect(two.getElementById("slide-prev-link")!.getAttribute("href")).toBe(`${base}?slide=1`);
+  expect(two.getElementById("slide-next-link")!.getAttribute("href")).toBe(`${base}?slide=3`);
+  expect(two.getElementById("back-to-live-link")!.hasAttribute("hidden")).toBe(false);
+  expect(two.getElementById("live-marker")!.textContent).toBe("You're on Slide 2. The lecture is on Slide 1.");
+
+  // Within bounds: the last slide has no Next, and past it falls back to slide 1.
+  const last = await studentDoc(`${base}?slide=5`, cookie);
+  const lastNext = last.getElementById("slide-next-link")!;
+  expect(lastNext.tagName).toBe("SPAN");
+  expect(lastNext.getAttribute("aria-disabled")).toBe("true");
+  const past = await studentDoc(`${base}?slide=6`, cookie);
+  expect(past.getElementById("slide-label")!.textContent).toBe("Slide 1 (live)");
+});
+
+it("a student browsing a created lecture moves nobody else's live slide", async () => {
+  const lecture = await createWith({ title: "Browsing is yours", slides: "5" });
+  const a = await newBrowserCookie(lecture.id);
+  const b = await newBrowserCookie(lecture.id);
+  const browsed = await studentDoc(`/l/${lecture.id}?slide=3`, a);
+  expect(browsed.getElementById("slide-label")!.textContent).toBe("Slide 3");
+
+  const other = await studentDoc(`/l/${lecture.id}`, b);
+  expect(other.getElementById("slide-label")!.textContent).toBe("Slide 1 (live)");
+  const lecturer = await studentDoc(`/l/${lecture.id}/lecturer`, lecture.lecturerCookie);
+  expect(lecturer.getElementById("live-now-slide")!.textContent).toBe("Slide 1");
+});
+
+it("browsing a created lecture's pasted slides shows the slide asked for", async () => {
+  const lecture = await createWith({ title: "Browse pasted", slides_text: "One\n---\nTwo\n---\nThree" });
+  const cookie = await newBrowserCookie(lecture.id);
+  const doc = await studentDoc(`/l/${lecture.id}?slide=2`, cookie);
+  const sections = [...doc.querySelectorAll("#slides .slide")];
+  expect(sections.map((s) => s.hasAttribute("hidden"))).toEqual([true, false, true]);
+  expect(sections[1].textContent?.trim()).toBe("Two");
+  expect(doc.getElementById("slide-next-link")!.getAttribute("href")).toBe(`/l/${lecture.id}?slide=3`);
 });

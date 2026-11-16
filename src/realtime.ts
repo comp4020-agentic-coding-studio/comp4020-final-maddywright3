@@ -654,6 +654,14 @@ export function scheduleTimedAdvance(lectureId: string): void {
   timedTimers.set(lectureId, timer);
 }
 
+// The clock moved under the timer (the lecturer's Previous/Next, or Start
+// from a later slide): drop the old timer and arm one for the new slide's end.
+export function rescheduleTimedAdvance(lectureId: string): void {
+  clearTimeout(timedTimers.get(lectureId));
+  timedTimers.delete(lectureId);
+  scheduleTimedAdvance(lectureId);
+}
+
 export function startHeartbeat(): void {
   const timer = setInterval(() => {
     for (const byBrowser of connections.values()) {

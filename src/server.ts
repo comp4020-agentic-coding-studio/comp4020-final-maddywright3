@@ -12,6 +12,7 @@ import {
   hideNoteById,
   lectureSlides,
   startTimedLecture,
+  moveTimedClock,
   lectureCount,
   liveTapOn,
   openTapOn,
@@ -61,6 +62,7 @@ import {
   removeLecturerConnection,
   scheduleFade,
   scheduleTimedAdvance,
+  rescheduleTimedAdvance,
   sendInitialLecturerState,
   sendInitialState,
   startHeartbeat,
@@ -77,6 +79,8 @@ import {
   CONDENSED_FACTOR,
   clockText,
   currentSlideIndex,
+  timedOriginFor,
+  timedStarted,
   deckLengthMs,
   lectureElapsedMs,
   liveWindowMs,
@@ -502,26 +506,27 @@ function deckMenuHtml(lectureId: string, viewedDeck: DeckId): string {
 // deck runs its own clock. ADR 004's amendment: browsing is now how a tap
 // records an earlier slide, replacing the old grace-window reconciliation
 // outright. The link is always in the markup, `hidden` while on the live
-// slide, so the script can reveal it when the clock moves on. Only
-// rendered for the demo — a created lecture has no deck content in the app
-// to browse, just a number the lecturer advances, so there's nothing here
-// for a student to flip between.
-function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number, liveSlide: number): string {
-  if (lectureId !== "demo") return "";
-  const base = `/l/${encodeURIComponent(lectureId)}`;
-  const maxSlide = deckSlideCount(viewedDeck);
+// slide, so the script can reveal it when the clock moves on. A created
+// lecture gets the same arrows (?slide=N, no deck), bounded by its slide
+// count, or by the live slide when it has none. Browsing moves only this
+// browser, never the lecture's live slide.
+function slideNavHtml(lecture: Lecture, viewedDeck: DeckId, viewedSlide: number, liveSlide: number): string {
+  const isDemo = lecture.id === "demo";
+  const base = `/l/${encodeURIComponent(lecture.id)}`;
+  const maxSlide = maxBrowsableSlide(lecture, viewedDeck, liveSlide);
+  const slideHref = (n: number): string => (isDemo ? `${base}?deck=${viewedDeck}&slide=${n}` : `${base}?slide=${n}`);
   const prevSlide = viewedSlide - 1;
   const nextSlide = viewedSlide + 1;
   const prevHtml =
     prevSlide >= 1
-      ? `<a href="${base}?deck=${viewedDeck}&slide=${prevSlide}" id="slide-prev-link">Previous slide</a>`
+      ? `<a href="${slideHref(prevSlide)}" id="slide-prev-link">Previous slide</a>`
       : `<span id="slide-prev-link" aria-disabled="true">Previous slide</span>`;
   const nextHtml =
     nextSlide <= maxSlide
-      ? `<a href="${base}?deck=${viewedDeck}&slide=${nextSlide}" id="slide-next-link">Next slide</a>`
+      ? `<a href="${slideHref(nextSlide)}" id="slide-next-link">Next slide</a>`
       : `<span id="slide-next-link" aria-disabled="true">Next slide</span>`;
   const onLive = viewedSlide === liveSlide;
-  const backToLiveHtml = `<a href="${base}?deck=${viewedDeck}" id="back-to-live-link"${onLive ? " hidden" : ""}>Back to live</a>`;
+  const backToLiveHtml = `<a href="${isDemo ? `${base}?deck=${viewedDeck}` : base}" id="back-to-live-link"${onLive ? " hidden" : ""}>Back to live</a>`;
   return `
     <nav id="slide-nav" aria-label="Slide navigation">
       ${prevHtml}
@@ -529,6 +534,13 @@ function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number
       ${backToLiveHtml}
     </nav>
   `;
+}
+
+// The last slide a student can browse to: the deck's length on the demo; a
+// created lecture's slide count, or the live slide when it has none.
+function maxBrowsableSlide(lecture: Lecture, deck: DeckId, liveSlide: number): number {
+  if (lecture.id === "demo") return deckSlideCount(deck);
+  return lecture.slide_count ?? Math.max(1, liveSlide);
 }
 
 // The demo's condensed clock (ADR 006): how far into the deck's 5 minutes
@@ -554,7 +566,7 @@ function lectureTimeHtml(deck: DeckId, elapsedMs: number): string {
 // rewrites the same text on browsing and on every stream frame. Plain text,
 // not aria-live: the clock moves every few seconds, and announcing that each time
 // would chatter.
-function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): string {
+function liveMarkerText(deck: DeckId | null, viewedSlide: number, liveSlide: number): string {
   return viewedSlide === liveSlide
     ? "Live"
     : `You're on ${slideName(deck, viewedSlide)}. The lecture is on ${slideName(deck, liveSlide)}.`;
@@ -744,7 +756,9 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const viewedSlide =
     requestedSlideRaw === null
       ? liveSlide
-      : Number.isFinite(requestedSlideNumber) && isValidSlide(lecture, viewedDeck, requestedSlideNumber)
+      : Number.isFinite(requestedSlideNumber) &&
+          isValidSlide(lecture, viewedDeck, requestedSlideNumber) &&
+          requestedSlideNumber <= maxBrowsableSlide(lecture, viewedDeck, liveSlide)
         ? requestedSlideNumber
         : 1;
   // Whether this page arrived meaning "put me on live" rather than naming a
@@ -815,7 +829,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const onLiveNow = viewedSlide === liveSlide;
   const slideBarHtml = `<div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
             ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
-            ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
+            <p id="live-marker">${escapeHtml(liveMarkerText(id === "demo" ? viewedDeck : null, viewedSlide, liveSlide))}</p>
           </div>`;
   // The card is a box around the slide's text; a created lecture with no
   // pasted text has none, so its bar stands alone rather than in an empty box.
@@ -837,7 +851,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         ${slideCardHtml}
         ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
         <div id="timeline">${timelineHtml(lecture, viewedDeck, viewedSlide, liveSlide, state.bars)}</div>
-        ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
+        ${slideNavHtml(lecture, viewedDeck, viewedSlide, liveSlide)}
       </div>
       <div class="gauge-panel">
         ${gaugeHtml(state, lecture.min_present)}
@@ -874,6 +888,9 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckLengthMs(d)])) : undefined,
         )};
         var condensedFactor = ${JSON.stringify(CONDENSED_FACTOR)};
+        // A created lecture's slide count, or null when it has none (then
+        // a student can browse up to the live slide).
+        var lectureSlideCount = ${JSON.stringify(id === "demo" ? null : lecture.slide_count)};
 ${GAUGE_CLIENT_JS}
 ${SLIDE_NAME_CLIENT_JS}
         var form = document.getElementById("tap-form");
@@ -905,9 +922,17 @@ ${SLIDE_NAME_CLIENT_JS}
         // landed, the view stays put as the clock moves on — the marker and
         // "Back to live" say where the lecture is.
         var landOnLive = ${JSON.stringify(arrivedLive)};
+        // A created lecture: while this viewer is on the live slide and
+        // hasn't browsed away, the page follows the lecturer's Previous/Next
+        // and the clock. Browsing turns it off; Back to live turns it on.
+        var followLive = ${JSON.stringify(viewedSlide === liveSlide)};
 
         function maxSlideFor(deck) {
-          return deckSlideCounts ? deckSlideCounts[deck] : undefined;
+          if (deckSlideCounts) return deckSlideCounts[deck];
+          return lectureSlideCount || Math.max(1, liveSlide);
+        }
+        function slideHref(deck, slide) {
+          return isDemo ? "?deck=" + deck + "&slide=" + slide : "?slide=" + slide;
         }
 
         // The label says "(live)" only while this viewer is on the live
@@ -917,7 +942,7 @@ ${SLIDE_NAME_CLIENT_JS}
           var labelDeck = isDemo ? viewedDeck : null;
           var label = document.getElementById("slide-label");
           if (label) {
-            label.textContent = slideName(labelDeck, viewedSlide, { of: maxSlideFor(viewedDeck), live: onLive });
+            label.textContent = slideName(labelDeck, viewedSlide, { of: isDemo ? maxSlideFor(viewedDeck) : undefined, live: onLive });
           }
           if (slideBar) slideBar.classList.toggle("on-live", onLive);
           if (liveMarker) {
@@ -928,7 +953,7 @@ ${SLIDE_NAME_CLIENT_JS}
           var backLink = document.getElementById("back-to-live-link");
           if (backLink) {
             backLink.hidden = onLive;
-            backLink.setAttribute("href", tapBaseUrl + "?deck=" + viewedDeck);
+            backLink.setAttribute("href", isDemo ? tapBaseUrl + "?deck=" + viewedDeck : tapBaseUrl);
           }
         }
 
@@ -1029,14 +1054,14 @@ ${SLIDE_NAME_CLIENT_JS}
           var nextLink = document.getElementById("slide-next-link");
           if (prevLink) {
             if (slide > 1) {
-              prevLink.outerHTML = '<a href="?deck=' + deck + '&slide=' + (slide - 1) + '" id="slide-prev-link">Previous slide</a>';
+              prevLink.outerHTML = '<a href="' + slideHref(deck, slide - 1) + '" id="slide-prev-link">Previous slide</a>';
             } else {
               prevLink.outerHTML = '<span id="slide-prev-link" aria-disabled="true">Previous slide</span>';
             }
           }
           if (nextLink) {
             if (!maxSlide || slide < maxSlide) {
-              nextLink.outerHTML = '<a href="?deck=' + deck + '&slide=' + (slide + 1) + '" id="slide-next-link">Next slide</a>';
+              nextLink.outerHTML = '<a href="' + slideHref(deck, slide + 1) + '" id="slide-next-link">Next slide</a>';
             } else {
               nextLink.outerHTML = '<span id="slide-next-link" aria-disabled="true">Next slide</span>';
             }
@@ -1059,6 +1084,7 @@ ${SLIDE_NAME_CLIENT_JS}
             if (!t || t.deck !== viewedDeck) return;
             event.preventDefault();
             landOnLive = false;
+            followLive = t.slide === liveSlide;
             showSlide(t.deck, t.slide);
           });
         }
@@ -1070,6 +1096,7 @@ ${SLIDE_NAME_CLIENT_JS}
             prevLink.addEventListener("click", function (event) {
               event.preventDefault();
               landOnLive = false;
+              followLive = viewedSlide - 1 === liveSlide;
               showSlide(viewedDeck, viewedSlide - 1);
             });
           }
@@ -1077,6 +1104,7 @@ ${SLIDE_NAME_CLIENT_JS}
             nextLink.addEventListener("click", function (event) {
               event.preventDefault();
               landOnLive = false;
+              followLive = viewedSlide + 1 === liveSlide;
               showSlide(viewedDeck, viewedSlide + 1);
             });
           }
@@ -1088,6 +1116,7 @@ ${SLIDE_NAME_CLIENT_JS}
         if (backToLiveLink) {
           backToLiveLink.addEventListener("click", function (event) {
             event.preventDefault();
+            followLive = true;
             showSlide(viewedDeck, liveSlide);
           });
         }
@@ -1113,17 +1142,15 @@ ${SLIDE_NAME_CLIENT_JS}
           var active = document.activeElement;
           var tag = active && active.tagName;
           if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-          // A created lecture has no slides here to browse: its slide is the
-          // lecturer's, and the arrows mustn't quietly change what a tap
-          // records.
-          if (!isDemo) return;
           var maxSlide = maxSlideFor(viewedDeck);
           if (event.key === "ArrowLeft" && viewedSlide > 1) {
             landOnLive = false;
+            followLive = viewedSlide - 1 === liveSlide;
             showSlide(viewedDeck, viewedSlide - 1);
           }
           if (event.key === "ArrowRight" && (!maxSlide || viewedSlide < maxSlide)) {
             landOnLive = false;
+            followLive = viewedSlide + 1 === liveSlide;
             showSlide(viewedDeck, viewedSlide + 1);
           }
         });
@@ -1405,17 +1432,22 @@ ${SLIDE_NAME_CLIENT_JS}
           // A demo frame names its deck; ignore its slide if it's about a
           // deck this page has since switched away from.
           if (!state.deck || state.deck === viewedDeck) {
+            var previousLive = liveSlide;
             liveSlide = state.slide;
             if (typeof state.lectureElapsedMs === "number") syncLectureClock(state.lectureElapsedMs);
             if (landOnLive && isDemo) {
               landOnLive = false;
               showSlide(viewedDeck, liveSlide);
-            } else if (!isDemo && viewedSlide !== liveSlide) {
-              // A created lecture's slide is wherever the lecturer's Next or
-              // Previous left it, and there's nothing here to browse, so the
-              // page follows: the label, the slide a tap records, and the
-              // tap controls for that slide.
+            } else if (!isDemo && followLive && viewedSlide !== liveSlide) {
+              // A created lecture's live slide moves with the lecturer's
+              // Next/Previous and its clock. A viewer on it follows: the
+              // label, the slide a tap records, and the tap controls. One
+              // who browsed away stays put; the marker says where it is.
               showSlide(viewedDeck, liveSlide);
+            } else if (!isDemo && !lectureSlideCount && liveSlide !== previousLive) {
+              // With no slide count the live slide is the browsing bound:
+              // redraw the arrows for the slide in view when it moves.
+              showSlide(viewedDeck, viewedSlide);
             }
             updateLiveState();
           }
@@ -2156,20 +2188,22 @@ function rankingSectionHtml(bodyHtml: string): string {
       </section>`;
 }
 
-// A timed lecture has no Previous/Next: its clock moves the slides. Before
-// it starts, the lecturer gets one button; after, a line saying it's
-// running. Start is idempotent, so a second tab still showing the button
-// does no harm.
+// A timed lecture's clock moves the slides, and the lecturer keeps
+// Previous and Next to move ahead of or behind it: the clock carries on from
+// the slide they choose. Before it starts, there's a Start lecture button;
+// after, a line saying it's running. Start is idempotent, so a second tab
+// still showing the button does no harm.
 function timedControlsHtml(lecture: Lecture): string {
   const durations = slideDurations(lecture) ?? [];
   const totalMinutes = Math.round(durations.reduce((sum, ms) => sum + ms, 0) / 6000) / 10;
+  const overrideText = "Previous and Next still work, and the timer carries on from the slide you choose.";
   if (lecture.started_at === null) {
     return `<form method="post" action="/l/${encodeURIComponent(lecture.id)}/lecturer/start" id="start-lecture-form">
       <button type="submit">Start lecture</button>
     </form>
-    <p id="timed-status">Timed, ${totalMinutes} minutes. Slides move on their own once you start.</p>`;
+    <p id="timed-status">Timed, ${totalMinutes} minutes. The slides move on their own once you press Start lecture. ${overrideText}</p>`;
   }
-  return `<p id="timed-status">Timed, ${totalMinutes} minutes. Started, and slides move on their own.</p>`;
+  return `<p id="timed-status">Timed, ${totalMinutes} minutes. Started, and the slides move on their own. ${overrideText}</p>`;
 }
 
 function lecturerDashboard(
@@ -2197,10 +2231,9 @@ function lecturerDashboard(
   const slideControlsHtml =
     id === "demo"
       ? slideLabelHtml
-      : lecture.pacing === "timed"
-        ? `${slideLabelHtml}\n${timedControlsHtml(lecture)}`
-        : `
+      : `
     ${slideLabelHtml}
+    ${lecture.pacing === "timed" ? timedControlsHtml(lecture) : ""}
     <div class="slide-controls">
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
@@ -2856,17 +2889,20 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
     });
   }
 
-  // A timed lecture's slide is its clock's, not the lecturer's to move.
-  if (lecture.pacing === "timed") {
-    logAction("slide_change_rejected", id, browserId);
-    return new Response("This lecture is timed: its slides move on their own.", {
-      status: 409,
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
+  // A started timed lecture: the lecturer can still move ahead of or
+  // behind the clock. The clock's origin moves so the chosen slide starts
+  // now and carries on from there (timedOriginFor), and the timer is
+  // re-armed for that slide's end. Before Start, and on a lecture paced by
+  // Next, the slide just steps.
+  if (timedStarted(lecture)) {
+    const max = slideDurations(lecture)?.length ?? 1;
+    const target = Math.max(1, Math.min(max, currentSlideIndex(lecture) + direction));
+    moveTimedClock(id, timedOriginFor(lecture, target), target);
+  } else {
+    stepCurrentSlide(id, direction);
   }
-
-  stepCurrentSlide(id, direction);
   logAction("slide_changed", id, browserId);
+  rescheduleTimedAdvance(id);
   broadcast(id);
   broadcastToLecturer(id);
 
@@ -2881,7 +2917,6 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
 interface NewLectureInput {
   title: string;
   slides: string;
-  pacing: string;
   minutes: string;
   slideMinutes: string;
   slidesText: string;
@@ -2891,8 +2926,7 @@ interface NewLectureInput {
 const EMPTY_NEW_LECTURE: NewLectureInput = {
   title: "",
   slides: "",
-  pacing: "next",
-  minutes: "",
+  minutes: "60",
   slideMinutes: "",
   slidesText: "",
   helpUrl: "",
@@ -2904,7 +2938,6 @@ function readNewLectureInput(body: string): NewLectureInput {
   return {
     title: get("title").trim(),
     slides: get("slides").trim(),
-    pacing: get("pacing") || "next",
     minutes: get("minutes").trim(),
     slideMinutes: get("slide_minutes").trim(),
     slidesText: get("slides_text"),
@@ -2941,9 +2974,10 @@ async function handleStartLecture(id: string, req: Request): Promise<Response> {
     });
   }
 
-  if (startTimedLecture(id)) {
+  // The clock starts from whichever slide Previous/Next left it on.
+  if (startTimedLecture(id, timedOriginFor(lecture, lecture.current_slide))) {
     logAction("lecture_started", id, browserId);
-    scheduleTimedAdvance(id);
+    rescheduleTimedAdvance(id);
     broadcast(id);
     broadcastToLecturer(id);
   }
@@ -2956,7 +2990,6 @@ async function handleStartLecture(id: string, req: Request): Promise<Response> {
 
 function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTURE): string {
   const value = (v: string): string => (v ? ` value="${escapeHtml(v)}"` : "");
-  const checked = (pacing: string): string => (input.pacing === pacing ? " checked" : "");
   return `
     <h1>Start a lecture</h1>
     <p class="new-intro">Run this beside your own slides. Students tap on the slide you're on, and you see where the room got lost.</p>
@@ -2966,15 +2999,13 @@ function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTU
       <input id="title" name="title" required maxlength="${LECTURE_TITLE_MAX_LENGTH}"${value(input.title)}>
 
       <label for="slides">Number of slides</label>
-      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}. Pasted slide text below sets this for you.</p>
+      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}, needed unless you paste slide text below, which sets it for you.</p>
       <input id="slides" name="slides" type="number" min="1" max="${MAX_SLIDES}" inputmode="numeric" aria-describedby="slides-hint"${value(input.slides)}>
 
       <fieldset class="pacing">
-        <legend>Pacing</legend>
-        <label class="choice"><input type="radio" name="pacing" value="next"${checked("next")}> I'll press Next</label>
-        <label class="choice"><input type="radio" name="pacing" value="timed"${checked("timed")}> Timed</label>
-        <p class="field-hint">A timed lecture starts when you press Start lecture in the lecturer view, then moves to the next slide on its own.</p>
-        <label for="minutes">Total minutes, if timed</label>
+        <legend>Timing</legend>
+        <p class="field-hint" id="timing-hint">The slides move on their own once you press Start lecture in the lecturer view. Previous and Next still work, and the timer carries on from the slide you choose.</p>
+        <label for="minutes">Total minutes</label>
         <p class="field-hint" id="minutes-hint">${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES}, split evenly across the slides.</p>
         <input id="minutes" name="minutes" type="number" min="${MIN_LECTURE_MINUTES}" max="${MAX_LECTURE_MINUTES}" step="any" aria-describedby="minutes-hint"${value(input.minutes)}>
         <label for="slide-minutes">Or minutes per slide</label>
@@ -3011,8 +3042,8 @@ const LECTURE_TOTAL_CAP = 500;
 interface ValidNewLecture {
   title: string;
   slideCount: number | null;
-  pacing: "next" | "timed";
-  slideDurationsMs: number[] | null;
+  pacing: "timed";
+  slideDurationsMs: number[];
   slides: string[];
   helpUrl: string | null;
 }
@@ -3044,33 +3075,32 @@ function validateNewLecture(input: NewLectureInput): ValidNewLecture | string {
     slideCount = n;
   }
 
-  if (input.pacing !== "next" && input.pacing !== "timed") return "Choose a pacing: I'll press Next, or Timed.";
-  let slideDurationsMs: number[] | null = null;
-  if (input.pacing === "timed") {
-    if (slideCount === null) return "A timed lecture needs a number of slides, or pasted slide text.";
-    const totalMessage = `A timed lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
-    let perSlideMinutes: number[];
-    if (input.slideMinutes !== "") {
-      perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
-      if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
-        return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
-      }
-    } else {
-      const total = input.minutes === "" ? NaN : Number(input.minutes);
-      if (!Number.isFinite(total)) return totalMessage;
-      perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
+  // Every lecture made here is timed (ADR 006, amended): the lecturer
+  // keeps Previous/Next to move ahead of or behind the clock. Per-slide
+  // minutes win over the total, as before.
+  if (slideCount === null) return "A lecture needs a number of slides, or pasted slide text.";
+  const totalMessage = `A lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
+  let perSlideMinutes: number[];
+  if (input.slideMinutes !== "") {
+    perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
+    if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
+      return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
     }
-    const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
-    if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
-    slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
+  } else {
+    const total = input.minutes === "" ? NaN : Number(input.minutes);
+    if (!Number.isFinite(total)) return totalMessage;
+    perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
   }
+  const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
+  if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
+  const slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
 
   // The same rule as editing it from the lecturer view: one parser.
   const parsedHelpUrl = parseHelpUrl(input.helpUrl);
   if ("error" in parsedHelpUrl) return parsedHelpUrl.error;
   const helpUrl = parsedHelpUrl.url;
 
-  return { title: input.title, slideCount, pacing: input.pacing, slideDurationsMs, slides, helpUrl };
+  return { title: input.title, slideCount, pacing: "timed", slideDurationsMs, slides, helpUrl };
 }
 
 async function handleNewGet(req: Request): Promise<Response> {
@@ -3113,10 +3143,7 @@ async function handleNewPost(req: Request): Promise<Response> {
 
   const studentUrl = `/l/${id}`;
   const lecturerUrl = `/l/${id}/lecturer`;
-  const timedHtml =
-    valid.pacing === "timed"
-      ? `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view.</p>`
-      : "";
+  const timedHtml = `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view. Previous and Next still work, and the timer carries on from the slide you choose.</p>`;
   const bodyHtml = `
     <h1>Lecture created</h1>
     <p>Student link: <a href="${studentUrl}">${studentUrl}</a></p>

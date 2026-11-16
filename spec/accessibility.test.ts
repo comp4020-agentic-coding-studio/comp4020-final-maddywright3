@@ -126,7 +126,7 @@ it("a created lecture's lecturer dashboard (Previous/Next controls) has no axe v
   const createRes = await fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "title=Accessibility+test+lecture",
+    body: "title=Accessibility+test+lecture&slides=60&minutes=60",
   });
   const createHtml = await createRes.text();
   const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

@@ -201,7 +201,7 @@ it("a created lecture (no deck) also takes one tap per browser per slide", async
     await fetch(new URL("/new", baseUrl), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "title=Null+deck+dedup+test",
+      body: "title=Null+deck+dedup+test&slides=60&minutes=60",
     })
   ).text();
   const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
@@ -346,7 +346,7 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
   const createRes = await fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "title=Privacy+check+lecture",
+    body: "title=Privacy+check+lecture&slides=60&minutes=60",
   });
   const createHtml = await createRes.text();
   const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

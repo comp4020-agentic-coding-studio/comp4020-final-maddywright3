@@ -75,3 +75,7 @@ What it costs:
 - *No images or diagrams in pasted slides.* A lecturer's diagram has to stay on their own slides.
 - *Timed pacing can drift from the room.* If the lecturer talks longer, slides move on anyway, and taps land on the slide the clock says.
 - *50 KB of text per lecture,* stored and sent on every page view of that lecture.
+
+## Amendment, 16 November 2026: every created lecture is timed
+
+In my hand test I wanted every lecture to run on time, but still to be mine to steer. So /new no longer offers "I'll press Next": every lecture made there is timed, from total minutes (5 to 180, pre-filled 60) or from per-slide minutes. The lecturer keeps Previous and Next on a timed lecture. On a started lecture, pressing one moves the clock's origin (started_at) so the chosen slide starts now and the timer carries on from it. The slide is still computed only from started_at, so it survives a restart. Before Start, Previous and Next move the slide, and Start runs the clock from there. Lectures already stored with pacing "next" keep working as they did. Students now get Previous/Next links on a created lecture, as on the demo, and browsing moves only their own view.
