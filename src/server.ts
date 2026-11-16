@@ -45,7 +45,7 @@ import {
   validateLecturerSession,
 } from "./auth.ts";
 import { activityClientJs, activityLogHtml, parseActivityFilter } from "./activity.ts";
-import type { ActivityFilter, ActivityLine } from "./activity.ts";
+import type { ActivityFilter, ActivityLog } from "./activity.ts";
 import { timelineHtml } from "./timeline.ts";
 import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
@@ -2232,7 +2232,7 @@ function lecturerDashboard(
   lecture: Lecture,
   notesFilter: NotesFilter,
   minPresent: number,
-  activity: { lecture: Lecture; lines: ActivityLine[]; filter: ActivityFilter },
+  activity: { lecture: Lecture; log: ActivityLog; filter: ActivityFilter },
   projector = false,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
@@ -2345,7 +2345,7 @@ ${runControlsHtml(id, state.run)}
           </section>
         </div>
       </div>
-${activityLogHtml(activity.lecture, activity.lines, activity.filter)}
+${activityLogHtml(activity.lecture, activity.log, activity.filter)}
     </section>
 ${helpLinkSectionHtml(id)}
     <script>
@@ -2533,7 +2533,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
           }
           renderNow(state);
           renderDashboard(state);
-          renderActivity(state.activityLog);
+          renderActivity(state.activityLog, state.activityLogCapped);
         }
 
         // A fresh run started (here or in another session): the run
@@ -2684,6 +2684,7 @@ ${runControlsHtml(id, past.run)}
         ${readOnlyNotesHtml(past.notes)}
       </div>
     </div>
+${activityLogHtml(lecture, past.activity, {})}
     ${rankingSectionHtml(rankingInnerHtml(lecture))}
   `;
 }
@@ -2843,7 +2844,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
   const notesFilter = parseNotesFilter(lecture, new URL(req.url).searchParams);
   const activity = {
     lecture,
-    lines: state.activityLog,
+    log: { lines: state.activityLog, capped: state.activityLogCapped },
     filter: parseActivityFilter(lecture, new URL(req.url).searchParams),
   };
   const mainClass = projector ? "lecturer projector" : "lecturer";
