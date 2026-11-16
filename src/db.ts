@@ -48,6 +48,42 @@ if (!lectureColumns.some((c) => c.name === "code_salt")) {
 if (!lectureColumns.some((c) => c.name === "current_slide")) {
   db.exec("ALTER TABLE lectures ADD COLUMN current_slide INTEGER NOT NULL DEFAULT 1");
 }
+// ADR 006, section 4: what /new now asks for. Every column is optional or
+// defaulted, so a lecture made before this keeps behaving as it did: no
+// slide count (Next has no ceiling), pacing 'next', no slide text.
+// help_url is the same column the runs branch adds; whichever lands first
+// adds it, and the other's check sees it there.
+if (!lectureColumns.some((c) => c.name === "help_url")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN help_url TEXT");
+}
+if (!lectureColumns.some((c) => c.name === "slide_count")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN slide_count INTEGER");
+}
+if (!lectureColumns.some((c) => c.name === "pacing")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN pacing TEXT NOT NULL DEFAULT 'next'");
+}
+// A timed lecture's per-slide durations, a JSON array of milliseconds, and
+// when the lecturer pressed Start lecture. Both live here rather than in
+// memory, so the clock survives a restart (unlike the demo's, which is
+// meant to restart with the room).
+if (!lectureColumns.some((c) => c.name === "slide_durations_ms")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN slide_durations_ms TEXT");
+}
+if (!lectureColumns.some((c) => c.name === "started_at")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN started_at TEXT");
+}
+
+// Slide text a lecturer pasted at /new, one row per slide, kept as the
+// markdown they typed. It is rendered on every view through the escaping
+// renderer in src/pasted-slides.ts, so no HTML is ever stored as HTML.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lecture_slides (
+    lecture_id TEXT NOT NULL REFERENCES lectures(id),
+    slide INTEGER NOT NULL,
+    markdown TEXT NOT NULL,
+    PRIMARY KEY (lecture_id, slide)
+  )
+`);
 
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
@@ -169,6 +205,11 @@ export interface Lecture {
   code_hash: string | null;
   code_salt: string | null;
   current_slide: number;
+  help_url: string | null;
+  slide_count: number | null;
+  pacing: "next" | "timed";
+  slide_durations_ms: string | null;
+  started_at: string | null;
 }
 
 export interface Tap {
@@ -186,10 +227,66 @@ export function getLecture(id: string): Lecture | undefined {
   return db.prepare("SELECT * FROM lectures WHERE id = ?").get(id) as Lecture | undefined;
 }
 
-export function createLecture(id: string, title: string, minPresent: number, code: HashedCode): void {
-  db.prepare(
-    "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(id, title, new Date().toISOString(), minPresent, code.hash, code.salt);
+export interface NewLectureOptions {
+  helpUrl?: string | null;
+  slideCount?: number | null;
+  pacing?: "next" | "timed";
+  slideDurationsMs?: number[] | null;
+  // Pasted markdown, one entry per slide.
+  slides?: string[];
+}
+
+// The lecture and its slides go in together or not at all.
+export function createLecture(
+  id: string,
+  title: string,
+  minPresent: number,
+  code: HashedCode,
+  options: NewLectureOptions = {},
+): void {
+  db.exec("BEGIN");
+  try {
+    db.prepare(
+      `INSERT INTO lectures
+         (id, title, created_at, min_present, code_hash, code_salt, help_url, slide_count, pacing, slide_durations_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      title,
+      new Date().toISOString(),
+      minPresent,
+      code.hash,
+      code.salt,
+      options.helpUrl ?? null,
+      options.slideCount ?? null,
+      options.pacing ?? "next",
+      options.slideDurationsMs ? JSON.stringify(options.slideDurationsMs) : null,
+    );
+    const insertSlide = db.prepare("INSERT INTO lecture_slides (lecture_id, slide, markdown) VALUES (?, ?, ?)");
+    (options.slides ?? []).forEach((markdown, i) => insertSlide.run(id, i + 1, markdown));
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+export function lectureSlides(lectureId: string): string[] {
+  const rows = db
+    .prepare("SELECT markdown FROM lecture_slides WHERE lecture_id = ? ORDER BY slide")
+    .all(lectureId) as { markdown: string }[];
+  return rows.map((row) => row.markdown);
+}
+
+// The first press starts the clock; a second press (another tab, a double
+// click) changes nothing, because started_at IS NULL is in the WHERE.
+// Returns whether this press started it.
+export function startTimedLecture(lectureId: string): boolean {
+  return (
+    db
+      .prepare("UPDATE lectures SET started_at = ? WHERE id = ? AND pacing = 'timed' AND started_at IS NULL")
+      .run(new Date().toISOString(), lectureId).changes > 0
+  );
 }
 
 export function lectureCount(): number {
@@ -455,9 +552,13 @@ export function lecturerSessionValid(token: string, lectureId: string, sinceIso:
 // itself (current_slide +/- 1, clamped to a floor of 1 in the same
 // statement) means each write starts from whatever the column holds at the
 // moment it actually runs, not a stale value read earlier — same atomicity
-// discipline as tapOncePerSlide's single-statement dedup.
+// discipline as tapOncePerSlide's single-statement dedup. A lecture with a
+// slide count stops at its last slide; one made before /new asked (no
+// count) has no ceiling, as before.
 export function stepCurrentSlide(lectureId: string, direction: 1 | -1): void {
   db.prepare(
-    `UPDATE lectures SET current_slide = MAX(1, current_slide + ?) WHERE id = ?`,
+    `UPDATE lectures
+     SET current_slide = MAX(1, MIN(current_slide + ?, COALESCE(slide_count, current_slide + 1)))
+     WHERE id = ?`,
   ).run(direction, lectureId);
 }

@@ -65,6 +65,7 @@ import {
   slideName,
 } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
+import { renderPastedSlide, splitPastedSlides } from "./pasted-slides.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const BROWSER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
@@ -2089,25 +2090,174 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
   });
 }
 
-function newLectureForm(error?: string): string {
+// What a lecturer typed at /new, kept as typed so a rejected form comes
+// back filled in.
+interface NewLectureInput {
+  title: string;
+  slides: string;
+  pacing: string;
+  minutes: string;
+  slideMinutes: string;
+  slidesText: string;
+  helpUrl: string;
+}
+
+const EMPTY_NEW_LECTURE: NewLectureInput = {
+  title: "",
+  slides: "",
+  pacing: "next",
+  minutes: "",
+  slideMinutes: "",
+  slidesText: "",
+  helpUrl: "",
+};
+
+function readNewLectureInput(body: string): NewLectureInput {
+  const params = new URLSearchParams(body);
+  const get = (name: string): string => params.get(name) ?? "";
+  return {
+    title: get("title").trim(),
+    slides: get("slides").trim(),
+    pacing: get("pacing") || "next",
+    minutes: get("minutes").trim(),
+    slideMinutes: get("slide_minutes").trim(),
+    slidesText: get("slides_text"),
+    helpUrl: get("help_url").trim(),
+  };
+}
+
+// ADR 006, section 4: the page says what the app is for before it asks for
+// anything. Plain fields and radio buttons, so it works without JS; every
+// limit is shown here and checked again in handleNewPost.
+function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTURE): string {
+  const value = (v: string): string => (v ? ` value="${escapeHtml(v)}"` : "");
+  const checked = (pacing: string): string => (input.pacing === pacing ? " checked" : "");
   return `
     <h1>Start a lecture</h1>
-    ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
-    <form method="post" action="/new" class="inline-form">
+    <p class="new-intro">Run this beside your own slides. Students tap on the slide you're on, and you see where the room got lost.</p>
+    ${error ? `<p class="form-error" role="alert">${escapeHtml(error)}</p>` : ""}
+    <form method="post" action="/new" class="new-lecture-form">
       <label for="title">Lecture title</label>
-      <input id="title" name="title" required>
+      <input id="title" name="title" required maxlength="${LECTURE_TITLE_MAX_LENGTH}"${value(input.title)}>
+
+      <label for="slides">Number of slides</label>
+      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}. Pasted slide text below sets this for you.</p>
+      <input id="slides" name="slides" type="number" min="1" max="${MAX_SLIDES}" inputmode="numeric" aria-describedby="slides-hint"${value(input.slides)}>
+
+      <fieldset class="pacing">
+        <legend>Pacing</legend>
+        <label class="choice"><input type="radio" name="pacing" value="next"${checked("next")}> I'll press Next</label>
+        <label class="choice"><input type="radio" name="pacing" value="timed"${checked("timed")}> Timed</label>
+        <p class="field-hint">A timed lecture starts when you press Start lecture in the lecturer view, then moves to the next slide on its own.</p>
+        <label for="minutes">Total minutes, if timed</label>
+        <p class="field-hint" id="minutes-hint">${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES}, split evenly across the slides.</p>
+        <input id="minutes" name="minutes" type="number" min="${MIN_LECTURE_MINUTES}" max="${MAX_LECTURE_MINUTES}" step="any" aria-describedby="minutes-hint"${value(input.minutes)}>
+        <label for="slide-minutes">Or minutes per slide</label>
+        <p class="field-hint" id="slide-minutes-hint">One number per slide, separated by commas, e.g. 2, 3, 1.5. Used instead of the total.</p>
+        <input id="slide-minutes" name="slide_minutes" aria-describedby="slide-minutes-hint"${value(input.slideMinutes)}>
+      </fieldset>
+
+      <label for="slides-text">Slide text (optional)</label>
+      <p class="field-hint" id="slides-text-hint">Markdown, with a line of --- between slides. Up to 50 KB. HTML shows as plain text, images aren't shown, and only http and https links stay links.</p>
+      <textarea id="slides-text" name="slides_text" rows="10" aria-describedby="slides-text-hint">
+${escapeHtml(input.slidesText)}</textarea>
+
+      <label for="help-url">Where students can get help (optional)</label>
+      <p class="field-hint" id="help-url-hint">An https link, up to ${HELP_URL_MAX_LENGTH} characters.</p>
+      <input id="help-url" name="help_url" type="url" maxlength="${HELP_URL_MAX_LENGTH}" aria-describedby="help-url-hint"${value(input.helpUrl)}>
+
       <button type="submit">Create</button>
     </form>
   `;
 }
 
 const LECTURE_TITLE_MAX_LENGTH = 100;
+const MAX_SLIDES = 60;
+const MIN_LECTURE_MINUTES = 5;
+const MAX_LECTURE_MINUTES = 180;
+const SLIDES_TEXT_MAX_BYTES = 50 * 1024;
+const HELP_URL_MAX_LENGTH = 300;
 // A straight COUNT(*) >= N check with no logic to get wrong — exercising it
 // cleanly means actually creating 500 lectures or adding a test-only seam to
 // lower the threshold, and neither is worth the cost here, so this one is
 // judged by hand rather than enforced by a test (same enforced/judged split
 // the README already uses for other claims).
 const LECTURE_TOTAL_CAP = 500;
+
+interface ValidNewLecture {
+  title: string;
+  slideCount: number | null;
+  pacing: "next" | "timed";
+  slideDurationsMs: number[] | null;
+  slides: string[];
+  helpUrl: string | null;
+}
+
+// Every limit /new states, checked here whatever the browser allowed. The
+// first problem found is the message; the form comes back with the input.
+function validateNewLecture(input: NewLectureInput): ValidNewLecture | string {
+  if (!input.title) return "A title is required.";
+  if (input.title.length > LECTURE_TITLE_MAX_LENGTH) {
+    return `Titles are limited to ${LECTURE_TITLE_MAX_LENGTH} characters.`;
+  }
+
+  let slides: string[] = [];
+  if (input.slidesText.trim() !== "") {
+    if (Buffer.byteLength(input.slidesText, "utf8") > SLIDES_TEXT_MAX_BYTES) {
+      return "Pasted slide text is limited to 50 KB.";
+    }
+    slides = splitPastedSlides(input.slidesText);
+    if (slides.length > MAX_SLIDES) {
+      return `The pasted text makes ${slides.length} slides. A lecture has at most ${MAX_SLIDES}.`;
+    }
+  }
+
+  // Pasted slides' count wins over the number field (ADR 006).
+  let slideCount: number | null = slides.length > 0 ? slides.length : null;
+  if (slideCount === null && input.slides !== "") {
+    const n = Number(input.slides);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_SLIDES) return `The number of slides must be 1 to ${MAX_SLIDES}.`;
+    slideCount = n;
+  }
+
+  if (input.pacing !== "next" && input.pacing !== "timed") return "Choose a pacing: I'll press Next, or Timed.";
+  let slideDurationsMs: number[] | null = null;
+  if (input.pacing === "timed") {
+    if (slideCount === null) return "A timed lecture needs a number of slides, or pasted slide text.";
+    const totalMessage = `A timed lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
+    let perSlideMinutes: number[];
+    if (input.slideMinutes !== "") {
+      perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
+      if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
+        return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
+      }
+    } else {
+      const total = input.minutes === "" ? NaN : Number(input.minutes);
+      if (!Number.isFinite(total)) return totalMessage;
+      perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
+    }
+    const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
+    if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
+    slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
+  }
+
+  let helpUrl: string | null = null;
+  if (input.helpUrl !== "") {
+    if (input.helpUrl.length > HELP_URL_MAX_LENGTH) {
+      return `The help link is limited to ${HELP_URL_MAX_LENGTH} characters.`;
+    }
+    let protocol = "";
+    try {
+      protocol = new URL(input.helpUrl).protocol;
+    } catch {
+      // not a URL at all: same message
+    }
+    if (protocol !== "https:") return "The help link must be a full https:// address.";
+    helpUrl = input.helpUrl;
+  }
+
+  return { title: input.title, slideCount, pacing: input.pacing, slideDurationsMs, slides, helpUrl };
+}
 
 async function handleNewGet(req: Request): Promise<Response> {
   const { headers } = ensureBrowserIdentity(req);
@@ -2117,45 +2267,47 @@ async function handleNewGet(req: Request): Promise<Response> {
 async function handleNewPost(req: Request): Promise<Response> {
   const { browserId, headers } = ensureBrowserIdentity(req);
 
-  const body = await req.text();
-  const title = new URLSearchParams(body).get("title")?.trim();
-  if (!title) {
-    return new Response(page("Start a lecture", newLectureForm("A title is required.")), {
-      status: 400,
-      headers,
-    });
-  }
-  if (title.length > LECTURE_TITLE_MAX_LENGTH) {
-    return new Response(
-      page("Start a lecture", newLectureForm(`Titles are limited to ${LECTURE_TITLE_MAX_LENGTH} characters.`)),
-      { status: 400, headers },
-    );
+  const input = readNewLectureInput(await req.text());
+  const valid = validateNewLecture(input);
+  if (typeof valid === "string") {
+    return new Response(page("Start a lecture", newLectureForm(valid, input)), { status: 400, headers });
   }
   if (!checkCreateLectureRateLimit(browserId)) {
     return new Response(
-      page("Start a lecture", newLectureForm("Too many lectures from this browser. Try again in an hour.")),
+      page("Start a lecture", newLectureForm("Too many lectures from this browser. Try again in an hour.", input)),
       { status: 429, headers },
     );
   }
   if (lectureCount() >= LECTURE_TOTAL_CAP) {
     return new Response(
-      page("Start a lecture", newLectureForm("This app isn't accepting new lectures right now.")),
+      page("Start a lecture", newLectureForm("This app isn't accepting new lectures right now.", input)),
       { status: 429, headers },
     );
   }
 
   const id = randomBytes(4).toString("hex");
   const code = generateAccessCode();
-  createLecture(id, title, 5, hashCode(code));
+  createLecture(id, valid.title, 5, hashCode(code), {
+    helpUrl: valid.helpUrl,
+    slideCount: valid.slideCount,
+    pacing: valid.pacing,
+    slideDurationsMs: valid.slideDurationsMs,
+    slides: valid.slides,
+  });
   recordLectureCreation(browserId);
   logAction("lecture_created", id, browserId);
 
   const studentUrl = `/l/${id}`;
   const lecturerUrl = `/l/${id}/lecturer`;
+  const timedHtml =
+    valid.pacing === "timed"
+      ? `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view.</p>`
+      : "";
   const bodyHtml = `
     <h1>Lecture created</h1>
     <p>Student link: <a href="${studentUrl}">${studentUrl}</a></p>
     <p>Lecturer code (shown once, write it down): <strong>${escapeHtml(code)}</strong></p>
+    ${timedHtml}
     <p><a href="${lecturerUrl}">Go to the lecturer view</a></p>
   `;
   return new Response(page("Lecture created", bodyHtml), { status: 200, headers });
