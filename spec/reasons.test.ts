@@ -182,28 +182,36 @@ it("a reason change is visible in the lecturer's stream within a second", async 
   }
 });
 
+// On a lecture of its own: the demo's 20 s window means other spec files'
+// demo taps can age out mid-test, and a drop of one person resolving would
+// then read as two. A fresh lecture has no other taps, so the drop it sees
+// is exactly this browser's "I get it now".
 it("I get it now drops live by one within a second, and youAreCounted flips false", async () => {
-  const cookie = await newBrowserCookie("demo");
-  const otherCookie = await newBrowserCookie("demo"); // crosses demo's min_present of 2
-  const stream = await SseStream.open("/l/demo/events", cookie);
-  const other = await SseStream.open("/l/demo/events", otherCookie);
+  const lecture = await createLectureAndLogIn("I get it now drop test");
+  // A created lecture's min_present is 5: four watchers plus the tapper.
+  const cookie = await newBrowserCookie(lecture.id);
+  const others = await Promise.all(Array.from({ length: 4 }, () => newBrowserCookie(lecture.id)));
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, cookie);
+  const otherStreams = await Promise.all(others.map((c) => SseStream.open(`/l/${lecture.id}/events`, c)));
   try {
-    await stream.waitFor((s) => s.shown);
-    await fetch(new URL("/l/demo/tap", baseUrl), {
+    await stream.waitFor((s) => s.shown && s.present === 5);
+    // Another browser lost too, so live is 2 and the drop is to 1, not 0.
+    await tap(lecture.id, others[0]);
+    await tap(lecture.id, cookie);
+    const afterTap = await stream.waitFor((s) => s.shown && s.youAreCounted && s.live === 2, 1000);
+    expect(afterTap.live).toBe(2);
+
+    await fetch(new URL(`/l/${lecture.id}/resolve`, baseUrl), {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: "deck=week-4&slide=1",
+      body: "slide=1",
     });
-    const afterTap = await stream.waitFor((s) => s.shown && s.youAreCounted, 1000);
-    expect(afterTap.live).toBeGreaterThanOrEqual(1);
-
-    await fetch(new URL("/l/demo/resolve", baseUrl), { method: "POST", headers: { cookie } });
     const afterResolve = await stream.waitFor((s) => s.shown && !s.youAreCounted, 1000);
     expect(afterResolve.live).toBe(afterTap.live! - 1);
     expect(afterResolve.youAreCounted).toBe(false);
   } finally {
     await stream.close();
-    await other.close();
+    for (const s of otherStreams) await s.close();
   }
 });
 

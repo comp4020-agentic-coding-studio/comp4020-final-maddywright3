@@ -121,13 +121,27 @@ it("a title over 100 characters is rejected with a clear message", async () => {
   expect(await res.text()).toMatch(/limited to 100 characters/i);
 });
 
+// On a lecture of its own, above its threshold with a tap live: the demo's
+// 20 s window means another spec file's demo tap could age out between the
+// two frames, changing live for a reason that has nothing to do with
+// someone arriving.
 it("a person arriving/leaving changes the people-count text but leaves the aria-live region's text unchanged", async () => {
-  const cookieA = await newBrowserCookie("demo");
-  const cookieB = await newBrowserCookie("demo");
-  const a = await SseStream.open("/l/demo/events", cookieA);
+  const createRes = await createLecture(await newBrowserCookie("demo"), "Arrival live test");
+  const lectureId = (await createRes.text()).match(/\/l\/([a-f0-9]+)/)?.[1];
+  if (!lectureId) throw new Error("couldn't parse the new lecture's id");
+  // min_present is 5: five here, one of them lost, before the arrival.
+  const cookies = await Promise.all(Array.from({ length: 6 }, () => newBrowserCookie(lectureId)));
+  const [cookieA, cookieB, ...rest] = cookies;
+  const a = await SseStream.open(`/l/${lectureId}/events`, cookieA);
+  const extras = await Promise.all(rest.map((c) => SseStream.open(`/l/${lectureId}/events`, c)));
   try {
-    const before = await a.next();
-    const b = await SseStream.open("/l/demo/events", cookieB);
+    await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie: rest[0], "content-type": "application/x-www-form-urlencoded" },
+      body: "slide=1",
+    });
+    const before = await a.waitFor((s) => s.present === 5 && s.shown && s.live === 1);
+    const b = await SseStream.open(`/l/${lectureId}/events`, cookieB);
     try {
       const after = await a.waitFor((s) => s.present === before.present + 1);
       // The DOM distinguishes the two fields: `present` (plain, not
@@ -145,5 +159,6 @@ it("a person arriving/leaving changes the people-count text but leaves the aria-
     }
   } finally {
     await a.close();
+    for (const s of extras) await s.close();
   }
 });
