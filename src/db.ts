@@ -670,6 +670,30 @@ export function distinctLostCount(lectureId: string, run: number = currentRun(le
   return row.count;
 }
 
+// Distinct browsers lost on any slide, per run of one lecture, for the
+// lecturer's "most confusing first" ranking. Raw; dashboard.ts lists a run
+// only at min_present or more. Never reads another lecture's rows.
+export function distinctLostByRun(lectureId: string): { run: number; count: number }[] {
+  return db
+    .prepare(
+      `SELECT run_id AS run, COUNT(DISTINCT browser_id) AS count FROM taps
+       WHERE lecture_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL
+       GROUP BY run_id`,
+    )
+    .all(lectureId) as unknown as { run: number; count: number }[];
+}
+
+// The same, per deck within one run: the demo's two decks are its lectures.
+export function distinctLostByDeck(lectureId: string, run: number = currentRun(lectureId)): { deck: string | null; count: number }[] {
+  return db
+    .prepare(
+      `SELECT deck, COUNT(DISTINCT browser_id) AS count FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL
+       GROUP BY deck`,
+    )
+    .all(lectureId, run) as unknown as { deck: string | null; count: number }[];
+}
+
 export interface SlideResolvedCount {
   deck: string | null;
   slide: number;

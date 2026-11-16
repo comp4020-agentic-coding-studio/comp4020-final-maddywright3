@@ -153,7 +153,7 @@ it("the page has two headed groups: the live slide's items in the first, the who
 
   // The live gauge "lost right now", the live slide's controls, its bar,
   // reasons and notes (#now).
-  for (const id of ["gauge", "gauge-words", "connection-status", "slide-label", "slide-next-form", "now", "now-bar"]) {
+  for (const id of ["gauge", "gauge-words", "lost-now-slot", "connection-status", "slide-label", "slide-next-form", "now", "now-bar"]) {
     const el = d.getElementById(id);
     expect(el, id).not.toBeNull();
     expect(live.contains(el), id).toBe(true);

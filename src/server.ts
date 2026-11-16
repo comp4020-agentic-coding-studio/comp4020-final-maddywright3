@@ -66,7 +66,7 @@ import {
   startHeartbeat,
 } from "./realtime.ts";
 import type { Bar, LecturerState, PastRunState } from "./realtime.ts";
-import { dashboardClientJs, notesFilterFormHtml, notesListInnerHtml, parseNotesFilter } from "./dashboard.ts";
+import { dashboardClientJs, notesFilterFormHtml, notesListInnerHtml, parseNotesFilter, rankingInnerHtml } from "./dashboard.ts";
 import type { NotesFilter } from "./dashboard.ts";
 import {
   DECK_IDS,
@@ -2135,9 +2135,18 @@ function nowSectionInnerHtml(
   const slideNotes = notes.filter(onSlide(key));
   const notesListHtml =
     slideNotes.length > 0
-      ? `<h3 id="now-notes-heading">What didn't make sense</h3><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
+      ? `<h4 id="now-notes-heading">What didn't make sense</h4><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
       : "";
-  return `<h2 id="now-heading">On the live slide: <span id="now-slide-name">${escapeHtml(slideName(key.deck, key.slide))}</span></h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
+  return `<h3 id="now-heading">On the live slide: <span id="now-slide-name">${escapeHtml(slideName(key.deck, key.slide))}</span></h3><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
+}
+
+// "Lectures, most confusing first" (src/dashboard.ts renders and gates the
+// body). The body is a live fragment, swapped in from each lecturer frame.
+function rankingSectionHtml(bodyHtml: string): string {
+  return `<section id="ranking" class="card ranking" aria-labelledby="ranking-heading">
+        <h3 id="ranking-heading">Lectures, most confusing first</h3>
+        <div id="ranking-body">${bodyHtml}</div>
+      </section>`;
 }
 
 // A timed lecture has no Previous/Next: its clock moves the slides. Before
@@ -2219,53 +2228,65 @@ function lecturerDashboard(
       <p><span class="live-pill">Live now</span> <span id="live-now-slide">${escapeHtml(slideName(nowKey.deck, state.slide))}</span></p>
     </section>
 ${runControlsHtml(id, state.run)}
-    ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
-    <section id="stat-tiles" class="stat-tiles" aria-label="Right now">
-      <div class="card stat-tile tile-gauge">
-        <h2 class="tile-label">Lost right now</h2>
-        ${gaugeHtml(state, minPresent)}
-        <p id="connection-status" aria-live="polite"></p>
-      </div>
-      <div class="card stat-tile tile-taps">
-        <h2 class="tile-label">Taps this lecture</h2>
-        <p class="tile-wait" id="tap-count-wait"${state.shown ? " hidden" : ""}>Shows once ${minPresent} people are here</p>
-        <div id="tap-count-slot">${tapCountHtml}</div>
-      </div>
-      <div class="card stat-tile tile-slide">
-        <h2 class="tile-label">Live slide</h2>
-        ${slideControlsHtml}
-      </div>
-      <div id="dashboard-tiles" class="dashboard-tiles">${state.dashboardHtml.tiles}</div>
-    </section>
-    <div class="lecturer-layout">
-      <div class="live-column">
+    <section id="live-group" class="lecturer-group" aria-labelledby="live-group-heading">
+      <h2 id="live-group-heading" class="group-heading">Live slide</h2>
+      ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
+      <div class="live-grid">
+        <div class="live-tiles">
+          <div class="card stat-tile tile-gauge">
+            <h3 class="tile-label">Lost right now</h3>
+            <div id="lost-now-slot">${state.dashboardHtml.lostNow}</div>
+            ${gaugeHtml(state, minPresent)}
+            <p id="connection-status" aria-live="polite"></p>
+          </div>
+          <div class="card stat-tile tile-slide">
+            <h3 class="tile-label">Slide</h3>
+            ${slideControlsHtml}
+          </div>
+        </div>
         <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes, minPresent)}</section>
-        <section id="notes" class="card" aria-labelledby="notes-heading">
-          <h2 id="notes-heading">What didn't make sense, by slide</h2>
-          ${notesFilterFormHtml(lecture, notesFilter)}
-          <div id="notes-groups">${notesListInnerHtml(state.noteGroups, notesFilter, lecture.min_present)}</div>
-        </section>
       </div>
-      <div class="graph-grid">
-        <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
-          <h2 id="graph-lost-heading">Lost, per slide</h2>
-          <div class="slot-body" id="bars">${state.dashboardHtml.graphLost}</div>
-        </section>
-        <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
-          <h2 id="graph-reasons-heading">What kind of lost</h2>
-          <div class="slot-body" id="graph-reasons-body">${state.dashboardHtml.graphReasons}</div>
-        </section>
-        <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
-          <h2 id="graph-helped-heading">What helped</h2>
-          <div class="slot-body" id="graph-helped-body">${state.dashboardHtml.graphHelped}</div>
-        </section>
-        <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
-          <h2 id="graph-resolved-heading">Got it now</h2>
-          <div class="slot-body" id="graph-resolved-body">${state.dashboardHtml.graphResolved}</div>
-        </section>
+    </section>
+    <section id="lecture-group" class="lecturer-group" aria-labelledby="lecture-group-heading">
+      <h2 id="lecture-group-heading" class="group-heading">Whole lecture</h2>
+      <section id="stat-tiles" class="stat-tiles" aria-label="This run so far">
+        <div id="dashboard-tiles" class="dashboard-tiles">${state.dashboardHtml.tiles}</div>
+        <div class="card stat-tile tile-taps">
+          <h3 class="tile-label">Taps this lecture</h3>
+          <p class="tile-wait" id="tap-count-wait"${state.shown ? " hidden" : ""}>Shows once ${minPresent} people are here</p>
+          <div id="tap-count-slot">${tapCountHtml}</div>
+        </div>
+      </section>
+      ${rankingSectionHtml(state.dashboardHtml.ranking)}
+      <div class="lecturer-layout">
+        <div class="notes-column">
+          <section id="notes" class="card" aria-labelledby="notes-heading">
+            <h3 id="notes-heading">What didn't make sense, by slide</h3>
+            ${notesFilterFormHtml(lecture, notesFilter)}
+            <div id="notes-groups">${notesListInnerHtml(state.noteGroups, notesFilter, lecture.min_present)}</div>
+          </section>
+        </div>
+        <div class="graph-grid">
+          <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
+            <h3 id="graph-lost-heading">Lost, per slide</h3>
+            <div class="slot-body" id="bars">${state.dashboardHtml.graphLost}</div>
+          </section>
+          <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
+            <h3 id="graph-reasons-heading">What kind of lost</h3>
+            <div class="slot-body" id="graph-reasons-body">${state.dashboardHtml.graphReasons}</div>
+          </section>
+          <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
+            <h3 id="graph-helped-heading">What helped</h3>
+            <div class="slot-body" id="graph-helped-body">${state.dashboardHtml.graphHelped}</div>
+          </section>
+          <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
+            <h3 id="graph-resolved-heading">Got it now</h3>
+            <div class="slot-body" id="graph-resolved-body">${state.dashboardHtml.graphResolved}</div>
+          </section>
+        </div>
       </div>
-    </div>
 ${activityLogHtml(activity.lecture, activity.lines, activity.filter)}
+    </section>
 ${helpLinkSectionHtml(id)}
     <script>
       (function () {
@@ -2413,7 +2434,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
             if (oldHeading) oldHeading.remove();
             if (oldList) oldList.remove();
             if (nowNotes.length > 0) {
-              var h = document.createElement("h3");
+              var h = document.createElement("h4");
               h.id = "now-notes-heading";
               h.textContent = "What didn't make sense";
               now.appendChild(h);
@@ -2484,7 +2505,8 @@ const DEMO_HELP_LINK_MESSAGE =
 
 // The runs box, near the top of the lecturer view (ADR 006 section 3): what
 // a run is, which run is current, a plain link to every earlier one, and
-// the reset button, which starts a fresh run and deletes nothing. Plain
+// the reset button, which starts a fresh run and deletes nothing. Oldest
+// first, like the runs' numbers. Plain
 // links and a GET form, so it all works without JS. `viewing` is the run on
 // screen, marked aria-current and labelled "on screen".
 const RUN_EXPLANATION = "A run is one sitting of this lecture. Starting a fresh run keeps every earlier run, viewable here.";
@@ -2494,8 +2516,7 @@ function runControlsHtml(id: string, viewing: number): string {
   const base = `/l/${encodeURIComponent(id)}/lecturer`;
   const runs = runsOf(id);
   const current = runs.length > 0 ? runs[runs.length - 1].number : 1;
-  const items = [...runs]
-    .reverse()
+  const items = runs
     .map((run) => {
       const isCurrent = run.number === current;
       const label = `Run ${run.number}${isCurrent ? " (live)" : ""}`;
@@ -2576,7 +2597,8 @@ function readOnlyNotesHtml(notes: DashboardNote[]): string {
 
 // An earlier run, read-only: a static render with no stream and no
 // controls, gated exactly as the live view is.
-function pastRunHtml(id: string, past: PastRunState): string {
+function pastRunHtml(lecture: Lecture, past: PastRunState): string {
+  const id = lecture.id;
   const totalHtml =
     past.totalTaps !== undefined ? `<p id="tap-count">Total taps in run ${past.run}: ${past.totalTaps}</p>` : "";
   const empty =
@@ -2602,6 +2624,7 @@ ${runControlsHtml(id, past.run)}
         ${readOnlyNotesHtml(past.notes)}
       </div>
     </div>
+    ${rankingSectionHtml(rankingInnerHtml(lecture))}
   `;
 }
 
@@ -2747,7 +2770,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     if (!(run >= 1 && run <= lecture.run)) return notFoundResponse();
     if (run < lecture.run) {
       return new Response(
-        page(`Lecturer view, run ${run}`, pastRunHtml(id, computePastRunState(lecture, run)), "lecturer", navKey),
+        page(`Lecturer view, run ${run}`, pastRunHtml(lecture, computePastRunState(lecture, run)), "lecturer", navKey),
         { status: 200, headers },
       );
     }
