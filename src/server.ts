@@ -813,6 +813,19 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // row carries "on-live" while the viewer is on the live slide, which is
   // what turns the marker into the LIVE pill (the script toggles it too).
   const onLiveNow = viewedSlide === liveSlide;
+  const slideBarHtml = `<div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
+            ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
+            ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
+          </div>`;
+  // The card is a box around the slide's text; a created lecture with no
+  // pasted text has none, so its bar stands alone rather than in an empty box.
+  const slideCardHtml =
+    slidesHtml === ""
+      ? slideBarHtml
+      : `<div class="slide-card">
+          ${slideBarHtml}
+          ${slidesHtml}
+        </div>`;
   const body = `
     <div class="lecture-head">
       <h1>${escapeHtml(lecture.title)}</h1>
@@ -821,13 +834,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </div>
     <div class="lecture-layout${slidesHtml === "" ? " no-deck" : ""}">
       <div class="slide-col">
-        <div class="slide-card">
-          <div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
-            ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
-            ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
-          </div>
-          ${slidesHtml}
-        </div>
+        ${slideCardHtml}
         ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
         <div id="timeline">${timelineHtml(lecture, viewedDeck, viewedSlide, liveSlide, state.bars)}</div>
         ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
