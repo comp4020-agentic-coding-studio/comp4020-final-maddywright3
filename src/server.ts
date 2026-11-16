@@ -2232,7 +2232,7 @@ function lecturerDashboard(
   lecture: Lecture,
   notesFilter: NotesFilter,
   minPresent: number,
-  activity: { lecture: Lecture; log: ActivityLog; filter: ActivityFilter },
+  activity: { lecture: Lecture; log: ActivityLog | undefined; filter: ActivityFilter },
   projector = false,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
@@ -2844,7 +2844,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
   const notesFilter = parseNotesFilter(lecture, new URL(req.url).searchParams);
   const activity = {
     lecture,
-    log: { lines: state.activityLog, capped: state.activityLogCapped },
+    log: state.shown ? { lines: state.activityLog, capped: state.activityLogCapped } : undefined,
     filter: parseActivityFilter(lecture, new URL(req.url).searchParams),
   };
   const mainClass = projector ? "lecturer projector" : "lecturer";

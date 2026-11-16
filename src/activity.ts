@@ -168,13 +168,17 @@ function lineHtml(line: ActivityLine): string {
   return `<li class="activity-line"><time datetime="${escapeHtml(line.time.iso)}">${escapeHtml(line.time.text)}</time> ${escapeHtml(line.text)}</li>`;
 }
 
+const waitingText = (min: number): string => `The activity log shows once ${min} people are here.`;
+
 // The whole <section id="activity-log">: heading, a GET filter form that
 // works with no script (demo only), and the lines. The page script
 // (activityClientJs) re-renders only the list, so the filter stays as the
 // lecturer set it.
-export function activityLogHtml(lecture: Lecture, log: ActivityLog, filter: ActivityFilter): string {
+// `log` is undefined below min_present: the log isn't sent then (README
+// "Safety in numbers"), and the section says when it will show.
+export function activityLogHtml(lecture: Lecture, log: ActivityLog | undefined, filter: ActivityFilter): string {
   const base = `/l/${encodeURIComponent(lecture.id)}/lecturer`;
-  const shown = log.lines.filter((line) => matches(filter, line));
+  const shown = (log?.lines ?? []).filter((line) => matches(filter, line));
   const filterForm =
     lecture.id === "demo"
       ? `<form method="get" action="${base}" class="activity-filter inline-form">
@@ -192,8 +196,9 @@ export function activityLogHtml(lecture: Lecture, log: ActivityLog, filter: Acti
     <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
       <h3 id="activity-log-heading">Activity</h3>
       ${filterForm}
-      <p id="activity-empty"${shown.length > 0 ? " hidden" : ""}>${EMPTY_TEXT}</p>
-      <p id="activity-capped"${log.capped ? "" : " hidden"}>${CAPPED_TEXT}</p>
+      <p id="activity-waiting"${log === undefined ? "" : " hidden"}>${waitingText(lecture.min_present)}</p>
+      <p id="activity-empty"${log !== undefined && shown.length === 0 ? "" : " hidden"}>${EMPTY_TEXT}</p>
+      <p id="activity-capped"${log?.capped ? "" : " hidden"}>${CAPPED_TEXT}</p>
       <ul id="activity-lines" class="activity-lines">${shown.map(lineHtml).join("\n")}</ul>
     </section>`;
 }
@@ -210,7 +215,19 @@ export function activityClientJs(filter: ActivityFilter): string {
           var list = document.getElementById("activity-lines");
           var empty = document.getElementById("activity-empty");
           var cappedNote = document.getElementById("activity-capped");
-          if (!list || !log) return;
+          var waiting = document.getElementById("activity-waiting");
+          if (!list) return;
+          // No log in the frame: below min_present it isn't sent at all, so
+          // clear any lines already on the page and say when it will show.
+          if (!log) {
+            if (activitySig !== null || list.childNodes.length > 0) list.innerHTML = "";
+            activitySig = null;
+            if (waiting) waiting.hidden = false;
+            if (empty) empty.hidden = true;
+            if (cappedNote) cappedNote.hidden = true;
+            return;
+          }
+          if (waiting) waiting.hidden = true;
           if (cappedNote) cappedNote.hidden = !capped;
           var shown = log.filter(function (line) {
             return activityFilter.deck === undefined || line.deck === activityFilter.deck;

@@ -189,11 +189,14 @@ it("below min_present people here, the log isn't in the lecturer's page or strea
 
   const html = await lecturerPageAlone(lecture);
   expect(lines(html)).toEqual([]);
-  expect(activitySection(html)).not.toContain("said they");
+  expect(activitySection(html)).not.toMatch(/Person \d/);
   expect(activitySection(html)).toContain(`The activity log shows once ${MIN_PRESENT} people are here.`);
   const frame = JSON.parse(await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie));
   expect(frame).not.toHaveProperty("activityLog");
-  expect(JSON.stringify(frame)).not.toContain("said they");
+  // No press anywhere in the frame: log lines are the only text that names
+  // "Person N" (the ranking's own description says "said they", so match the
+  // label, not that phrase).
+  expect(JSON.stringify(frame)).not.toMatch(/Person \d/);
 
   expect(lines(await lecturerPage(lecture))).toEqual(["Person 1 said they're lost on Slide 1"]);
 });
@@ -275,19 +278,19 @@ it("a reason, I get it now, what helped and a note each give their own line; the
 
 it("labels are per run: a fresh run starts again at Person 1", async () => {
   const lecture = await createLectureAndLogIn("Activity per run");
-  const [a, b] = await browsers(lecture.id, 2);
-  await tap(lecture.id, a, 1);
-  await tap(lecture.id, b, 1);
+  // Five people in run 1: a past run's trail shows only once min_present
+  // took part in it (like its total), since nobody is present in a past run.
+  const run1 = await browsers(lecture.id, MIN_PRESENT);
+  for (const cookie of run1) await tap(lecture.id, cookie, 1);
   await freshRun(lecture);
   expect(lines(await lecturerPage(lecture))).toEqual([]);
-  await tap(lecture.id, b, 3);
+  await tap(lecture.id, run1[1], 3);
   expect(lines(await lecturerPage(lecture))).toEqual(["Person 1 said they're lost on Slide 3"]);
 
   // Run 1, viewed read-only, keeps its own trail and its own numbering.
-  expect(lines(await lecturerPage(lecture, "?run=1"))).toEqual([
-    "Person 2 said they're lost on Slide 1",
-    "Person 1 said they're lost on Slide 1",
-  ]);
+  expect(lines(await lecturerPage(lecture, "?run=1"))).toEqual(
+    [5, 4, 3, 2, 1].map((n) => `Person ${n} said they're lost on Slide 1`),
+  );
 });
 
 it("the lecturer page and stream carry the log live; the student page and stream never do", async () => {
@@ -375,12 +378,18 @@ it("a created lecture's log has no filter", async () => {
   expect(lines(all)).toEqual(["Person 2 said they're lost on Slide 2", "Person 1 said they're lost on Slide 1"]);
   expect(activitySection(all)).not.toContain("<form");
 
-  // A filter in the URL is ignored, not applied.
-  const asked = await fetch(new URL(`/l/${lecture.id}/lecturer?logSlide=1&logDeck=%3Cscript%3E`, baseUrl), {
-    headers: { cookie: lecture.lecturerCookie },
-  });
-  expect(asked.status).toBe(200);
-  expect(lines(await asked.text())).toHaveLength(2);
+  // A filter in the URL is ignored, not applied (read with enough people
+  // here for the log to be sent at all).
+  const close = await present(lecture.id, MIN_PRESENT);
+  try {
+    const asked = await fetch(new URL(`/l/${lecture.id}/lecturer?logSlide=1&logDeck=%3Cscript%3E`, baseUrl), {
+      headers: { cookie: lecture.lecturerCookie },
+    });
+    expect(asked.status).toBe(200);
+    expect(lines(await asked.text())).toHaveLength(2);
+  } finally {
+    await close();
+  }
 });
 
 it("the demo's deck filter keeps one deck's lines and drops the other's", async () => {

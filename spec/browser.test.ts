@@ -780,3 +780,49 @@ it("a created lecture's student page follows the lecturer's Next live", async ()
     await student.context.close();
   }
 }, 30_000);
+
+// README "Safety in numbers": the activity log reaches the lecturer only
+// while min_present people are here. An open lecturer page shows it once
+// the room fills, and clears it again when people leave.
+it("the lecturer's activity log shows once 5 are here and clears when the room empties", async () => {
+  const post = (path: string, cookie: string, body: Record<string, string>) =>
+    fetch(new URL(path, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(body),
+      redirect: "manual",
+    });
+  const creatorRes = await fetch(new URL("/l/demo", baseUrl));
+  const creator = creatorRes.headers.getSetCookie().find((c) => c.startsWith("bid="))!.split(";")[0];
+  const created = await (await post("/new", creator, { title: "Log gate", slides: "10", minutes: "60" })).text();
+  const id = created.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
+  const code = created.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
+
+  const lecturer = await openWatched(1920, 1080);
+  const students: Awaited<ReturnType<typeof openWatched>>[] = [];
+  try {
+    await lecturer.context.request.get(new URL(`/l/${id}`, baseUrl).toString());
+    await lecturer.context.request.post(new URL(`/l/${id}/lecturer`, baseUrl).toString(), { form: { code }, maxRedirects: 0 });
+    await lecturer.page.goto(new URL(`/l/${id}/lecturer`, baseUrl).toString());
+    const lines = lecturer.page.locator("#activity-lines li");
+    await expect.poll(() => lecturer.page.locator("#activity-waiting").isVisible()).toBe(true);
+
+    for (let i = 0; i < 5; i++) {
+      const s = await openWatched(390, 844);
+      students.push(s);
+      await s.page.goto(new URL(`/l/${id}`, baseUrl).toString());
+    }
+    await students[0].page.locator("#tap-button").click();
+    await expect.poll(() => lines.count(), { timeout: 3000 }).toBe(1);
+    expect(await lecturer.page.locator("#activity-waiting").isVisible()).toBe(false);
+
+    for (const s of students.splice(1)) await s.context.close();
+    await expect.poll(() => lines.count(), { timeout: 3000 }).toBe(0);
+    expect(await lecturer.page.locator("#activity-waiting").isVisible()).toBe(true);
+
+    expect([...lecturer.problems, ...students.flatMap((s) => s.problems)]).toEqual([]);
+  } finally {
+    for (const s of students) await s.context.close();
+    await lecturer.context.close();
+  }
+}, 45_000);
