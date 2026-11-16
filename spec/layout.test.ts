@@ -105,3 +105,13 @@ it("the home page has three cards: student, lecturer, how it works, each with a 
   // home page isn't one of them.
   expect(d.body.textContent).not.toMatch(/\bDEMO\b/);
 });
+
+it("the student slide card has the chip and the live marker together above the slide", async () => {
+  const cookie = await newBrowserCookie("demo");
+  const d = doc((await get("/l/demo?deck=week-6&slide=3", cookie)).html);
+  const card = d.querySelector(".slide-card")!;
+  const bar = card.querySelector("#slide-bar")!;
+  expect(bar.querySelector("#slide-label")!.textContent).toBe("Week 6 · slide 3 of 9");
+  expect(bar.querySelector("#live-marker")).not.toBeNull();
+  expect(bar.compareDocumentPosition(card.querySelector("#slides")!) & 4).toBe(4);
+});

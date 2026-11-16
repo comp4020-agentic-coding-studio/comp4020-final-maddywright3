@@ -334,6 +334,17 @@ it("the live marker has its own style, and on the live slide it's the LIVE pill 
   expect(pill).toMatch(/background:\s*var\(--accent\)/);
   expect(pill).toMatch(/color:\s*var\(--on-colour\)/);
   expect(pill).toMatch(/text-transform:\s*uppercase/);
+
+  // The server marks the bar on-live only while the viewer is on the live
+  // slide; the marker's own text is unchanged ("Live").
+  const cookie = await newBrowserCookie("demo");
+  const get = async (path: string): Promise<Document> =>
+    new JSDOM(await (await fetch(new URL(path, baseUrl), { headers: { cookie } })).text()).window.document;
+  const live = await get("/l/demo?deck=week-6");
+  expect(live.getElementById("slide-bar")!.classList.contains("on-live")).toBe(true);
+  expect(live.getElementById("live-marker")!.textContent).toBe("Live");
+  const browsing = await get("/l/demo?deck=week-6&slide=3");
+  expect(browsing.getElementById("slide-bar")!.classList.contains("on-live")).toBe(false);
 });
 
 it("after a tap, the reasons and the note come after the tap bar, and 'I get it now' is its own form", async () => {

@@ -377,9 +377,13 @@ it("live updates name the deck and slide the same way the server does", async ()
     const label = student.page.locator("#slide-label");
     await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4 \u00b7 slide \d+ of 10 \(live\)$/);
     const live = Number((await label.textContent())!.match(/slide (\d+)/)![1]);
+    // On the live slide, the marker is the LIVE pill.
+    expect(await student.page.locator("#slide-bar").getAttribute("class")).toBe("slide-bar on-live");
     await student.page.keyboard.press(live > 1 ? "ArrowLeft" : "ArrowRight");
     const viewed = live > 1 ? live - 1 : live + 1;
     await expect.poll(() => label.textContent()).toBe(`Week 4 \u00b7 slide ${viewed} of 10`);
+    // Off the live slide, the marker isn't the LIVE pill any more.
+    expect(await student.page.locator("#slide-bar").getAttribute("class")).toBe("slide-bar");
     expect(await student.page.locator("#live-marker").textContent()).toBe(
       `You're on Week 4 \u00b7 slide ${viewed}. The lecture is on Week 4 \u00b7 slide ${live}.`,
     );

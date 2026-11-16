@@ -594,6 +594,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // Layout containers only; the order in the markup is the phone order
   // (slide, gauge, the sticky tap bar, then reasons and the note below it).
   // style.css places the same blocks in two columns on a wide screen.
+  // The slide card's top row is the slide chip and the live marker; the
+  // row carries "on-live" while the viewer is on the live slide, which is
+  // what turns the marker into the LIVE pill (the script toggles it too).
+  const onLiveNow = viewedSlide === liveSlide;
   const body = `
     <div class="lecture-head">
       <h1>${escapeHtml(lecture.title)}</h1>
@@ -601,12 +605,14 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </div>
     <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
       <div class="slide-col">
-        <div class="slide-bar">
-          ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
-          ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
+        <div class="slide-card">
+          <div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
+            ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
+            ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
+          </div>
+          ${slideSectionHtml(id, viewedDeck, viewedSlide)}
         </div>
-        ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
-        ${slideSectionHtml(id, viewedDeck, viewedSlide)}
+        ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
       </div>
       <div class="gauge-panel">
         ${gaugeHtml(state, lecture.min_present)}
@@ -651,6 +657,7 @@ ${SLIDE_NAME_CLIENT_JS}
         var connectionStatus = document.getElementById("connection-status");
 
         var liveMarker = document.getElementById("live-marker");
+        var slideBar = document.getElementById("slide-bar");
 
         // Kept separate: the deck/slide this browser is looking at (what a
         // tap records, what the arrows move), and the live slide of that
@@ -681,6 +688,7 @@ ${SLIDE_NAME_CLIENT_JS}
           if (label) {
             label.textContent = slideName(labelDeck, viewedSlide, { of: maxSlideFor(viewedDeck), live: onLive });
           }
+          if (slideBar) slideBar.classList.toggle("on-live", onLive);
           if (liveMarker) {
             liveMarker.textContent = onLive
               ? "Live"
