@@ -231,6 +231,28 @@ it("a created lecture without slide text still shows just Slide N", async () => 
   expect(doc.getElementById("slide-label")?.textContent).toBe("Slide 1 (live)");
 });
 
+// The slide card is a bordered box around the slide's text; with no text to
+// hold it would be an empty box under the label, so the bar stands alone.
+it("the slide card only wraps slide text: none without a paste, kept with one and on the demo", async () => {
+  const bare = await create({ title: "No card", slides: "4", pacing: "next" });
+  const bareDoc = new JSDOM(await getHtml(`/l/${bare.id}`, await newBrowserCookie(bare.id))).window.document;
+  expect(bareDoc.querySelector(".slide-card")).toBeNull();
+  expect(bareDoc.querySelector(".slide-col > #slide-bar #slide-label")?.textContent).toBe("Slide 1 (live)");
+
+  const pasted = await create({ title: "With card", slides_text: "First words\n---\nSecond" });
+  const pastedDoc = new JSDOM(await getHtml(`/l/${pasted.id}`, await newBrowserCookie(pasted.id))).window.document;
+  const card = pastedDoc.querySelector(".slide-card")!;
+  expect(card).not.toBeNull();
+  expect(card.querySelector("#slide-bar")).not.toBeNull();
+  expect(card.querySelector("#slides .slide:not([hidden])")?.textContent?.trim()).toBe("First words");
+
+  const demoDoc = new JSDOM(await getHtml("/l/demo", await newBrowserCookie("demo"))).window.document;
+  const demoCard = demoDoc.querySelector(".slide-card")!;
+  expect(demoCard).not.toBeNull();
+  expect(demoCard.querySelector("#slide-bar")).not.toBeNull();
+  expect(demoCard.querySelector("#slides")).not.toBeNull();
+});
+
 // ---------- Timed lectures start on the lecturer's cue ----------
 
 interface Frame {
