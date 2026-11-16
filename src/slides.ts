@@ -149,10 +149,11 @@ export function msUntilNextSlideChange(lectureId: string, deck: DeckId): number 
 // there's no fixed ceiling to validate against; any positive integer is a
 // plausible slide for one of those (the lecturer may advance further after a
 // student's page loads, and a student may be looking at an earlier slide
-// than the current one too).
+// than the current one too). One made at /new since it asked for a slide
+// count has that ceiling.
 export function isValidSlide(lecture: Lecture, deck: string | undefined, slide: number): boolean {
   if (!Number.isInteger(slide) || slide < 1) return false;
-  if (lecture.id !== "demo") return true;
+  if (lecture.id !== "demo") return lecture.slide_count === null || slide <= lecture.slide_count;
   if (deck === undefined || !isDeckId(deck)) return false;
   return slide <= deckSlideCount(deck);
 }

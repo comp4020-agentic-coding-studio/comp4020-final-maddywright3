@@ -10,6 +10,7 @@ import {
   createLecture,
   getLecture,
   hideNoteById,
+  lectureSlides,
   lectureCount,
   liveTapOn,
   resolveTap,
@@ -352,11 +353,11 @@ ${sorted.map((bar) => `<tr><td>${escapeHtml(barLabel(bar))}</td><td>${bar.distin
 // never loads content over the wire (which would mean a client-side request
 // back to this same server just to switch what's showing; rendering
 // everything up front avoids that entirely, and keeps a no-JS visitor's
-// browsing behaviour identical to a JS one's). A created (/new) lecture has
-// no deck of its own, just a number the lecturer advances, so there's no
-// content to show here at all.
+// browsing behaviour identical to a JS one's). A created (/new) lecture shows
+// the slide text its lecturer pasted, if any (pastedSlidesHtml); without
+// it there's just the number the lecturer advances, and nothing here.
 function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number): string {
-  if (lectureId !== "demo") return "";
+  if (lectureId !== "demo") return pastedSlidesHtml(lectureId, viewedSlide);
   const deckDivs = DECK_IDS.map((deckId) => {
     const sections = deckSlides(deckId)
       .map((html, i) => {
@@ -369,6 +370,23 @@ function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: nu
     return `<div class="deck" data-deck="${deckId}"${deckHidden}>\n${sections}\n<footer class="slide-credit">${deckCreditHtml(deckId)}</footer>\n</div>`;
   }).join("\n");
   return `<div id="slides">\n${deckDivs}\n</div>`;
+}
+
+// A created lecture's pasted slides, every one rendered and all but the
+// current one hidden, the way the demo shows a deck, so a live slide change
+// is a visibility toggle. Rendered on each view from the stored markdown by
+// the escaping renderer in src/pasted-slides.ts; never stored as HTML.
+function pastedSlidesHtml(lectureId: string, currentSlide: number): string {
+  const slides = lectureSlides(lectureId);
+  if (slides.length === 0) return "";
+  const sections = slides
+    .map((markdown, i) => {
+      const slideNumber = i + 1;
+      const hidden = slideNumber === currentSlide ? "" : " hidden";
+      return `<section class="slide" data-slide="${slideNumber}"${hidden}>${renderPastedSlide(markdown)}</section>`;
+    })
+    .join("\n");
+  return `<div id="slides" class="pasted-slides">\n${sections}\n</div>`;
 }
 
 function slideProgressLabel(lectureId: string, deck: DeckId, slide: number, liveSlide: number): string {
@@ -599,6 +617,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
       : "";
 
+  const slidesHtml = slideSectionHtml(id, viewedDeck, viewedSlide);
+
   // Layout containers only; the order in the markup is the phone order
   // (slide, gauge, the sticky tap bar, then reasons and the note below it).
   // style.css places the same blocks in two columns on a wide screen.
@@ -608,14 +628,14 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       ${deckMenuHtml(id, viewedDeck)}
       ${lecturerLinkHtml(id)}
     </div>
-    <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
+    <div class="lecture-layout${slidesHtml === "" ? " no-deck" : ""}">
       <div class="slide-col">
         <div class="slide-bar">
           ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
           ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
         </div>
         ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
-        ${slideSectionHtml(id, viewedDeck, viewedSlide)}
+        ${slidesHtml}
       </div>
       <div class="gauge-panel">
         ${gaugeHtml(state, lecture.min_present)}
@@ -712,7 +732,10 @@ ${SLIDE_NAME_CLIENT_JS}
           for (var d = 0; d < decks.length; d++) {
             decks[d].hidden = decks[d].dataset.deck !== deck;
           }
-          var slides = document.querySelectorAll("#slides .deck[data-deck=\\"" + deck + "\\"] .slide");
+          // A created lecture's pasted slides have no deck around them.
+          var slides = isDemo
+            ? document.querySelectorAll("#slides .deck[data-deck=\\"" + deck + "\\"] .slide")
+            : document.querySelectorAll("#slides .slide");
           for (var i = 0; i < slides.length; i++) {
             slides[i].hidden = Number(slides[i].dataset.slide) !== slide;
           }
@@ -1672,6 +1695,7 @@ function lecturerDashboard(
       <h1>Lecturer view</h1>
 ${slideControlsHtml}
     </div>
+    ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
     <div class="lecturer-layout">
       <div class="now-panel">
         ${gaugeHtml(state, minPresent)}
@@ -1963,6 +1987,11 @@ ${SLIDE_NAME_CLIENT_JS}
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) setText(slideLabel, slideName(nowDeck, state.slide, { live: true }));
+          // A created lecture's pasted slides follow the live slide.
+          var pastedSlides = document.querySelectorAll("#slides.pasted-slides .slide");
+          for (var ps = 0; ps < pastedSlides.length; ps++) {
+            pastedSlides[ps].hidden = Number(pastedSlides[ps].dataset.slide) !== state.slide;
+          }
           // renderGauge (shared with the student page) only touches the
           // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
