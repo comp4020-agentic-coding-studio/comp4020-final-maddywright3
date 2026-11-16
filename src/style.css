@@ -10,6 +10,11 @@
   text at >= 4.5:1 on every background, --on-colour at >= 4.5:1 on every
   filled button, graph marks at >= 3:1 on --surface and --paper, and the
   gauge's --lost fill at >= 4.5:1 on its --line track.
+
+  --line stays below 3:1 on purpose: it only draws decorative hairlines and
+  the gauge track. Every border that identifies a control uses --accent or
+  --ink-muted, which pass 3:1. Darkening --line would sink the fill on the
+  track to about 1.9:1.
 */
 
 /* ---------- Tokens ----------
