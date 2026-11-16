@@ -251,17 +251,17 @@ async function handleHome(): Promise<Response> {
     <ul class="home-cards">
       <li class="card home-card" id="home-student">
         <h2>I'm a student</h2>
-        <p>Open the demo lecture and tap when you stop following.</p>
+        <p>Tap when you stop following. The demo is shared, so others' taps show too.</p>
         <p><a href="/l/demo" class="pill-link primary">Join the demo</a></p>
       </li>
       <li class="card home-card" id="home-lecturer">
         <h2>I'm a lecturer</h2>
-        <p>See what the room sees, or start a lecture of your own.</p>
+        <p>See what the room sees, or start your own lecture: it begins empty.</p>
         <p class="card-links"><a href="/l/demo/lecturer" class="pill-link">Open the demo lecturer view</a> <a href="/new">Create a lecture</a></p>
       </li>
       <li class="card home-card" id="home-how">
         <h2>How it works</h2>
-        <p>What the meter counts, and what it never shows.</p>
+        <p>What Hands Down counts, and what it never shows.</p>
         <p><a href="/readme/" class="pill-link">Read how it works</a></p>
       </li>
     </ul>
