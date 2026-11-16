@@ -11,6 +11,7 @@ import {
   getLecture,
   hideNoteById,
   lectureSlides,
+  startTimedLecture,
   lectureCount,
   liveTapOn,
   resolveTap,
@@ -47,6 +48,7 @@ import {
   removeConnection,
   removeLecturerConnection,
   scheduleFade,
+  scheduleTimedAdvance,
   sendInitialLecturerState,
   sendInitialState,
   startHeartbeat,
@@ -63,6 +65,7 @@ import {
   deckSlides,
   isDeckId,
   isValidSlide,
+  slideDurations,
   slideName,
 } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
@@ -1639,6 +1642,22 @@ function nowSectionInnerHtml(
   return `<h2 id="now-heading">On this slide</h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
 }
 
+// A timed lecture has no Previous/Next: its clock moves the slides. Before
+// it starts, the lecturer gets one button; after, a line saying it's
+// running. Start is idempotent, so a second tab still showing the button
+// does no harm.
+function timedControlsHtml(lecture: Lecture): string {
+  const durations = slideDurations(lecture) ?? [];
+  const totalMinutes = Math.round(durations.reduce((sum, ms) => sum + ms, 0) / 6000) / 10;
+  if (lecture.started_at === null) {
+    return `<form method="post" action="/l/${encodeURIComponent(lecture.id)}/lecturer/start" id="start-lecture-form">
+      <button type="submit">Start lecture</button>
+    </form>
+    <p id="timed-status">Timed, ${totalMinutes} minutes. Slides move on their own once you start.</p>`;
+  }
+  return `<p id="timed-status">Timed, ${totalMinutes} minutes. Started, and slides move on their own.</p>`;
+}
+
 function lecturerDashboard(
   id: string,
   state:
@@ -1660,8 +1679,9 @@ function lecturerDashboard(
         reasonCounts: DashboardReasonCount[];
         notes: DashboardNote[];
       },
-  minPresent: number,
+  lecture: Lecture,
 ): string {
+  const minPresent = lecture.min_present;
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
   // viewer to read past a merely-hidden gauge. Bars, reasonCounts and notes
@@ -1678,7 +1698,9 @@ function lecturerDashboard(
   const slideControlsHtml =
     id === "demo"
       ? slideLabelHtml
-      : `
+      : lecture.pacing === "timed"
+        ? `${slideLabelHtml}\n${timedControlsHtml(lecture)}`
+        : `
     ${slideLabelHtml}
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
@@ -2046,7 +2068,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture), "lecturer"), {
     status: 200,
     headers,
   });
@@ -2108,6 +2130,15 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
     });
   }
 
+  // A timed lecture's slide is its clock's, not the lecturer's to move.
+  if (lecture.pacing === "timed") {
+    logAction("slide_change_rejected", id, browserId);
+    return new Response("This lecture is timed: its slides move on their own.", {
+      status: 409,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
   stepCurrentSlide(id, direction);
   logAction("slide_changed", id, browserId);
   broadcast(id);
@@ -2158,6 +2189,45 @@ function readNewLectureInput(body: string): NewLectureInput {
 // ADR 006, section 4: the page says what the app is for before it asks for
 // anything. Plain fields and radio buttons, so it works without JS; every
 // limit is shown here and checked again in handleNewPost.
+// Start lecture (ADR 006, section 4): lecturer-only, session checked, and
+// only for a timed lecture. It stores the start time, so the clock carries
+// on through a restart, arms the timer that pushes each slide change, and
+// tells every open stream at once.
+async function handleStartLecture(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+
+  if (id === "demo" || !validateLecturerSession(id, cookieHeader)) {
+    logAction("lecture_start_rejected", id, browserId);
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  if (lecture.pacing !== "timed") {
+    logAction("lecture_start_rejected", id, browserId);
+    return new Response("This lecture moves when you press Next; there's nothing to start.", {
+      status: 409,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  if (startTimedLecture(id)) {
+    logAction("lecture_started", id, browserId);
+    scheduleTimedAdvance(id);
+    broadcast(id);
+    broadcastToLecturer(id);
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}/lecturer` },
+  });
+}
+
 function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTURE): string {
   const value = (v: string): string => (v ? ` value="${escapeHtml(v)}"` : "");
   const checked = (pacing: string): string => (input.pacing === pacing ? " checked" : "");
@@ -2409,6 +2479,13 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(slideNextMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleSlideChange(id, req, 1);
+  }
+
+  const startMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/start$/);
+  if (method === "POST" && startMatch) {
+    const id = safeDecode(startMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleStartLecture(id, req);
   }
 
   const slidePrevMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/slide\/prev$/);
