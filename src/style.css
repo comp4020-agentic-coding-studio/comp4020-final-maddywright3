@@ -690,7 +690,8 @@ main.lecture {
   font-size: var(--small);
 }
 
-.slide-bar.on-live #live-marker {
+.slide-bar.on-live #live-marker,
+.live-pill {
   padding: var(--space-half) var(--space-2);
   border: none;
   border-radius: var(--pill);
@@ -1148,6 +1149,31 @@ main.lecturer.projector {
 
 .lecturer-head h1 {
   margin: 0;
+}
+
+/* The lecturer's live slide, named large at the top, behind the student
+   page's LIVE pill. */
+.live-now {
+  margin-bottom: var(--space-3);
+  border-left: 4px solid var(--accent);
+}
+
+.live-now p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+
+.live-now .live-pill {
+  display: inline-block;
+}
+
+#live-now-slide {
+  font-size: var(--step-3);
+  font-weight: 650;
+  line-height: 1.2;
 }
 
 .stat-tiles {

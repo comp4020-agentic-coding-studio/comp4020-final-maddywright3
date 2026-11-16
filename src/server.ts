@@ -2214,6 +2214,9 @@ function lecturerDashboard(
       <h1>Lecturer view</h1>
       ${projectorLinkHtml}
     </div>
+    <section id="live-now" class="card live-now" aria-label="Live now">
+      <p><span class="live-pill">Live now</span> <span id="live-now-slide">${escapeHtml(slideName(nowKey.deck, state.slide))}</span></p>
+    </section>
 ${runControlsHtml(id, state.run)}
     ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
     <section id="stat-tiles" class="stat-tiles" aria-label="Right now">
@@ -2420,6 +2423,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) setText(slideLabel, slideName(nowDeck, state.slide, { live: true }));
+          setText(document.getElementById("live-now-slide"), slideName(nowDeck, state.slide));
           // A created lecture's pasted slides follow the live slide.
           var pastedSlides = document.querySelectorAll("#slides.pasted-slides .slide");
           for (var ps = 0; ps < pastedSlides.length; ps++) {
