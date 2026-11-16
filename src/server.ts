@@ -866,6 +866,81 @@ ${SLIDE_NAME_CLIENT_JS}
           }
         }
 
+        // The timeline is re-marked in place, never rebuilt: which segment is
+        // live, which one this browser is viewing (only when that isn't the
+        // live slide), and which slides have a bar. Until the first stream
+        // frame, the server-rendered shading stands.
+        var timelineBars = null;
+        function timelineLinkTarget(link) {
+          var href = link && (link.getAttribute("href") || link.getAttribute("xlink:href"));
+          if (!href) return null;
+          var params = new URLSearchParams(href.split("?")[1] || "");
+          var slide = Number(params.get("slide"));
+          if (!slide) return null;
+          return { deck: params.get("deck") || viewedDeck, slide: slide };
+        }
+        // The live and "you" marks are ring rects inside a segment's link
+        // (inset as in src/timeline.ts), so a mark moves to its new link
+        // rather than the timeline being redrawn.
+        var RING_INSET = 2;
+        function placeRing(cls, seg) {
+          var svg = document.querySelector("#timeline svg");
+          if (!svg) return;
+          var ring = svg.querySelector("." + cls);
+          if (!seg) {
+            if (ring) ring.remove();
+            return;
+          }
+          if (!ring) {
+            ring = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            ring.setAttribute("class", cls);
+          }
+          var x = Number(seg.getAttribute("x"));
+          var w = Number(seg.getAttribute("width"));
+          var h = Number(seg.getAttribute("height"));
+          ring.setAttribute("x", String(Math.round((x + RING_INSET) * 10) / 10));
+          ring.setAttribute("y", String(RING_INSET));
+          ring.setAttribute("width", String(Math.max(0, Math.round((w - 2 * RING_INSET) * 10) / 10)));
+          ring.setAttribute("height", String(h - 2 * RING_INSET));
+          // The live ring sits under the "you" ring, as the server draws it.
+          var link = seg.closest("a");
+          if (cls === "timeline-live" && link.querySelector(".timeline-you")) {
+            link.insertBefore(ring, link.querySelector(".timeline-you"));
+          } else if (ring.parentNode !== link || cls === "timeline-you") {
+            link.appendChild(ring);
+          }
+        }
+        function markTimeline() {
+          var segs = document.querySelectorAll("#timeline .timeline-segment");
+          var items = document.querySelectorAll("#timeline-text li");
+          var liveSeg = null, youSeg = null;
+          for (var i = 0; i < segs.length; i++) {
+            var link = segs[i].closest("a");
+            var t = timelineLinkTarget(link);
+            if (!t || t.deck !== viewedDeck) continue;
+            var isLive = t.slide === liveSlide;
+            var isYou = t.slide === viewedSlide && viewedSlide !== liveSlide;
+            if (isLive) liveSeg = segs[i];
+            if (isYou) youSeg = segs[i];
+            if (timelineBars) {
+              segs[i].classList.toggle("shaded", timelineBars.some(function (b) {
+                return (b.deck || viewedDeck) === t.deck && b.slide === t.slide;
+              }));
+            }
+            // The screen-reader list says the same as the rings and shading.
+            if (items[i]) {
+              var notes = [];
+              if (segs[i].classList.contains("shaded")) notes.push("people were lost here");
+              if (isLive) notes.push("live");
+              if (isYou) notes.push("you're here");
+              var name = link.getAttribute("aria-label") || "";
+              items[i].textContent = name + (notes.length ? ": " + notes.join(", ") : "");
+            }
+          }
+          placeRing("timeline-live", liveSeg);
+          placeRing("timeline-you", youSeg);
+        }
+
         function showSlide(deck, slide) {
           viewedDeck = deck;
           viewedSlide = slide;
@@ -898,8 +973,25 @@ ${SLIDE_NAME_CLIENT_JS}
             }
           }
           updateLiveState();
+          markTimeline();
           attachNavHandlers();
           updateTapControls();
+        }
+
+        // One delegated listener: a segment browses this browser to that
+        // slide, like the arrows, without changing the live slide for anyone.
+        // A segment on another deck is left to its link (a full page load).
+        var timelineEl = document.getElementById("timeline");
+        if (timelineEl) {
+          timelineEl.addEventListener("click", function (event) {
+            var link = event.target && event.target.closest ? event.target.closest("a") : null;
+            if (!link || !timelineEl.contains(link)) return;
+            var t = timelineLinkTarget(link);
+            if (!t || t.deck !== viewedDeck) return;
+            event.preventDefault();
+            landOnLive = false;
+            showSlide(t.deck, t.slide);
+          });
         }
 
         function attachNavHandlers() {
@@ -1273,6 +1365,8 @@ ${SLIDE_NAME_CLIENT_JS}
             }
           }
           renderBars(state.bars);
+          timelineBars = state.bars || [];
+          markTimeline();
           var topReasonEl = document.getElementById("top-reason");
           if (state.topReason) {
             if (!topReasonEl) {

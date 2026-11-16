@@ -342,6 +342,43 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     }
   }, 60_000);
 
+  it("timeline: a segment is reached by Tab and Enter browses to that slide for this browser only", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo", baseUrl).toString());
+      await page.waitForLoadState("networkidle").catch(() => {});
+      expect(await hasHorizontalScroll(page)).toBe(false);
+      const label = page.locator("#slide-label");
+      // The live mark is a ring inside the live segment's link.
+      await page.locator("#timeline a .timeline-live").waitFor();
+      const startLabel = await label.textContent();
+      const liveHref = await page.locator("#timeline a:has(.timeline-live)").first().getAttribute("href");
+
+      // Tab into the timeline (visible focus at every stop), then on to a
+      // segment that isn't the live one.
+      await tabTo(page, (f) => f.tag === "a" && f.href !== null && /[?&]slide=/.test(f.href), 120);
+      if ((await focusedIsVisible(page)).href === liveHref) {
+        await tabTo(page, (f) => f.tag === "a" && f.href !== null && /[?&]slide=/.test(f.href), 1);
+      }
+      const target = (await focusedIsVisible(page)).href!;
+      expect(target).not.toBe(liveHref);
+      const urlBefore = page.url();
+      await page.keyboard.press("Enter");
+
+      await expect.poll(() => label.textContent()).not.toBe(startLabel);
+      // That segment now carries the "you" ring, and only that one does.
+      await expect.poll(() => page.locator(`#timeline a[href="${target}"] .timeline-you`).count()).toBe(1);
+      expect(await page.locator("#timeline .timeline-you").count()).toBe(1);
+      // Browsed in place: no navigation.
+      expect(page.url()).toBe(urlBefore);
+      expect(await hasHorizontalScroll(page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 60_000);
+
   it("answers lock once sent: reasons, then what helped, with contrast intact", async () => {
     const w = await openWatched(width, height);
     const { page } = w;
