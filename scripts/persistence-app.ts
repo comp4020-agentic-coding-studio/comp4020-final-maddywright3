@@ -47,7 +47,7 @@ export class App {
     const res = await fetch(this.url("/new"), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ title }).toString(),
+      body: new URLSearchParams({ title, slides: "10", minutes: "60" }).toString(),
     });
     const html = await res.text();
     if (res.status !== 200) throw new Error(`/new -> ${res.status}`);
