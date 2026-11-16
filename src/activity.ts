@@ -26,11 +26,9 @@ export interface ActivityLine {
   text: string;
 }
 
-// The run the log covers. Every tap is run 1 until runs land; when they do,
-// this is the one place that changes to read the lecture's current run.
-// Notes have no run in this branch, so they aren't scoped yet.
-export function currentRunId(_lecture: Lecture): number {
-  return 1;
+// The run the log covers: the lecture's current run, for taps and notes.
+export function currentRunId(lecture: Lecture): number {
+  return lecture.run;
 }
 
 interface Positioned {
@@ -129,7 +127,7 @@ export function activityLog(lecture: Lecture): ActivityLine[] {
   );
 
   const noteLines: Positioned[] = [];
-  crossings(activityNoteRows(lecture.id), minPresent, (row) => {
+  crossings(activityNoteRows(lecture.id, currentRunId(lecture)), minPresent, (row) => {
     noteLines.push({
       line: {
         deck: row.deck,

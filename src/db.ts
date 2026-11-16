@@ -48,6 +48,12 @@ if (!lectureColumns.some((c) => c.name === "code_salt")) {
 if (!lectureColumns.some((c) => c.name === "current_slide")) {
   db.exec("ALTER TABLE lectures ADD COLUMN current_slide INTEGER NOT NULL DEFAULT 1");
 }
+// Where a student who's lost on 3 or more slides can get help: https only,
+// at most 300 characters (checked in server.ts), NULL for none.
+const addingHelpUrl = !lectureColumns.some((c) => c.name === "help_url");
+if (addingHelpUrl) {
+  db.exec("ALTER TABLE lectures ADD COLUMN help_url TEXT");
+}
 
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
@@ -124,8 +130,10 @@ if (!hasOneTapIndex) {
   }
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS notes (
+// One note per (lecture, run, deck, browser, slide). run_id is the run's
+// number within its lecture (runs.number), the same as taps.run_id.
+const NOTES_TABLE_SQL = (name: string): string => `
+  CREATE TABLE IF NOT EXISTS ${name} (
     id INTEGER PRIMARY KEY,
     lecture_id TEXT NOT NULL REFERENCES lectures(id),
     deck TEXT,
@@ -134,7 +142,55 @@ db.exec(`
     text TEXT NOT NULL,
     created_at TEXT NOT NULL,
     hidden_at TEXT,
-    UNIQUE(lecture_id, deck, browser_id, slide)
+    run_id INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(lecture_id, run_id, deck, browser_id, slide)
+  )
+`;
+db.exec(NOTES_TABLE_SQL("notes"));
+
+// Notes from before runs (ADR 006) have no run_id, and their table-level
+// UNIQUE(lecture_id, deck, browser_id, slide) would make a note in run 2
+// overwrite the same browser's note in run 1, rewriting history. SQLite
+// can't change a table's constraint in place, so the table is rebuilt: every
+// row is copied into run 1 with its id unchanged, the copy is checked to
+// hold every row, and only then does it replace the old table. One
+// transaction, so a crash part-way leaves the old table as it was.
+const noteColumns = db.prepare("PRAGMA table_info(notes)").all() as { name: string }[];
+if (!noteColumns.some((c) => c.name === "run_id")) {
+  db.exec("BEGIN");
+  try {
+    db.exec(NOTES_TABLE_SQL("notes_with_runs"));
+    db.exec(`
+      INSERT INTO notes_with_runs (id, lecture_id, deck, slide, browser_id, text, created_at, hidden_at, run_id)
+      SELECT id, lecture_id, deck, slide, browser_id, text, created_at, hidden_at, 1 FROM notes
+    `);
+    const count = (table: string): number =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    if (count("notes_with_runs") !== count("notes")) throw new Error("notes copy lost rows; migration abandoned");
+    db.exec("DROP TABLE notes");
+    db.exec("ALTER TABLE notes_with_runs RENAME TO notes");
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+// Runs (ADR 006 section 3): "Start a fresh run" adds a row here and deletes
+// nothing. `number` counts from 1 within each lecture, and it's what
+// taps.run_id and notes.run_id hold, so every row from before runs (all
+// run_id 1) already belongs to its lecture's run 1. The current run is the
+// one with the highest number. Each run keeps its own current_slide: a fresh
+// run starts back on slide 1, and the old run's position is kept with it.
+// lectures.current_slide is no longer written; it was copied into run 1.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY,
+    lecture_id TEXT NOT NULL REFERENCES lectures(id),
+    number INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    current_slide INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(lecture_id, number)
   )
 `);
 
@@ -153,11 +209,27 @@ db.exec(`
   )
 `);
 
+// The demo's help link is the course page, set once: when the demo is first
+// made, or when the column is first added. A lecturer who later changes or
+// clears it isn't overridden on the next start.
+const DEMO_HELP_URL = "https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/";
 db.prepare(
-  "INSERT OR IGNORE INTO lectures (id, title, created_at) VALUES (?, ?, ?)",
-).run("demo", "Demo lecture", new Date().toISOString());
+  "INSERT OR IGNORE INTO lectures (id, title, created_at, help_url) VALUES (?, ?, ?, ?)",
+).run("demo", "Demo lecture", new Date().toISOString(), DEMO_HELP_URL);
+if (addingHelpUrl) {
+  db.prepare("UPDATE lectures SET help_url = ? WHERE id = 'demo'").run(DEMO_HELP_URL);
+}
 
 db.prepare("UPDATE lectures SET min_present = 2 WHERE id = 'demo'").run();
+
+// Every lecture has a run 1, started when the lecture was, on the slide the
+// lecture was on. Safe to run on every start: a lecture that already has a
+// run gets nothing new.
+db.exec(`
+  INSERT INTO runs (lecture_id, number, started_at, current_slide)
+  SELECT id, 1, created_at, current_slide FROM lectures
+  WHERE NOT EXISTS (SELECT 1 FROM runs WHERE runs.lecture_id = lectures.id)
+`);
 
 const demoCode = hashCode("DEMO");
 db.prepare("UPDATE lectures SET code_hash = ?, code_salt = ? WHERE id = 'demo' AND code_hash IS NULL").run(
@@ -172,7 +244,11 @@ export interface Lecture {
   min_present: number;
   code_hash: string | null;
   code_salt: string | null;
+  help_url: string | null;
+  // From the current run, not lectures.current_slide.
   current_slide: number;
+  // The current run's number.
+  run: number;
 }
 
 export interface Tap {
@@ -187,14 +263,84 @@ export interface Tap {
   helped: string | null;
 }
 
+// The lecture with its current run's number and slide. LEFT JOIN, so a
+// lecture row inserted without a run (none should be) still reads as run 1
+// on its own slide rather than vanishing.
 export function getLecture(id: string): Lecture | undefined {
-  return db.prepare("SELECT * FROM lectures WHERE id = ?").get(id) as Lecture | undefined;
+  const row = db
+    .prepare(
+      `SELECT lectures.*, COALESCE(runs.number, 1) AS run,
+         COALESCE(runs.current_slide, lectures.current_slide) AS run_current_slide
+       FROM lectures LEFT JOIN runs ON runs.lecture_id = lectures.id
+       WHERE lectures.id = ? ORDER BY runs.number DESC LIMIT 1`,
+    )
+    .get(id) as (Lecture & { run_current_slide: number }) | undefined;
+  if (!row) return undefined;
+  const { run_current_slide, ...lecture } = row;
+  return { ...lecture, current_slide: run_current_slide };
 }
 
-export function createLecture(id: string, title: string, minPresent: number, code: HashedCode): void {
-  db.prepare(
-    "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(id, title, new Date().toISOString(), minPresent, code.hash, code.salt);
+export function createLecture(
+  id: string,
+  title: string,
+  minPresent: number,
+  code: HashedCode,
+  helpUrl: string | null = null,
+): void {
+  const nowIso = new Date().toISOString();
+  db.exec("BEGIN");
+  try {
+    db.prepare(
+      "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt, help_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, title, nowIso, minPresent, code.hash, code.salt, helpUrl);
+    db.prepare("INSERT INTO runs (lecture_id, number, started_at) VALUES (?, 1, ?)").run(id, nowIso);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+// The number of the lecture's current run (its highest). Every query below
+// that takes an optional run defaults to this, so a caller that doesn't name
+// a run gets the live one, never a mix of runs.
+export function currentRun(lectureId: string): number {
+  const row = db.prepare("SELECT MAX(number) AS n FROM runs WHERE lecture_id = ?").get(lectureId) as {
+    n: number | null;
+  };
+  return row.n ?? 1;
+}
+
+export interface Run {
+  number: number;
+  started_at: string;
+}
+
+export function runsOf(lectureId: string): Run[] {
+  return db
+    .prepare("SELECT number, started_at FROM runs WHERE lecture_id = ? ORDER BY number")
+    .all(lectureId) as unknown as Run[];
+}
+
+// Starts run `replacing + 1`, but only while `replacing` is still the
+// current run: the confirmation page names the run it replaces, so a second
+// press of the same confirmation (or two lecturers confirming at once) makes
+// one new run, not two. One INSERT ... SELECT, and UNIQUE(lecture_id,
+// number) refuses a duplicate, so the check and the insert can't be split.
+// Inserts only; nothing in any other table is touched.
+export function startRun(lectureId: string, replacing: number): boolean {
+  const result = db
+    .prepare(
+      `INSERT INTO runs (lecture_id, number, started_at)
+       SELECT ?, ? + 1, ? WHERE (SELECT MAX(number) FROM runs WHERE lecture_id = ?) = ?
+       ON CONFLICT DO NOTHING`,
+    )
+    .run(lectureId, replacing, new Date().toISOString(), lectureId, replacing);
+  return result.changes > 0;
+}
+
+export function setHelpUrl(lectureId: string, helpUrl: string | null): void {
+  db.prepare("UPDATE lectures SET help_url = ? WHERE id = ?").run(helpUrl, lectureId);
 }
 
 export function lectureCount(): number {
@@ -202,10 +348,22 @@ export function lectureCount(): number {
   return row.count;
 }
 
-export function tapCount(lectureId: string): number {
+// Every query from here down that reads taps or notes takes the run it's
+// about, defaulting to the lecture's current run. A query that forgot the
+// run would mix runs (ADR 006's cost), so none reads across runs.
+export function tapCount(lectureId: string, run: number = currentRun(lectureId)): number {
   const row = db
-    .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ?")
-    .get(lectureId) as { count: number };
+    .prepare("SELECT COUNT(*) AS count FROM taps WHERE lecture_id = ? AND run_id = ?")
+    .get(lectureId, run) as { count: number };
+  return row.count;
+}
+
+// Distinct browsers that tapped at all in a run: the gate for showing a past
+// run's total.
+export function runTapperCount(lectureId: string, run: number): number {
+  const row = db
+    .prepare("SELECT COUNT(DISTINCT browser_id) AS count FROM taps WHERE lecture_id = ? AND run_id = ?")
+    .get(lectureId, run) as { count: number };
   return row.count;
 }
 
@@ -219,12 +377,12 @@ export interface LiveTapInfo {
 // status at once, independent of the 60s window. `count` is distinct
 // browsers, not taps: with one tap per slide, a browser lost on two slides
 // inside a minute has two live taps, and it's still one person lost.
-export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
+export function liveTapInfo(lectureId: string, sinceIso: string, run: number = currentRun(lectureId)): LiveTapInfo {
   const row = db
     .prepare(
-      "SELECT COUNT(DISTINCT browser_id) AS count, MIN(created_at) AS earliest FROM taps WHERE lecture_id = ? AND created_at >= ? AND resolved_at IS NULL",
+      "SELECT COUNT(DISTINCT browser_id) AS count, MIN(created_at) AS earliest FROM taps WHERE lecture_id = ? AND run_id = ? AND created_at >= ? AND resolved_at IS NULL",
     )
-    .get(lectureId, sinceIso) as { count: number; earliest: string | null };
+    .get(lectureId, run, sinceIso) as { count: number; earliest: string | null };
   return row;
 }
 
@@ -238,11 +396,11 @@ export function liveTapInfo(lectureId: string, sinceIso: string): LiveTapInfo {
 export function tapOncePerSlide(lectureId: string, browserId: string, deck: string | null, slide: number): boolean {
   const result = db
     .prepare(
-      `INSERT INTO taps (lecture_id, created_at, browser_id, deck, slide)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO taps (lecture_id, run_id, created_at, browser_id, deck, slide)
+       VALUES (?, (SELECT MAX(number) FROM runs WHERE lecture_id = ?), ?, ?, ?, ?)
        ON CONFLICT DO NOTHING`,
     )
-    .run(lectureId, new Date().toISOString(), browserId, deck, slide);
+    .run(lectureId, lectureId, new Date().toISOString(), browserId, deck, slide);
   return result.changes > 0;
 }
 
@@ -262,17 +420,22 @@ export interface YourSlide {
 // Every (deck, slide) this browser has said it's lost on in the lecture,
 // and whether that tap still counts as live. For its own page only: never
 // sent to any other browser or the lecturer.
-export function slidesYouTapped(lectureId: string, browserId: string, sinceIso: string): YourSlide[] {
+export function slidesYouTapped(
+  lectureId: string,
+  browserId: string,
+  sinceIso: string,
+  run: number = currentRun(lectureId),
+): YourSlide[] {
   const rows = db
     .prepare(
       `SELECT deck, slide, (created_at >= ? AND resolved_at IS NULL) AS live,
               resolved_at IS NOT NULL AS resolved, reason IS NOT NULL AS answeredReason,
               helped IS NOT NULL AS answeredHelped
        FROM taps
-       WHERE lecture_id = ? AND browser_id = ? AND slide IS NOT NULL AND legacy_duplicate = 0
+       WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND slide IS NOT NULL AND legacy_duplicate = 0
        ORDER BY deck, slide`,
     )
-    .all(sinceIso, lectureId, browserId) as {
+    .all(sinceIso, lectureId, run, browserId) as {
     deck: string | null;
     slide: number;
     live: number;
@@ -296,13 +459,14 @@ export function yourAnswersOn(
   lectureId: string,
   browserId: string,
   slideRef: SlideRef,
+  run: number = currentRun(lectureId),
 ): { reason: string | null; helped: string | null } | undefined {
   return db
     .prepare(
       `SELECT reason, helped FROM taps
-       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ? AND legacy_duplicate = 0`,
+       WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ? AND legacy_duplicate = 0`,
     )
-    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide) as { reason: string | null; helped: string | null } | undefined;
+    .get(lectureId, run, browserId, slideRef.deck ?? "", slideRef.slide) as { reason: string | null; helped: string | null } | undefined;
 }
 
 // The caller's own live (unresolved, within the window) tap, if any —
@@ -310,9 +474,9 @@ export function yourAnswersOn(
 export function liveTapFor(lectureId: string, browserId: string, sinceIso: string): Tap | undefined {
   return db
     .prepare(
-      "SELECT * FROM taps WHERE lecture_id = ? AND browser_id = ? AND created_at >= ? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      "SELECT * FROM taps WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND created_at >= ? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",
     )
-    .get(lectureId, browserId, sinceIso) as Tap | undefined;
+    .get(lectureId, currentRun(lectureId), browserId, sinceIso) as Tap | undefined;
 }
 
 // With one tap per slide, a browser can have live taps on two slides at
@@ -329,11 +493,11 @@ export function liveTapOn(
   return db
     .prepare(
       `SELECT * FROM taps
-       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+       WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
          AND created_at >= ? AND resolved_at IS NULL AND legacy_duplicate = 0
        ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide, sinceIso) as Tap | undefined;
+    .get(lectureId, currentRun(lectureId), browserId, slideRef.deck ?? "", slideRef.slide, sinceIso) as Tap | undefined;
 }
 
 export interface SlideRef {
@@ -348,10 +512,10 @@ export function resolvedTapOn(lectureId: string, browserId: string, slideRef: Sl
   return db
     .prepare(
       `SELECT * FROM taps
-       WHERE lecture_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+       WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
          AND resolved_at IS NOT NULL AND legacy_duplicate = 0`,
     )
-    .get(lectureId, browserId, slideRef.deck ?? "", slideRef.slide) as Tap | undefined;
+    .get(lectureId, currentRun(lectureId), browserId, slideRef.deck ?? "", slideRef.slide) as Tap | undefined;
 }
 
 // Answers lock once sent (ADR 006): "AND reason IS NULL" in the same UPDATE
@@ -376,14 +540,14 @@ export interface HelpedCount {
 }
 
 // Raw counts per (deck, slide, answer); gated in realtime.ts like reasons.
-export function helpedCounts(lectureId: string): HelpedCount[] {
+export function helpedCounts(lectureId: string, run: number = currentRun(lectureId)): HelpedCount[] {
   return db
     .prepare(
       `SELECT deck, slide, helped, COUNT(DISTINCT browser_id) AS count
-       FROM taps WHERE lecture_id = ? AND helped IS NOT NULL AND legacy_duplicate = 0
+       FROM taps WHERE lecture_id = ? AND run_id = ? AND helped IS NOT NULL AND legacy_duplicate = 0
        GROUP BY deck, slide, helped`,
     )
-    .all(lectureId) as unknown as HelpedCount[];
+    .all(lectureId, run) as unknown as HelpedCount[];
 }
 
 // resolved_at IS NULL in the WHERE: two "I get it now" presses at once
@@ -406,14 +570,14 @@ export interface ReasonCount {
 // Raw counts per (deck, slide, reason) — gating (per-pair, not inherited
 // from the slide's own bar gate) lives in realtime.ts, mirroring
 // slideTapCounts.
-export function reasonCounts(lectureId: string): ReasonCount[] {
+export function reasonCounts(lectureId: string, run: number = currentRun(lectureId)): ReasonCount[] {
   return db
     .prepare(
       `SELECT deck, slide, reason, COUNT(DISTINCT browser_id) AS count
-       FROM taps WHERE lecture_id = ? AND reason IS NOT NULL
+       FROM taps WHERE lecture_id = ? AND run_id = ? AND reason IS NOT NULL
        GROUP BY deck, slide, reason`,
     )
-    .all(lectureId) as unknown as ReasonCount[];
+    .all(lectureId, run) as unknown as ReasonCount[];
 }
 
 export interface SlideTapCount {
@@ -425,14 +589,14 @@ export interface SlideTapCount {
 // Distinct browsers per (deck, slide) — grouped by deck too, not slide alone,
 // so week-4's slide 3 and week-6's slide 3 are counted separately. No gating
 // here; that's realtime.ts's job, same separation as the rest of db.ts.
-export function slideTapCounts(lectureId: string): SlideTapCount[] {
+export function slideTapCounts(lectureId: string, run: number = currentRun(lectureId)): SlideTapCount[] {
   return db
     .prepare(
       `SELECT deck, slide, COUNT(DISTINCT browser_id) AS distinctBrowsers
-       FROM taps WHERE lecture_id = ? AND slide IS NOT NULL
+       FROM taps WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL
        GROUP BY deck, slide`,
     )
-    .all(lectureId) as unknown as SlideTapCount[];
+    .all(lectureId, run) as unknown as SlideTapCount[];
 }
 
 // SQLite's UNIQUE/ON CONFLICT treats every NULL as distinct from every other
@@ -444,18 +608,19 @@ export function slideTapCounts(lectureId: string): SlideTapCount[] {
 // (deck: string | null) is unaffected by the storage workaround.
 const NO_DECK = "";
 
-// One note per (lecture, deck, browser, slide): sending again replaces the
+// One note per (lecture, run, deck, browser, slide), always in the current
+// run: sending again replaces the
 // previous note and un-hides it (a replaced note is a fresh one), as one
 // atomic statement rather than a separate select/update — same reasoning
 // as tapOncePerSlide's single statement.
 export function setNote(lectureId: string, deck: string | null, browserId: string, slide: number, text: string): void {
   const nowIso = new Date().toISOString();
   db.prepare(
-    `INSERT INTO notes (lecture_id, deck, slide, browser_id, text, created_at, hidden_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL)
-     ON CONFLICT (lecture_id, deck, browser_id, slide)
+    `INSERT INTO notes (lecture_id, run_id, deck, slide, browser_id, text, created_at, hidden_at)
+     VALUES (?, (SELECT MAX(number) FROM runs WHERE lecture_id = ?), ?, ?, ?, ?, ?, NULL)
+     ON CONFLICT (lecture_id, run_id, deck, browser_id, slide)
      DO UPDATE SET text = excluded.text, created_at = excluded.created_at, hidden_at = NULL`,
-  ).run(lectureId, deck ?? NO_DECK, slide, browserId, text, nowIso);
+  ).run(lectureId, lectureId, deck ?? NO_DECK, slide, browserId, text, nowIso);
 }
 
 export function hideNoteById(noteId: number): void {
@@ -471,14 +636,14 @@ export interface SlideNoteCount {
 // Distinct browsers per (deck, slide) among VISIBLE notes only — used
 // purely to decide which (deck, slide) pairs clear the gate; never returns
 // note text.
-export function slideNoteCounts(lectureId: string): SlideNoteCount[] {
+export function slideNoteCounts(lectureId: string, run: number = currentRun(lectureId)): SlideNoteCount[] {
   const rows = db
     .prepare(
       `SELECT deck, slide, COUNT(DISTINCT browser_id) AS distinctBrowsers
-       FROM notes WHERE lecture_id = ? AND hidden_at IS NULL
+       FROM notes WHERE lecture_id = ? AND run_id = ? AND hidden_at IS NULL
        GROUP BY deck, slide`,
     )
-    .all(lectureId) as unknown as SlideNoteCount[];
+    .all(lectureId, run) as unknown as SlideNoteCount[];
   return rows.map((row) => ({ ...row, deck: row.deck === NO_DECK ? null : row.deck }));
 }
 
@@ -492,14 +657,19 @@ export interface VisibleNote {
 // min_present-distinct-browsers gate; never returns browser_id to its
 // caller, since the lecturer must never be able to link a note back to a
 // browser, only to a slide. Newest first.
-export function visibleNotesForSlide(lectureId: string, deck: string | null, slide: number): VisibleNote[] {
+export function visibleNotesForSlide(
+  lectureId: string,
+  deck: string | null,
+  slide: number,
+  run: number = currentRun(lectureId),
+): VisibleNote[] {
   return db
     .prepare(
       `SELECT id, text, created_at FROM notes
-       WHERE lecture_id = ? AND deck = ? AND slide = ? AND hidden_at IS NULL
+       WHERE lecture_id = ? AND run_id = ? AND deck = ? AND slide = ? AND hidden_at IS NULL
        ORDER BY created_at DESC`,
     )
-    .all(lectureId, deck ?? NO_DECK, slide) as unknown as VisibleNote[];
+    .all(lectureId, run, deck ?? NO_DECK, slide) as unknown as VisibleNote[];
 }
 
 // Rows for the activity log (src/activity.ts), in row-id order. browser_id
@@ -537,14 +707,14 @@ export interface ActivityNoteRow {
 
 // Visible notes only: hiding a note takes it out of the log on the next
 // update, since the log is worked out again from these rows every time.
-export function activityNoteRows(lectureId: string): ActivityNoteRow[] {
+export function activityNoteRows(lectureId: string, runId: number): ActivityNoteRow[] {
   const rows = db
     .prepare(
       `SELECT id, deck, slide, browser_id, created_at FROM notes
-       WHERE lecture_id = ? AND hidden_at IS NULL
+       WHERE lecture_id = ? AND run_id = ? AND hidden_at IS NULL
        ORDER BY id`,
     )
-    .all(lectureId) as unknown as ActivityNoteRow[];
+    .all(lectureId, runId) as unknown as ActivityNoteRow[];
   return rows.map((row) => ({ ...row, deck: row.deck === NO_DECK ? null : row.deck }));
 }
 
@@ -585,8 +755,11 @@ export function lecturerSessionValid(token: string, lectureId: string, sinceIso:
 // statement) means each write starts from whatever the column holds at the
 // moment it actually runs, not a stale value read earlier — same atomicity
 // discipline as tapOncePerSlide's single-statement dedup.
+// The slide moves within the current run only; an earlier run keeps the
+// slide it ended on.
 export function stepCurrentSlide(lectureId: string, direction: 1 | -1): void {
   db.prepare(
-    `UPDATE lectures SET current_slide = MAX(1, current_slide + ?) WHERE id = ?`,
-  ).run(direction, lectureId);
+    `UPDATE runs SET current_slide = MAX(1, current_slide + ?)
+     WHERE lecture_id = ? AND number = (SELECT MAX(number) FROM runs WHERE lecture_id = ?)`,
+  ).run(direction, lectureId, lectureId);
 }

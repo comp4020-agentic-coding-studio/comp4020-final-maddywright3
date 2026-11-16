@@ -16,6 +16,9 @@ import {
   resolvedTapOn,
   setTapHelped,
   yourAnswersOn,
+  runsOf,
+  setHelpUrl,
+  startRun,
   stepCurrentSlide,
   setNote,
   setTapReason,
@@ -41,11 +44,13 @@ import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
 import {
+  HELP_AFTER_SLIDES,
   addConnection,
   addLecturerConnection,
   broadcast,
   broadcastToLecturer,
   computeLecturerState,
+  computePastRunState,
   computeState,
   removeConnection,
   removeLecturerConnection,
@@ -54,7 +59,7 @@ import {
   sendInitialState,
   startHeartbeat,
 } from "./realtime.ts";
-import type { Bar } from "./realtime.ts";
+import type { Bar, PastRunState } from "./realtime.ts";
 import {
   DECK_IDS,
   DECK_SHORT_NAMES,
@@ -672,6 +677,15 @@ function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number
   `;
 }
 
+const HELP_OFFER_TEXT = "Want a hand with this?";
+const HELP_OFFER_LINK_TEXT = "Your lecturer offers help here.";
+
+// rel="noreferrer": following the link doesn't tell the other site which
+// lecture page the student came from.
+function helpOfferInnerHtml(url: string): string {
+  return `<p id="help-offer" class="help-offer">${HELP_OFFER_TEXT} <a href="${escapeHtml(url)}" rel="noreferrer">${HELP_OFFER_LINK_TEXT}</a></p>`;
+}
+
 async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -743,6 +757,9 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // not zeroed, just absent — since a hidden gauge still leaking the real
   // total in a sibling element would defeat the point of hiding it.
   const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
+  // Only in this browser's own render, and only once it has said it's lost
+  // on HELP_AFTER_SLIDES slides in the current run (realtime.ts decides).
+  const helpOfferHtml = state.helpUrl !== undefined ? helpOfferInnerHtml(state.helpUrl) : "";
   const topReasonHtml =
     "topReason" in state && state.topReason !== undefined
       ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
@@ -786,6 +803,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         ${tapStatusHtml}
       </div>
       <div class="after-tap">
+        <div id="help-offer-slot" aria-live="polite">${helpOfferHtml}</div>
         ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive, yourAnswers?.reason ?? null)}
         ${helpedHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedResolved, yourAnswers?.helped ?? null)}
         ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
@@ -1282,9 +1300,34 @@ ${SLIDE_NAME_CLIENT_JS}
           } else if (topReasonEl) {
             topReasonEl.remove();
           }
+          renderHelpOffer(state.helpUrl);
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
           lastYourSlides = state.yourSlides || [];
           updateTapControls();
+        }
+
+        // This browser's own help offer: present in its frame only once it
+        // has said it's lost on enough slides in this run.
+        var helpOfferSlot = document.getElementById("help-offer-slot");
+        function renderHelpOffer(url) {
+          if (!helpOfferSlot) return;
+          var link = helpOfferSlot.querySelector("a");
+          if (!url) {
+            if (helpOfferSlot.firstChild) helpOfferSlot.textContent = "";
+            return;
+          }
+          if (link && link.getAttribute("href") === url) return;
+          var p = document.createElement("p");
+          p.id = "help-offer";
+          p.className = "help-offer";
+          p.appendChild(document.createTextNode(${JSON.stringify(HELP_OFFER_TEXT)} + " "));
+          var a = document.createElement("a");
+          a.href = url;
+          a.rel = "noreferrer";
+          a.textContent = ${JSON.stringify(HELP_OFFER_LINK_TEXT)};
+          p.appendChild(a);
+          helpOfferSlot.textContent = "";
+          helpOfferSlot.appendChild(p);
         }
 
         // The tap controls for the slide being viewed, from this browser's
@@ -1960,6 +2003,7 @@ function lecturerDashboard(
   id: string,
   state:
     | {
+        run: number;
         present: number;
         shown: false;
         slide: number;
@@ -1968,6 +2012,7 @@ function lecturerDashboard(
         notes: DashboardNote[];
       }
     | {
+        run: number;
         present: number;
         shown: true;
         slide: number;
@@ -2030,6 +2075,7 @@ function lecturerDashboard(
       <h1>Lecturer view</h1>
       ${projectorLinkHtml}
     </div>
+${runControlsHtml(id, state.run)}
     <section class="stat-tiles" aria-label="Right now">
       <div class="card stat-tile tile-gauge">
         <h2 class="tile-label">Lost right now</h2>
@@ -2373,10 +2419,20 @@ ${activityClientJs(activity.filter)}
           renderActivity(state.activityLog);
         }
 
+        // A fresh run started (here or in another session): the run
+        // picker, the slide and every count change at once, so the page is
+        // fetched again rather than patched.
+        var renderedRun = ${JSON.stringify(state.run)};
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
         source.onmessage = function (event) {
           if (connectionStatus) connectionStatus.textContent = "";
-          render(JSON.parse(event.data));
+          var state = JSON.parse(event.data);
+          if (state.run !== renderedRun) {
+            source.close();
+            window.location.reload();
+            return;
+          }
+          render(state);
         };
         source.onerror = function () {
           if (connectionStatus) connectionStatus.textContent = "Reconnecting...";
@@ -2384,6 +2440,240 @@ ${activityClientJs(activity.filter)}
       })();
     </script>
   `;
+}
+
+const DEMO_RUN_MESSAGE = "The shared demo keeps its history. Create your own lecture to try a fresh run.";
+const DEMO_HELP_LINK_MESSAGE =
+  "The shared demo's help link is fixed, because its code is public. Create your own lecture to set one.";
+
+// The run picker and the fresh-run button, in their own block near the top
+// of the lecturer view (ADR 006 section 3). Plain links, so they work
+// without JS. The current run links to the live view; earlier runs to
+// ?run=N. `viewing` is the run on screen, marked aria-current.
+function runControlsHtml(id: string, viewing: number): string {
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  const runs = runsOf(id);
+  const current = runs.length > 0 ? runs[runs.length - 1].number : 1;
+  const items = runs
+    .map((run) => {
+      const isCurrent = run.number === current;
+      const label = `Run ${run.number}${isCurrent ? " (live)" : ""}`;
+      const href = isCurrent ? base : `${base}?run=${run.number}`;
+      const ariaCurrent = run.number === viewing ? ` aria-current="page"` : "";
+      return `<li><a href="${href}"${ariaCurrent}>${label}</a></li>`;
+    })
+    .join("");
+  const freshRun =
+    id === "demo"
+      ? `<p id="runs-demo">${escapeHtml(DEMO_RUN_MESSAGE)}</p>`
+      : `<form method="get" action="${base}/runs/new" id="fresh-run-form">
+        <button type="submit">Start a fresh run</button>
+      </form>`;
+  return `
+    <section id="runs" class="runs" aria-labelledby="runs-heading">
+      <h2 id="runs-heading">Runs</h2>
+      <ul class="run-picker">${items}</ul>
+      ${freshRun}
+    </section>
+${helpLinkSectionHtml(id)}`;
+}
+
+// The lecturer's help link, editable here (the demo's is fixed). Students
+// see it only on their own page, once they've said they're lost on
+// HELP_AFTER_SLIDES slides in the current run; nothing here says who.
+function helpLinkSectionHtml(id: string): string {
+  const lecture = getLecture(id);
+  const current = lecture?.help_url ?? null;
+  const explain = `<p>A student who says they're lost on ${HELP_AFTER_SLIDES} or more slides in this run sees this link on their own page. You never see who.</p>`;
+  if (id === "demo") {
+    return `
+    <section id="help-link" class="help-link" aria-labelledby="help-link-heading">
+      <h2 id="help-link-heading">Help link</h2>
+      ${explain}
+      <p id="help-url-current">${current ? escapeHtml(current) : "None"}</p>
+      <p>${escapeHtml(DEMO_HELP_LINK_MESSAGE)}</p>
+    </section>`;
+  }
+  return `
+    <section id="help-link" class="help-link" aria-labelledby="help-link-heading">
+      <h2 id="help-link-heading">Help link</h2>
+      ${explain}
+      <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/help-link" class="inline-form" id="help-link-form">
+        <label for="help-url">Where students can get help (https, leave empty for none)</label>
+        <input id="help-url" name="url" type="url" maxlength="${HELP_URL_MAX_LENGTH}" value="${current ? escapeHtml(current) : ""}" autocomplete="off">
+        <button type="submit">Save help link</button>
+      </form>
+    </section>`;
+}
+
+// Notes in a past run: the same gated list, with no Hide button, since a
+// past run is read-only.
+function readOnlyNotesHtml(notes: DashboardNote[]): string {
+  if (notes.length === 0) return "";
+  const sorted = [...notes].sort(
+    (a, b) =>
+      (a.deck ?? "").localeCompare(b.deck ?? "") || a.slide - b.slide || b.created_at.localeCompare(a.created_at),
+  );
+  const items = sorted
+    .map(
+      (note) => `<li class="note">
+        <p class="note-slide">${escapeHtml(slideName(note.deck, note.slide))}</p>
+        <p class="note-text">${escapeHtml(note.text)}</p>
+      </li>`,
+    )
+    .join("\n");
+  return `<section id="notes"><h3>What didn't make sense</h3><ul id="notes-list" class="notes-list">${items}</ul></section>`;
+}
+
+// An earlier run, read-only: a static render with no stream and no
+// controls, gated exactly as the live view is.
+function pastRunHtml(id: string, past: PastRunState): string {
+  const totalHtml =
+    past.totalTaps !== undefined ? `<p id="tap-count">Total taps in run ${past.run}: ${past.totalTaps}</p>` : "";
+  const empty =
+    past.bars.length === 0 && past.reasonCounts.length === 0 && past.notes.length === 0
+      ? `<p>No slide in this run reached the threshold to show.</p>`
+      : "";
+  return `
+    <div class="lecturer-head">
+      <h1>Lecturer view</h1>
+      <p id="run-label">Run ${past.run}, read-only</p>
+      <p><a href="/l/${encodeURIComponent(id)}/lecturer">Back to the live run</a></p>
+    </div>
+${runControlsHtml(id, past.run)}
+    <div class="lecturer-layout">
+      <div class="all-panel">
+        <h2>Every slide in run ${past.run}</h2>
+        ${totalHtml}
+        ${empty}
+        <div id="bars">${barsHtml(past.bars)}</div>
+        <div id="reason-counts-container">${reasonCountsHtml(past.reasonCounts)}</div>
+        ${readOnlyNotesHtml(past.notes)}
+      </div>
+    </div>
+  `;
+}
+
+function forbiddenText(): Response {
+  return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+function demoRefusal(title: string, message: string): Response {
+  return new Response(
+    page(
+      title,
+      `<h1>${escapeHtml(title)}</h1><p class="form-error">${escapeHtml(message)}</p><p><a href="/l/demo/lecturer">Back to the lecturer view</a> &middot; <a href="/new">Create your own lecture</a></p>`,
+    ),
+    { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+// "Start a fresh run", step 1: a confirmation page saying what happens. The
+// form names the run it replaces, so submitting it twice makes one run.
+async function handleFreshRunGet(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  if (id === "demo") {
+    logAction("run_start_rejected", id, validateBrowserId(cookieHeader));
+    return demoRefusal("Start a fresh run", DEMO_RUN_MESSAGE);
+  }
+  if (!validateLecturerSession(id, cookieHeader)) return forbiddenText();
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  const next = lecture.run + 1;
+  const body = `
+    <h1>Start a fresh run?</h1>
+    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the run picker. Nothing is deleted.</p>
+    <p>Run ${next} starts empty, on slide 1. Every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <form method="post" action="${base}/runs" id="fresh-run-confirm">
+      <input type="hidden" name="run" value="${lecture.run}">
+      <button type="submit">Start run ${next}</button>
+    </form>
+    <p><a href="${base}">Cancel, back to the lecturer view</a></p>
+  `;
+  return new Response(page("Start a fresh run", body), {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+// Step 2: inserts one row into runs and deletes nothing (CLAUDE.md: reset
+// never deletes). Everything live then reads the new run.
+async function handleFreshRunPost(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (id === "demo") {
+    logAction("run_start_rejected", id, browserId);
+    return demoRefusal("Start a fresh run", DEMO_RUN_MESSAGE);
+  }
+  if (!validateLecturerSession(id, cookieHeader)) {
+    logAction("run_start_rejected", id, browserId);
+    return forbiddenText();
+  }
+  const runRaw = new URLSearchParams(await req.text()).get("run") ?? "";
+  if (!/^[1-9][0-9]{0,8}$/.test(runRaw)) {
+    return new Response("Invalid run", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (startRun(id, Number(runRaw))) {
+    logAction("run_started", id, browserId);
+    broadcast(id);
+  }
+  return new Response(null, { status: 303, headers: { location: `/l/${encodeURIComponent(id)}/lecturer` } });
+}
+
+const HELP_URL_MAX_LENGTH = 300;
+
+// https only, at most 300 characters, as typed and as stored. Empty clears
+// it. Returns the URL to store, null for none, or an error message.
+function parseHelpUrl(raw: string): { url: string | null } | { error: string } {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { url: null };
+  if (trimmed.length > HELP_URL_MAX_LENGTH) return { error: `Help links are limited to ${HELP_URL_MAX_LENGTH} characters.` };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { error: "That isn't a web address. Use one starting with https://." };
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname === "") return { error: "Help links must start with https://." };
+  if (parsed.username !== "" || parsed.password !== "") return { error: "Help links can't contain a username or password." };
+  if (parsed.href.length > HELP_URL_MAX_LENGTH) return { error: `Help links are limited to ${HELP_URL_MAX_LENGTH} characters.` };
+  return { url: parsed.href };
+}
+
+async function handleHelpLinkPost(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!validateLecturerSession(id, cookieHeader)) {
+    logAction("help_url_rejected", id, browserId);
+    return forbiddenText();
+  }
+  if (id === "demo") {
+    logAction("help_url_rejected", id, browserId);
+    return demoRefusal("Help link", DEMO_HELP_LINK_MESSAGE);
+  }
+  const result = parseHelpUrl(new URLSearchParams(await req.text()).get("url") ?? "");
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  if ("error" in result) {
+    logAction("help_url_rejected", id, browserId);
+    return new Response(
+      page(
+        "Help link",
+        `<h1>Help link not saved</h1><p class="form-error">${escapeHtml(result.error)}</p><p><a href="${base}">Back to the lecturer view</a></p>`,
+      ),
+      { status: 400, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+  }
+  setHelpUrl(id, result.url);
+  logAction("help_url_set", id, browserId);
+  // Students who already qualify see the new link (or lose a cleared one)
+  // at once, each in their own frame.
+  broadcast(id);
+  return new Response(null, { status: 303, headers: { location: base } });
 }
 
 async function handleLecturerGet(id: string, req: Request): Promise<Response> {
@@ -2398,8 +2688,23 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
   }
   const projector = new URL(req.url).searchParams.get("projector") === "1";
 
+  // ?run=N names an earlier run, shown read-only. The current run's number
+  // (or none) is the live view; anything else isn't a run of this lecture.
+  const runParam = new URL(req.url).searchParams.get("run");
+  if (runParam !== null) {
+    const run = /^[1-9][0-9]{0,8}$/.test(runParam) ? Number(runParam) : NaN;
+    if (!(run >= 1 && run <= lecture.run)) return notFoundResponse();
+    if (run < lecture.run) {
+      return new Response(
+        page(`Lecturer view, run ${run}`, pastRunHtml(id, computePastRunState(lecture, run)), "lecturer", navKey),
+        { status: 200, headers },
+      );
+    }
+  }
+
   const computed = computeLecturerState(id);
   const state = computed ?? {
+    run: lecture.run,
     present: 0,
     shown: false as const,
     slide: currentSlideIndex(lecture),
@@ -2675,6 +2980,27 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(noteMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleNote(id, req);
+  }
+
+  const freshRunMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/runs\/new$/);
+  if (method === "GET" && freshRunMatch) {
+    const id = safeDecode(freshRunMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleFreshRunGet(id, req);
+  }
+
+  const runsMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/runs$/);
+  if (method === "POST" && runsMatch) {
+    const id = safeDecode(runsMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleFreshRunPost(id, req);
+  }
+
+  const helpLinkMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/help-link$/);
+  if (method === "POST" && helpLinkMatch) {
+    const id = safeDecode(helpLinkMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleHelpLinkPost(id, req);
   }
 
   const hideNoteMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/note\/(\d+)\/hide$/);

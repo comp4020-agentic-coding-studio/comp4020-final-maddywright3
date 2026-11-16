@@ -135,7 +135,11 @@ it("the lecturer page has the layout slots: stat tiles, four empty graph slots, 
   const log = d.getElementById("activity-log")!;
   expect(log.tagName).toBe("SECTION");
   expect(log.querySelector("h2")!.textContent).toBe("Activity");
-  expect(log.querySelector(".slot-body")!.innerHTML).toBe("");
+  // The activity log has landed in its slot: its filter form, its empty
+  // message and its list of lines are all there.
+  expect(log.querySelector("form.activity-filter")).not.toBeNull();
+  expect(log.querySelector("#activity-empty")).not.toBeNull();
+  expect(log.querySelector("ul#activity-lines")).not.toBeNull();
   // Full width: outside the two-column layout, after it.
   expect(log.closest(".lecturer-layout")).toBeNull();
   expect(d.querySelector(".lecturer-layout")!.compareDocumentPosition(log) & 4).toBe(4);
