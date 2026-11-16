@@ -1,175 +1,173 @@
-// The lecturer's activity log (ADR 006, finish.md round 2 item 4). Worked out
-// again from stored taps and visible notes on every lecturer update, with no
-// table of its own, so it survives a restart and a hidden note drops out of
-// it at once.
+// The lecturer's activity log: one line per press, newest first (CLAUDE.md,
+// changed by the user in b35eaa3, replacing ADR 006's min_present grouping).
+// Worked out again from stored rows on every lecturer update, with no table
+// of its own, so it survives a restart.
 //
-// The one rule (CLAUDE.md): every line covers at least min_present actions,
-// and no line is ever one student's action. A line is added only when a
-// slide's distinct-browser count reaches a new multiple of min_present, so
-// each line is about exactly min_present more people, and it sits at the row
-// that made the count reach that multiple. Lines name a slide, never a time
-// finer than that, and carry no browser id, hash or label: the browser ids
-// read here are only ever counted, never returned.
+// Each line is labelled only "Person N": numbered per run, in order of each
+// browser's first press in that run. The browser ids read here are used only
+// as Map keys to hand out those numbers; nothing derived from them (no hash,
+// no prefix) is ever returned. Note text is never read, so it can't appear.
+//
+// Reopened taps: pressing "I'm lost" again after "I get it now" reuses the
+// same row, clearing resolved_at and moving created_at to the reopen time.
+// The first press's time is then lost, so the log shows the reopen in its
+// place (and a browser whose only press was that tap may be numbered by
+// the later time). That's accepted; there's no history table behind it.
 import { activityNoteRows, activityTapRows } from "./db.ts";
-import type { ActivityTapRow, Lecture } from "./db.ts";
+import type { Lecture } from "./db.ts";
 import { isDeckId, slideName } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
-export type ActivityKind = "lost" | "notes" | "helped";
+export type ActivityKind = "lost" | "reason" | "resolved" | "helped" | "note";
 
 // What travels in the lecturer stream (as `activityLog`, newest first) and
-// what the page renders. Lecturer-only: never in MeterState.
+// what the page renders. `text` and `time` are worked out here, once, and
+// both the server render and the page script only place them, so the
+// wording can't drift. Lecturer-only: never in MeterState.
 export interface ActivityLine {
   deck: string | null;
   slide: number;
   kind: ActivityKind;
   text: string;
+  // "10:42:07 AEST" (with the date when not today in AEST), or "time not
+  // recorded"; iso is the stored instant for <time datetime>, "" if none.
+  time: { text: string; iso: string };
 }
 
-// The run the log covers: the lecture's current run, for taps and notes.
-export function currentRunId(lecture: Lecture): number {
-  return lecture.run;
+export interface ActivityLog {
+  lines: ActivityLine[];
+  // True when more presses happened than ACTIVITY_LOG_MAX lines carry.
+  capped: boolean;
 }
 
-interface Positioned {
-  line: ActivityLine;
-  // Where the line sits: the crossing row's id within its own table, and
-  // its created_at to interleave the tap and note tables. Never sent.
+export const ACTIVITY_LOG_MAX = 500;
+
+// Stand-in for formatAest in src/aest.ts (branch trail-helpers), with the
+// same output; swapped for the real import when the branches are combined.
+// Australia/Brisbane is UTC+10 all year: no daylight saving.
+const aestParts = new Intl.DateTimeFormat("en-AU", {
+  timeZone: "Australia/Brisbane",
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function partsOf(date: Date): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of aestParts.formatToParts(date)) out[p.type] = p.value;
+  return out;
+}
+
+function formatAestLocal(iso: string | null, now: Date = new Date()): { text: string; iso: string } {
+  if (!iso) return { text: "time not recorded", iso: "" };
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return { text: "time not recorded", iso: "" };
+  const at = partsOf(date);
+  const today = partsOf(now);
+  const time = `${at.hour}:${at.minute}:${at.second} AEST`;
+  const sameDay = at.year === today.year && at.month === today.month && at.day === today.day;
+  return { text: sameDay ? time : `${Number(at.day)} ${MONTHS[Number(at.month) - 1]}, ${time}`, iso };
+}
+
+interface Press {
+  deck: string | null;
+  slide: number;
+  kind: ActivityKind;
+  answer: string | null;
+  at: string | null;
+  browser: string;
+  // Tie-breaks for presses at the same instant: table row id, then kind.
   id: number;
-  at: string;
 }
 
-const key = (deck: string | null, slide: number): string => `${deck ?? ""}\u0000${slide}`;
+const KIND_ORDER: ActivityKind[] = ["lost", "reason", "resolved", "helped", "note"];
 
-// "Slide 5" reads as "slide 5" mid-sentence; "Week 4, slide 5" is unchanged.
-function slideInSentence(deck: string | null, slide: number): string {
-  const name = slideName(deck, slide);
-  return name.startsWith("Slide ") ? `s${name.slice(1)}` : name;
-}
-
-// Walks rows in id order, counting distinct browsers per (deck, slide), and
-// calls `onCross` at each row whose browser takes its slide's count to a new
-// multiple of minPresent.
-function crossings<R extends { id: number; deck: string | null; slide: number; browser_id: string }>(
-  rows: R[],
-  minPresent: number,
-  onCross: (row: R, seenOnSlide: R[]) => void,
-): void {
-  const seen = new Map<string, { browsers: Set<string>; rows: R[] }>();
-  for (const row of rows) {
-    const k = key(row.deck, row.slide);
-    let entry = seen.get(k);
-    if (!entry) {
-      entry = { browsers: new Set(), rows: [] };
-      seen.set(k, entry);
-    }
-    entry.rows.push(row);
-    if (entry.browsers.has(row.browser_id)) continue;
-    entry.browsers.add(row.browser_id);
-    if (entry.browsers.size % minPresent === 0) onCross(row, entry.rows);
+function lineText(person: number, press: Press): string {
+  const who = `Person ${person}`;
+  const where = slideName(press.deck, press.slide);
+  switch (press.kind) {
+    case "lost":
+      return `${who} said they're lost on ${where}`;
+    case "reason":
+      return `${who} chose a reason on ${where}: ${press.answer}`;
+    case "resolved":
+      return `${who} said they get it now on ${where}`;
+    case "helped":
+      return `${who} said what helped on ${where}: ${press.answer}`;
+    case "note":
+      return `${who} wrote a note on ${where}`;
   }
 }
 
-// The answers this line's people gave (reasons on a lost line, what helped
-// on a what-helped line), as they stand now: a reason or answer can come in
-// after the tap. Counted by distinct browser among `people`, and an answer
-// is listed only once at least minPresent of them gave it, so no count is
-// ever one or two people; the rest are left out, never shown small.
-function breakdown(
-  rows: ActivityTapRow[],
-  people: Set<string>,
-  pick: (row: ActivityTapRow) => string | null,
-  minPresent: number,
-): string {
-  const by = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const answer = pick(row);
-    if (answer === null || !people.has(row.browser_id)) continue;
-    let set = by.get(answer);
-    if (!set) {
-      set = new Set();
-      by.set(answer, set);
+// Oldest first. A press with no recorded time (a reason or what-helped from
+// before reason_at/helped_at existed) sorts just after its own tap.
+function compare(a: Press & { sortAt: string }, b: Press & { sortAt: string }): number {
+  if (a.sortAt !== b.sortAt) return a.sortAt < b.sortAt ? -1 : 1;
+  if (a.kind === "note" && b.kind !== "note") return 1;
+  if (b.kind === "note" && a.kind !== "note") return -1;
+  return a.id - b.id || KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind);
+}
+
+// The whole log for one run of a lecture, newest first, capped.
+export function activityLog(lecture: Lecture, run: number = lecture.run, now: Date = new Date()): ActivityLog {
+  const presses: (Press & { sortAt: string })[] = [];
+  for (const row of activityTapRows(lecture.id, run)) {
+    const base = { deck: row.deck, slide: row.slide, browser: row.browser_id, id: row.id };
+    presses.push({ ...base, kind: "lost", answer: null, at: row.created_at, sortAt: row.created_at });
+    if (row.reason !== null) {
+      presses.push({ ...base, kind: "reason", answer: row.reason, at: row.reason_at, sortAt: row.reason_at ?? row.created_at });
     }
-    set.add(row.browser_id);
-  }
-  return [...by]
-    .map(([answer, set]) => ({ answer, count: set.size }))
-    .filter((a) => a.count >= minPresent)
-    .sort((a, b) => b.count - a.count || a.answer.localeCompare(b.answer))
-    .map((a) => `${a.answer} ${a.count}`)
-    .join(", ");
-}
-
-// The browsers this line is about: the minPresent new ones, in row order,
-// that took the slide's count to this multiple.
-function lineBrowsers(rowsSoFar: { browser_id: string }[], minPresent: number): Set<string> {
-  const ordered: string[] = [];
-  for (const row of rowsSoFar) if (!ordered.includes(row.browser_id)) ordered.push(row.browser_id);
-  return new Set(ordered.slice(-minPresent));
-}
-
-export function activityLog(lecture: Lecture): ActivityLine[] {
-  const minPresent = Math.max(1, lecture.min_present);
-  const taps = activityTapRows(lecture.id, currentRunId(lecture));
-
-  const tapLines: Positioned[] = [];
-  crossings(taps, minPresent, (row, soFar) => {
-    const reasons = breakdown(soFar, lineBrowsers(soFar, minPresent), (r) => r.reason, minPresent);
-    tapLines.push({
-      line: {
-        deck: row.deck,
-        slide: row.slide,
-        kind: "lost",
-        text: `${slideName(row.deck, row.slide)}: ${minPresent} more people lost${reasons ? `. Reasons: ${reasons}` : ""}`,
-      },
-      id: row.id,
-      at: row.created_at,
-    });
-  });
-  crossings(
-    taps.filter((row) => row.helped !== null),
-    minPresent,
-    (row, soFar) => {
-      const helped = breakdown(soFar, lineBrowsers(soFar, minPresent), (r) => r.helped, minPresent);
-      tapLines.push({
-        line: {
-          deck: row.deck,
-          slide: row.slide,
-          kind: "helped",
-          text: `${minPresent} people said what helped on ${slideInSentence(row.deck, row.slide)}${helped ? `: ${helped}` : ""}`,
-        },
-        id: row.id,
-        at: row.created_at,
+    if (row.resolved_at !== null) {
+      presses.push({ ...base, kind: "resolved", answer: null, at: row.resolved_at, sortAt: row.resolved_at });
+    }
+    if (row.helped !== null) {
+      presses.push({
+        ...base,
+        kind: "helped",
+        answer: row.helped,
+        at: row.helped_at,
+        sortAt: row.helped_at ?? row.resolved_at ?? row.created_at,
       });
-    },
-  );
-
-  const noteLines: Positioned[] = [];
-  crossings(activityNoteRows(lecture.id, currentRunId(lecture)), minPresent, (row) => {
-    noteLines.push({
-      line: {
-        deck: row.deck,
-        slide: row.slide,
-        kind: "notes",
-        text: `${minPresent} new notes on ${slideInSentence(row.deck, row.slide)}`,
-      },
-      id: row.id,
-      at: row.created_at,
-    });
-  });
-
-  // Each table is ordered by row id; the two are interleaved by when their
-  // crossing rows were written. Then newest first.
-  tapLines.sort((a, b) => a.id - b.id);
-  noteLines.sort((a, b) => a.id - b.id);
-  const merged: Positioned[] = [];
-  let t = 0;
-  let n = 0;
-  while (t < tapLines.length || n < noteLines.length) {
-    if (n >= noteLines.length || (t < tapLines.length && tapLines[t].at <= noteLines[n].at)) merged.push(tapLines[t++]);
-    else merged.push(noteLines[n++]);
+    }
   }
-  return merged.reverse().map((p) => p.line);
+  for (const row of activityNoteRows(lecture.id, run)) {
+    presses.push({
+      deck: row.deck,
+      slide: row.slide,
+      browser: row.browser_id,
+      id: row.id,
+      kind: "note",
+      answer: null,
+      at: row.created_at,
+      sortAt: row.created_at,
+    });
+  }
+  presses.sort(compare);
+
+  // Person N by first press in the run, over every press, not just the
+  // lines shown, so N stays the same as the log grows past the cap.
+  const people = new Map<string, number>();
+  for (const press of presses) if (!people.has(press.browser)) people.set(press.browser, people.size + 1);
+
+  const newest = presses.slice(-ACTIVITY_LOG_MAX).reverse();
+  return {
+    capped: presses.length > ACTIVITY_LOG_MAX,
+    lines: newest.map((press) => {
+      const person = people.get(press.browser)!;
+      return {
+        deck: press.deck,
+        slide: press.slide,
+        kind: press.kind,
+        text: lineText(person, press),
+        time: formatAestLocal(press.at, now),
+      };
+    }),
+  };
 }
 
 // The log filters by deck only (the demo's two decks); each line already
@@ -194,16 +192,20 @@ function matches(filter: ActivityFilter, line: ActivityLine): boolean {
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-function emptyText(minPresent: number): string {
-  return `Lines appear each time ${minPresent} more people do something on a slide.`;
+const EMPTY_TEXT = "No presses yet in this run.";
+const CAPPED_TEXT = `Showing the latest ${ACTIVITY_LOG_MAX}.`;
+
+function lineHtml(line: ActivityLine): string {
+  return `<li class="activity-line"><time datetime="${escapeHtml(line.time.iso)}">${escapeHtml(line.time.text)}</time> ${escapeHtml(line.text)}</li>`;
 }
 
 // The whole <section id="activity-log">: heading, a GET filter form that
-// works with no script, and the lines. The page script (ACTIVITY_CLIENT_JS)
-// re-renders only the list, so the filter stays as the lecturer set it.
-export function activityLogHtml(lecture: Lecture, lines: ActivityLine[], filter: ActivityFilter): string {
+// works with no script (demo only), and the lines. The page script
+// (activityClientJs) re-renders only the list, so the filter stays as the
+// lecturer set it.
+export function activityLogHtml(lecture: Lecture, log: ActivityLog, filter: ActivityFilter): string {
   const base = `/l/${encodeURIComponent(lecture.id)}/lecturer`;
-  const shown = lines.filter((line) => matches(filter, line));
+  const shown = log.lines.filter((line) => matches(filter, line));
   const filterForm =
     lecture.id === "demo"
       ? `<form method="get" action="${base}" class="activity-filter inline-form">
@@ -217,38 +219,45 @@ export function activityLogHtml(lecture: Lecture, lines: ActivityLine[], filter:
         ${filter.deck !== undefined ? `<a href="${base}">Show every deck</a>` : ""}
       </form>`
       : "";
-  const items = shown.map((line) => `<li class="activity-line">${escapeHtml(line.text)}</li>`).join("\n");
   return `
     <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
       <h3 id="activity-log-heading">Activity</h3>
       ${filterForm}
-      <p id="activity-empty"${shown.length > 0 ? " hidden" : ""}>${escapeHtml(emptyText(lecture.min_present))}</p>
-      <ul id="activity-lines" class="activity-lines">${items}</ul>
+      <p id="activity-empty"${shown.length > 0 ? " hidden" : ""}>${EMPTY_TEXT}</p>
+      <p id="activity-capped"${log.capped ? "" : " hidden"}>${CAPPED_TEXT}</p>
+      <ul id="activity-lines" class="activity-lines">${shown.map(lineHtml).join("\n")}</ul>
     </section>`;
 }
 
-// The browser half: renders `state.activityLog` from each lecturer frame
-// into the list, keeping the filter the page was loaded with. Rebuilt only
-// when the visible lines change, so focus elsewhere isn't disturbed.
+// The browser half: places `state.activityLog` from each lecturer frame
+// into the list, keeping the filter the page was loaded with. It only puts
+// the server's text and time into elements, never words of its own. Rebuilt
+// only when the visible lines change, so focus elsewhere isn't disturbed.
 export function activityClientJs(filter: ActivityFilter): string {
   return `
         var activityFilter = ${JSON.stringify(filter)};
         var activitySig = null;
-        function renderActivity(log) {
+        function renderActivity(log, capped) {
           var list = document.getElementById("activity-lines");
           var empty = document.getElementById("activity-empty");
+          var cappedNote = document.getElementById("activity-capped");
           if (!list || !log) return;
+          if (cappedNote) cappedNote.hidden = !capped;
           var shown = log.filter(function (line) {
             return activityFilter.deck === undefined || line.deck === activityFilter.deck;
           });
-          var sig = JSON.stringify(shown.map(function (line) { return line.text; }));
+          var sig = JSON.stringify(shown.map(function (line) { return [line.time.iso, line.time.text, line.text]; }));
           if (sig === activitySig) return;
           activitySig = sig;
           list.innerHTML = "";
           shown.forEach(function (line) {
             var li = document.createElement("li");
             li.className = "activity-line";
-            li.textContent = line.text;
+            var time = document.createElement("time");
+            time.setAttribute("datetime", line.time.iso);
+            time.textContent = line.time.text;
+            li.appendChild(time);
+            li.appendChild(document.createTextNode(" " + line.text));
             list.appendChild(li);
           });
           if (empty) empty.hidden = shown.length > 0;

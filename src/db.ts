@@ -878,28 +878,45 @@ export function visibleNotesForSlide(
 }
 
 // Rows for the activity log (src/activity.ts), in row-id order. browser_id
-// is here only so activity.ts can count distinct browsers; it never leaves
+// is here only so activity.ts can number people per run; it never leaves
 // that file. Legacy duplicates and rows from before slides/browsers were
-// recorded can't count towards a line.
+// recorded aren't presses anyone can be numbered for.
 export interface ActivityTapRow {
   id: number;
   deck: string | null;
   slide: number;
   browser_id: string;
   reason: string | null;
+  reason_at: string | null;
+  resolved_at: string | null;
   helped: string | null;
+  helped_at: string | null;
   created_at: string;
 }
 
+// SELECT * so a database without reason_at/helped_at yet reads them as
+// null ("time not recorded") rather than failing.
 export function activityTapRows(lectureId: string, runId: number): ActivityTapRow[] {
-  return db
+  const rows = db
     .prepare(
-      `SELECT id, deck, slide, browser_id, reason, helped, created_at FROM taps
+      `SELECT * FROM taps
        WHERE lecture_id = ? AND run_id = ? AND legacy_duplicate = 0
          AND slide IS NOT NULL AND browser_id IS NOT NULL
        ORDER BY id`,
     )
-    .all(lectureId, runId) as unknown as ActivityTapRow[];
+    .all(lectureId, runId) as unknown as Partial<ActivityTapRow>[];
+  return rows.map((row) => ({
+    id: row.id!,
+    deck: row.deck ?? null,
+    slide: row.slide!,
+    browser_id: row.browser_id!,
+    reason: row.reason ?? null,
+    reason_at: row.reason_at ?? null,
+    resolved_at: row.resolved_at ?? null,
+    helped: row.helped ?? null,
+    helped_at: row.helped_at ?? null,
+    created_at: row.created_at!,
+  }));
 }
 
 export interface ActivityNoteRow {

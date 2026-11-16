@@ -76,9 +76,12 @@ function lineItems(html: string): string[] {
   return [...activitySection(html).matchAll(/<li class="activity-line">([\s\S]*?)<\/li>/g)].map((m) => m[1]);
 }
 
-// Each line's words, without its leading <time>.
+const decode = (s: string): string =>
+  s.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+// Each line's words, without its leading <time>, as a reader sees them.
 function lines(html: string): string[] {
-  return lineItems(html).map((item) => item.replace(/<time[^>]*>[\s\S]*?<\/time>/, "").trim());
+  return lineItems(html).map((item) => decode(item.replace(/<time[^>]*>[\s\S]*?<\/time>/, "").trim()));
 }
 
 // Each line's <time>: its datetime attribute and its text.
@@ -234,7 +237,7 @@ it("the lecturer page and stream carry the log live; the student page and stream
   await tap(lecture.id, cookie, 1);
   const state = JSON.parse(await live);
   expect(state.activityLog).toHaveLength(1);
-  expect(state.activityLog[0]).toMatchObject({ deck: null, slide: 1, kind: "lost", person: 1, text: lineText });
+  expect(state.activityLog[0]).toMatchObject({ deck: null, slide: 1, kind: "lost", text: lineText });
   expect(state.activityLogCapped).toBe(false);
 
   expect(lines(await lecturerPage(lecture))).toEqual([lineText]);

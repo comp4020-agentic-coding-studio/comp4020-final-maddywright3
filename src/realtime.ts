@@ -23,7 +23,7 @@ import {
   startDeckClock,
 } from "./slides.ts";
 import { activityLog } from "./activity.ts";
-import type { ActivityLine } from "./activity.ts";
+import type { ActivityLine, ActivityLog } from "./activity.ts";
 import { computeDashboard } from "./dashboard.ts";
 import type { DashboardFragments, DashboardStats, NoteGroup, ResolvedSplit } from "./dashboard.ts";
 import type { DeckId } from "./slides.ts";
@@ -110,8 +110,9 @@ export interface LecturerDashboardState {
 
 // `run` is the current run's number, so an open lecturer page knows when a
 // fresh run has started. Never carries a help link or anything per browser.
-// activityLog (src/activity.ts) is lecturer-only, gated line by line: each
-// line is about min_present more people, so it's present on both branches.
+// activityLog (src/activity.ts) is lecturer-only: one line per press,
+// labelled only "Person N", newest first, at most ACTIVITY_LOG_MAX lines;
+// activityLogCapped says when there were more. On both branches.
 export type LecturerState = LecturerDashboardState &
   (
   | {
@@ -124,6 +125,7 @@ export type LecturerState = LecturerDashboardState &
       helpedCounts: HelpedCount[];
       notes: NoteEntry[];
       activityLog: ActivityLine[];
+      activityLogCapped: boolean;
     }
   | {
       run: number;
@@ -137,6 +139,7 @@ export type LecturerState = LecturerDashboardState &
       helpedCounts: HelpedCount[];
       notes: NoteEntry[];
       activityLog: ActivityLine[];
+      activityLogCapped: boolean;
     }
   );
 
@@ -435,7 +438,7 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
       notes,
       current: { deck: lecture.id === "demo" ? LIVE_DECK : null, slide },
     });
-  if (!shown) return { run, present, shown, slide, bars, reasonCounts, helpedCounts, notes, activityLog: log, ...dashboardFor(undefined) };
+  if (!shown) return { run, present, shown, slide, bars, reasonCounts, helpedCounts, notes, activityLog: log.lines, activityLogCapped: log.capped, ...dashboardFor(undefined) };
   const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const { count: live } = liveTapInfo(lectureId, since, run);
   return {
@@ -449,7 +452,8 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
     reasonCounts,
     helpedCounts,
     notes,
-    activityLog: log,
+    activityLog: log.lines,
+    activityLogCapped: log.capped,
     ...dashboardFor(live),
   };
 }
@@ -466,6 +470,8 @@ export interface PastRunState {
   helpedCounts: HelpedCount[];
   notes: NoteEntry[];
   totalTaps?: number;
+  // That run's own per-press trail, numbered from Person 1 within it.
+  activity: ActivityLog;
 }
 
 export function computePastRunState(lecture: Lecture, run: number): PastRunState {
@@ -476,7 +482,8 @@ export function computePastRunState(lecture: Lecture, run: number): PastRunState
   const notes = gatedNotes(lectureId, lecture.min_present, run);
   const tappers = runTapperCount(lectureId, run);
   const showTotal = presentCount(lectureId) >= lecture.min_present && tappers >= lecture.min_present;
-  return { run, bars, reasonCounts, helpedCounts, notes, ...(showTotal ? { totalTaps: tapCount(lectureId, run) } : {}) };
+  const activity = activityLog(lecture, run);
+  return { run, bars, reasonCounts, helpedCounts, notes, activity, ...(showTotal ? { totalTaps: tapCount(lectureId, run) } : {}) };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
