@@ -35,5 +35,6 @@
 
 ## Ask first
 - Ask before any deploy, machine restart, push or tag, even if a plan mentions it. (Added after C8, when the agent did all four unasked.)
+- One approved run against the live app means one run. Ask again before each extra load test, restart or deploy. (Added in the finishing stage, when one approved Fly load test became nine runs.)
 - Commit in small steps, one change each, with a message saying why.
 - Rules live in this file, not in agent memory.
