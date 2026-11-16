@@ -3,7 +3,7 @@ import { expect, inject, it } from "vitest";
 import { newBrowserCookie } from "./test-helpers.ts";
 
 // The page shell from the colour-and-layout prompt (docs/prompts/finish.md):
-// one header on every page. Geometry (no overflow, the 2x2 grid, keyboard focus,
+// one header on every page, and three cards on the home page. Geometry (no overflow, the 2x2 grid, keyboard focus,
 // contrast in light and dark) is checked in a real browser in
 // spec/browser.test.ts; this checks what the server renders.
 const baseUrl = inject("baseUrl");
@@ -75,9 +75,33 @@ it("the nav marks the page you're on, and only that one", async () => {
     [...doc((await get(path)).html).querySelectorAll('nav[aria-label="Main"] a[aria-current="page"]')].map(
       (a) => a.textContent!,
     );
+  expect(await current("/")).toEqual(["Home"]);
   expect(await current("/l/demo")).toEqual(["Join the demo"]);
   expect(await current("/l/demo/lecturer")).toEqual(["Lecturer view"]);
   expect(await current("/new")).toEqual(["Create a lecture"]);
   expect(await current("/readme/")).toEqual(["How it works"]);
   expect(await current("/no-such-page")).toEqual([]);
+});
+
+it("the home page has three cards: student, lecturer, how it works, each with a short line and its links", async () => {
+  const d = doc((await get("/")).html);
+  const cards = [...d.querySelectorAll(".home-cards > li.card")];
+  expect(cards.map((c) => c.querySelector("h2")!.textContent)).toEqual(["I'm a student", "I'm a lecturer", "How it works"]);
+  const links = (card: Element): string[][] =>
+    [...card.querySelectorAll("a")].map((a) => [a.textContent!, a.getAttribute("href")!]);
+  expect(links(cards[0])).toEqual([["Join the demo", "/l/demo"]]);
+  expect(links(cards[1])).toEqual([
+    ["Open the demo lecturer view", "/l/demo/lecturer"],
+    ["Create a lecture", "/new"],
+  ]);
+  expect(links(cards[2])).toEqual([["Read how it works", "/readme/"]]);
+  for (const card of cards) {
+    // One short line, then the links.
+    const line = card.querySelector("h2 + p")!;
+    expect(line.querySelector("a")).toBeNull();
+    expect(line.textContent!.length).toBeLessThanOrEqual(80);
+  }
+  // CLAUDE.md shows the demo's code on the demo's own pages only, and the
+  // home page isn't one of them.
+  expect(d.body.textContent).not.toMatch(/\bDEMO\b/);
 });

@@ -181,13 +181,32 @@ function safeDecode(value: string): string | undefined {
   }
 }
 
+// Three ways in, one card each. The demo's code isn't shown here: CLAUDE.md
+// allows DEMO on the demo's own pages only, so the lecturer card links to
+// the demo's lecturer view, which is where the code is asked for.
 async function handleHome(): Promise<Response> {
   const body = `
     <h1>Confusion meter</h1>
-    <p>Tap "I'm lost" during a lecture, and the tap is saved so it's still there when anyone comes back.</p>
-    <p><a href="/l/demo">Try the demo lecture</a> &middot; <a href="/readme/">About this app</a> &middot; <a href="/new">Start a lecture</a></p>
+    <p class="lede">A button for the moment you stop following a lecture. Nobody sees who pressed it.</p>
+    <ul class="home-cards">
+      <li class="card home-card" id="home-student">
+        <h2>I'm a student</h2>
+        <p>Open the demo lecture and tap when you stop following.</p>
+        <p><a href="/l/demo" class="pill-link primary">Join the demo</a></p>
+      </li>
+      <li class="card home-card" id="home-lecturer">
+        <h2>I'm a lecturer</h2>
+        <p>See what the room sees, or start a lecture of your own.</p>
+        <p class="card-links"><a href="/l/demo/lecturer" class="pill-link">Open the demo lecturer view</a> <a href="/new">Create a lecture</a></p>
+      </li>
+      <li class="card home-card" id="home-how">
+        <h2>How it works</h2>
+        <p>What the meter counts, and what it never shows.</p>
+        <p><a href="/readme/" class="pill-link">Read how it works</a></p>
+      </li>
+    </ul>
   `;
-  return new Response(page("Confusion meter", body), {
+  return new Response(page("Confusion meter", body, "home", "home"), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
