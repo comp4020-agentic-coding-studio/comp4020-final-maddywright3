@@ -72,6 +72,10 @@ if (!tapColumns.some((c) => c.name === "run_id")) {
 if (!tapColumns.some((c) => c.name === "legacy_duplicate")) {
   db.exec("ALTER TABLE taps ADD COLUMN legacy_duplicate INTEGER NOT NULL DEFAULT 0");
 }
+// What helped, from a fixed list, answered once after "I get it now".
+if (!tapColumns.some((c) => c.name === "helped")) {
+  db.exec("ALTER TABLE taps ADD COLUMN helped TEXT");
+}
 
 // One "I'm lost" per (lecture, run, deck, slide, browser), held by a unique
 // index rather than by a check in the insert. Two things make the index
@@ -417,6 +421,52 @@ export function visibleNotesForSlide(lectureId: string, deck: string | null, sli
        ORDER BY created_at DESC`,
     )
     .all(lectureId, deck ?? NO_DECK, slide) as unknown as VisibleNote[];
+}
+
+// Rows for the activity log (src/activity.ts), in row-id order. browser_id
+// is here only so activity.ts can count distinct browsers; it never leaves
+// that file. Legacy duplicates and rows from before slides/browsers were
+// recorded can't count towards a line.
+export interface ActivityTapRow {
+  id: number;
+  deck: string | null;
+  slide: number;
+  browser_id: string;
+  reason: string | null;
+  helped: string | null;
+  created_at: string;
+}
+
+export function activityTapRows(lectureId: string, runId: number): ActivityTapRow[] {
+  return db
+    .prepare(
+      `SELECT id, deck, slide, browser_id, reason, helped, created_at FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND legacy_duplicate = 0
+         AND slide IS NOT NULL AND browser_id IS NOT NULL
+       ORDER BY id`,
+    )
+    .all(lectureId, runId) as unknown as ActivityTapRow[];
+}
+
+export interface ActivityNoteRow {
+  id: number;
+  deck: string | null;
+  slide: number;
+  browser_id: string;
+  created_at: string;
+}
+
+// Visible notes only: hiding a note takes it out of the log on the next
+// update, since the log is worked out again from these rows every time.
+export function activityNoteRows(lectureId: string): ActivityNoteRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, deck, slide, browser_id, created_at FROM notes
+       WHERE lecture_id = ? AND hidden_at IS NULL
+       ORDER BY id`,
+    )
+    .all(lectureId) as unknown as ActivityNoteRow[];
+  return rows.map((row) => ({ ...row, deck: row.deck === NO_DECK ? null : row.deck }));
 }
 
 export function browserExists(id: string): boolean {
