@@ -409,6 +409,13 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       expect(afterResolve.visible, "focus lost after I get it now").toBe(true);
       expect(afterResolve.text).toBe("I'm lost");
 
+      // Loaded again, the page still offers "I'm lost" and still knows the
+      // reason sent before, though the reasons aren't on it.
+      await page.waitForLoadState("networkidle").catch(() => {});
+      await page.reload();
+      await expect.poll(() => tapButton.textContent()).toBe("I'm lost");
+      expect(await page.locator("#reasons").count()).toBe(0);
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I'm lost");
       await page.keyboard.press("Enter");
       await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("You're counted");
       expect(await tapButton.getAttribute("aria-disabled")).toBe("true");
