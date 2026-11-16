@@ -72,17 +72,23 @@ function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-function hsl(hex: string): { h: number; s: number } {
+// Hue in degrees, and chroma (max - min channel, 0 to 1): how much colour
+// there is at all. HSL saturation isn't used for "is this a colour",
+// because a near-white paper like #f6f1e7 has high saturation and almost
+// no colour.
+function hueAndChroma(hex: string): { h: number; chroma: number } {
   const [r, g, b] = [0, 1, 2].map((i) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255);
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
   const d = max - min;
-  if (d === 0) return { h: 0, s: 0 };
-  const s = d / (1 - Math.abs(2 * l - 1));
+  if (d === 0) return { h: 0, chroma: 0 };
   const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return { h: (h * 60 + 360) % 360, s };
+  return { h: (h * 60 + 360) % 360, chroma: d };
 }
+
+// The named colours, in the graphs' categorical order. The graph markup
+// uses these names, so the test pins them.
+const CATEGORICAL = ["--lost", "--accent", "--clicked", "--sky", "--fern", "--clay"];
 
 function remOrPx(value: string): number {
   const m = value.trim().match(/^([\d.]+)(rem|px)$/);
@@ -216,8 +222,9 @@ it("type is fluid, body text is at least 1rem, and lines are at most 65ch", asyn
 it("every text colour clears 4.5:1 on every background, in light and in dark", async () => {
   const css = await getCss();
   const themes = themeTokens(css);
-  const texts = ["--text", "--text-muted", "--accent", "--focus"];
-  const backgrounds = ["--bg", "--surface", "--surface-2"];
+  // --lost is text on the counted (outlined) I'm lost button.
+  const texts = ["--ink", "--ink-muted", "--accent", "--lost"];
+  const backgrounds = ["--paper", "--surface"];
   for (const [name, theme] of Object.entries(themes)) {
     for (const fg of texts) {
       for (const bg of backgrounds) {
@@ -225,29 +232,56 @@ it("every text colour clears 4.5:1 on every background, in light and in dark", a
         expect(ratio, `${name}: ${fg} on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
       }
     }
-    const onAccent = contrast(resolveColour(theme, "--on-accent"), resolveColour(theme, "--accent"));
-    expect(onAccent, `${name}: --on-accent on --accent`).toBeGreaterThanOrEqual(4.5);
+    // Text on the filled pills: I'm lost, the LIVE pill and primary links,
+    // and I get it now.
+    for (const bg of ["--lost", "--accent", "--clicked"]) {
+      const ratio = contrast(resolveColour(theme, "--on-colour"), resolveColour(theme, bg));
+      expect(ratio, `${name}: --on-colour on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+    }
     // The gauge fill against its track: a non-text graphic, but kept at
     // the text bar anyway so the bar reads without the words.
-    const fill = contrast(resolveColour(theme, "--accent"), resolveColour(theme, "--track"));
-    expect(fill, `${name}: gauge fill on its track`).toBeGreaterThanOrEqual(4.5);
+    const fill = contrast(resolveColour(theme, "--lost"), resolveColour(theme, "--line"));
+    expect(fill, `${name}: gauge fill on its track is ${fill.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
   }
 });
 
-it("the palette is muted with one accent, and nothing is red, orange or yellow", async () => {
+it("graph marks and control borders clear 3:1 on --surface and --paper, in light and in dark", async () => {
   const css = await getCss();
   for (const [name, theme] of Object.entries(themeTokens(css))) {
-    const saturated: string[] = [];
-    for (const token of Object.keys(theme)) {
-      if (!/^#[0-9a-f]{6}$/i.test(theme[token])) continue;
-      const { h, s } = hsl(theme[token]);
-      if (s > 0.3) {
-        saturated.push(token);
-        // Warm hues (red through yellow) read as alarm; being lost isn't one.
-        expect(h > 75 && h < 330, `${name}: ${token} ${theme[token]} has a warning hue (${h.toFixed(0)})`).toBe(true);
+    // Every categorical colour is a graph mark; --ink-muted borders the
+    // text inputs, and --accent outlines buttons and pill links.
+    for (const mark of [...CATEGORICAL, "--ink-muted"]) {
+      for (const bg of ["--surface", "--paper"]) {
+        const ratio = contrast(resolveColour(theme, mark), resolveColour(theme, bg));
+        expect(ratio, `${name}: ${mark} on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
       }
     }
-    expect(saturated, `${name}: the only saturated colour is the accent`).toEqual(["--accent"]);
+  }
+  // The borders that say "this is a control" use those tokens, not the
+  // quiet --line hairline that only decorates cards and tables.
+  expect(ruleBody(css, "button")).toMatch(/border:\s*1px solid var\(--accent\)/);
+  expect(ruleBody(css, ".pill-link")).toMatch(/border:\s*1px solid var\(--accent\)/);
+  expect(ruleBody(css, "#slide-nav a,\n#slide-nav span")).toMatch(/border:\s*1px solid var\(--accent\)/);
+  expect(ruleBody(css, 'input:not([type="hidden"]),\nselect,\ntextarea')).toMatch(/border:\s*1px solid var\(--ink-muted\)/);
+});
+
+it("the only colours are the six named ones, being lost is violet, and nothing is red", async () => {
+  const css = await getCss();
+  for (const [name, theme] of Object.entries(themeTokens(css))) {
+    const coloured: string[] = [];
+    for (const token of Object.keys(theme)) {
+      if (!/^#[0-9a-f]{6}$/i.test(theme[token])) continue;
+      const { h, chroma } = hueAndChroma(theme[token]);
+      if (chroma > 0.15) {
+        coloured.push(token);
+        // Red reads as alarm; being lost isn't one. Wattle and clay are
+        // warm on purpose, but neither is red.
+        expect(h >= 15 && h <= 340, `${name}: ${token} ${theme[token]} is red (hue ${h.toFixed(0)})`).toBe(true);
+      }
+    }
+    expect(coloured.sort(), `${name}: the colours are the six named ones`).toEqual([...CATEGORICAL].sort());
+    const lost = hueAndChroma(resolveColour(theme, "--lost")).h;
+    expect(lost > 240 && lost < 290, `${name}: --lost is violet (hue ${lost.toFixed(0)})`).toBe(true);
   }
 });
 
@@ -265,11 +299,11 @@ it("has a dark theme, and short transitions that stop under reduced motion", asy
   expect(outside).not.toMatch(/transition\s*:/);
   const durations = [...allowed.matchAll(/(\d+)ms/g)].map((m) => Number(m[1]));
   expect(durations.length).toBeGreaterThan(0);
-  for (const ms of durations) expect(ms).toBeLessThanOrEqual(200);
+  for (const ms of durations) expect(ms).toBeLessThan(150);
   expect(css).not.toMatch(/@keyframes/);
 });
 
-it("on a phone 'I'm lost' sits in a sticky bottom bar at least 48px tall; on a desktop the slide takes two thirds", async () => {
+it("on a phone 'I'm lost' is a violet pill in a sticky bottom bar at least 56px tall; on a desktop the slide takes two thirds", async () => {
   const css = await getCss();
   const tapBar = ruleBody(css, ".tap-bar");
   expect(tapBar).toMatch(/position:\s*sticky/);
@@ -281,7 +315,11 @@ it("on a phone 'I'm lost' sits in a sticky bottom bar at least 48px tall; on a d
   const resolved = minHeight!.startsWith("var(")
     ? tokens(ruleBody(css, ":root"))[minHeight!.slice(4, -1)]
     : minHeight!;
-  expect(remOrPx(resolved)).toBeGreaterThanOrEqual(48);
+  expect(remOrPx(resolved)).toBeGreaterThanOrEqual(56);
+  expect(button).toMatch(/width:\s*100%/);
+  expect(button).toMatch(/background:\s*var\(--lost\)/);
+  expect(button).toMatch(/color:\s*var\(--on-colour\)/);
+  expect(button).toMatch(/border-radius:\s*var\(--pill\)/);
 
   const desktop = mediaBlock(css, /@media\s*\(min-width:\s*60rem\)/);
   expect(ruleBody(desktop, ".lecture-layout")).toMatch(/grid-template-columns:\s*minmax\(0,\s*2fr\)\s*minmax\([^)]*\)/);
@@ -289,9 +327,13 @@ it("on a phone 'I'm lost' sits in a sticky bottom bar at least 48px tall; on a d
   expect(ruleBody(desktop, ".tap-bar")).toMatch(/position:\s*static/);
 });
 
-it("the live marker has its own style", async () => {
+it("the live marker has its own style, and on the live slide it's the LIVE pill in --accent", async () => {
   const css = await getCss();
-  expect(ruleBody(css, "#live-marker")).toMatch(/color:\s*var\(--text\)/);
+  expect(ruleBody(css, "#live-marker")).toMatch(/color:\s*var\(--ink\)/);
+  const pill = ruleBody(css, ".slide-bar.on-live #live-marker");
+  expect(pill).toMatch(/background:\s*var\(--accent\)/);
+  expect(pill).toMatch(/color:\s*var\(--on-colour\)/);
+  expect(pill).toMatch(/text-transform:\s*uppercase/);
 });
 
 it("after a tap, the reasons and the note come after the tap bar, and 'I get it now' is its own form", async () => {
@@ -374,7 +416,7 @@ it("below min_present the gauge shows no count and no bar, and its live text doe
   }
 });
 
-it("the lecturer view puts the current slide's bar and notes first, in larger type", async () => {
+it("the lecturer view puts the current slide's bar and notes first, and projector mode scales type 1.5x", async () => {
   const lecture = await createLecture("Calm UI lecturer order");
   const lecturerCookie = await lecturerLogin(lecture.id, lecture.code);
   for (let i = 0; i < 5; i++) {
@@ -395,8 +437,18 @@ it("the lecturer view puts the current slide's bar and notes first, in larger ty
   // #now comes before the every-slide history.
   expect(now.compareDocumentPosition(doc.getElementById("bars")!) & 4).toBe(4);
 
+  // Normal type by default: the lecturer page sets no type scale of its
+  // own. Projector mode multiplies every step of the scale by 1.5.
   const css = await getCss();
-  const lecturer = tokens(ruleBody(css, "main.lecturer"));
-  const min = (clamp: string): number => remOrPx(clamp.match(/^clamp\(([^,]+),/)![1]);
-  expect(min(lecturer["--step-0"])).toBeGreaterThan(min(tokens(ruleBody(css, ":root"))["--step-0"]));
+  expect(ruleBody(css, "main.lecturer")).not.toMatch(/--step-|--small/);
+  const root = tokens(ruleBody(css, ":root"));
+  const projector = tokens(ruleBody(css, "main.lecturer.projector"));
+  const numbers = (value: string): number[] => [...value.matchAll(/([\d.]+)(rem|vw)/g)].map((m) => Number(m[1]));
+  for (const step of ["--step-0", "--step-1", "--step-2", "--step-3", "--small"]) {
+    const expected = numbers(root[step]).map((n) => n * 1.5);
+    const actual = numbers(projector[step]);
+    expect(actual.length, step).toBe(expected.length);
+    actual.forEach((n, i) => expect(n, `${step} part ${i}`).toBeCloseTo(expected[i], 4));
+  }
+  expect(ruleBody(css, "main.lecturer.projector")).toMatch(/font-size:\s*var\(--step-0\)/);
 });
