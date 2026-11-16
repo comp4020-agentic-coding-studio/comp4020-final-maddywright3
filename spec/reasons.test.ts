@@ -1,4 +1,5 @@
 import { expect, inject, it } from "vitest";
+import { JSDOM } from "jsdom";
 import { newBrowserCookie } from "./test-helpers.ts";
 
 const baseUrl = inject("baseUrl");
@@ -498,3 +499,40 @@ it("what helped is gated per (slide, answer), and no answer ever reaches a stude
     }
   }
 });
+
+// The reasons and "I get it now" stay for the rest of the lecture on any
+// slide this browser tapped and hasn't resolved, not just while the tap is
+// live: someone who got lost and only later worked it out can still say so.
+// The live count still fades on time (README: "It's about now"); only the
+// controls stay. The demo's 20 s window keeps this test short.
+it(
+  "after a tap fades, its reasons and I get it now are still offered and accepted, then what helped follows",
+  async () => {
+    const cookie = await newBrowserCookie("demo");
+    const tapRes = await postForm("demo", cookie, "tap", { deck: "week-6", slide: "8" });
+    expect(tapRes.status).toBe(303);
+
+    await new Promise((r) => setTimeout(r, 21_500));
+
+    const pageHtml = async () =>
+      (await fetch(new URL("/l/demo?deck=week-6&slide=8", baseUrl), { headers: { cookie } })).text();
+    const faded = await pageHtml();
+    const fadedDoc = new JSDOM(faded).window.document;
+    // Faded: the tap no longer counts as live, but the controls are there.
+    expect(fadedDoc.getElementById("tap-button")!.textContent).toBe("Counted on this slide");
+    expect(fadedDoc.getElementById("resolve-form")!.hasAttribute("hidden")).toBe(false);
+    expect(fadedDoc.querySelectorAll("#reasons button").length).toBe(4);
+
+    const reason = await postForm("demo", cookie, "reason", { deck: "week-6", slide: "8", reason: "Notation" });
+    expect(reason.status).toBe(303);
+    const resolve = await postForm("demo", cookie, "resolve", { deck: "week-6", slide: "8" });
+    expect(resolve.status).toBe(303);
+
+    const after = new JSDOM(await pageHtml()).window.document;
+    expect(after.getElementById("resolve-form")!.hasAttribute("hidden")).toBe(true);
+    expect(after.querySelector("#helped legend")!.textContent).toBe("What helped your understanding?");
+    const helped = await postForm("demo", cookie, "helped", { deck: "week-6", slide: "8", helped: "The example" });
+    expect(helped.status).toBe(303);
+  },
+  40_000,
+);
