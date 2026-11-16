@@ -19,24 +19,24 @@ First-year lectures of 100 to 300 people. In first year I was lost on a Java sli
 
 One tap is a confession. Twenty on one slide is a fact about the lecture, and tells everyone it isn't just them.
 
-- *Safety in numbers.* Nothing about other people leaves the server until enough are there.
+- *Safety in numbers.* Nothing about what others pressed leaves the server until enough are there.
 - *One voice.* One "I'm lost" per slide. Five tabs are one person.
 - *Anonymous, not invisible.* The lecturer's log says "Person 3", numbered afresh each run, never a name or a note's text.
 - *An audience of one.* Notes reach only the lecturer.
-- *Reach out, not in.* Lost on three slides, you see where to get help. The lecturer never learns who.
+- *Reach out, not in.* Once you've said you're lost on three slides, you see where to get help. The lecturer never learns who.
 - *Calm.* No sound, no flashing, nothing loaded from another site.
 
 ## Enforced and judged
 
 | Claim | Held by |
 |---|---|
-| Nothing about others below the threshold | tests on the data sent |
-| A tap reaches every page within a second | tests; a burst of 50 takes about 1.35 s on Fly |
+| Nothing others pressed, below the threshold | tests on the data sent |
+| A tap reaches every student page within a second | tests; a burst of 50 takes about 1.35 s on Fly |
 | One "I'm lost" per browser per slide | test and a unique index |
 | Notes reach only the lecturer | tests |
 | Nothing loads from another site | CSP header, browser test |
 | Keyboard, phone, slow connections | browser tests in CI |
-| Survives a redeploy and a machine stop | scripted check; the stop by hand |
+| Survives a redeploy | scripted check on Fly |
 | Calm, and works in a room | judged in a mock lecture, which led to one tap per slide |
 
 ## What I read
