@@ -1,141 +1,197 @@
 # Walkthrough: how a tap reaches every open page
 
-A linear read of `src/server.ts` and `src/realtime.ts`, in the order needed
-to change how a tap reaches every open page — entry point first. Each
-section says what that part is *for*; the code itself already says what it
-does line by line.
+A linear read of the path from pressing "I'm lost" to every open page
+updating, in the order you'd need it to change that path. Entry point first.
+Each section says what the part is *for*; the code says what it does line by
+line. Files: `src/server.ts` (routes and pages), `src/db.ts` (the write),
+`src/realtime.ts` (who gets told what, and when), `src/slides.ts` (clocks
+and live windows).
 
-## 1. Entry point: `handleTap` (`src/server.ts`)
+## 1. The button: the tap form and its script (`src/server.ts`, `handleLecture`)
 
-The route a browser's "I'm lost" form actually posts to. Three jobs, in
-order:
+The student page renders "I'm lost" as a plain `<form method="post">` to
+`/l/:id/tap`, with hidden `deck` and `slide` fields holding the slide the
+viewer is looking at. That's what makes it work without JavaScript: the
+form posts, and the server redirects back to that slide.
 
-1. **Identify the browser.** `validateBrowserId` looks the cookie up against
-   the `browsers` table and rejects (403) if it's missing or unknown — a tap
-   must never silently mint a fresh identity the way a page *view* does.
-2. **Validate the slide.** The POST body names a `deck` and `slide` — the
-   slide the viewer's own page was showing when they tapped, not whatever
-   the server currently thinks is "current" (ADR 004's amendment: browsing
-   to an earlier slide and tapping there is normal, not a race to reconcile
-   against). `isValidSlide` (`src/slides.ts`) checks it's a real index for
-   that lecture's deck; an invalid one is rejected (400), not silently
-   substituted.
-3. **Try to insert, then tell the world.** `tapIfNotRecentlyTapped`
-   (`src/db.ts`) is the one place the actual write happens — everything
-   above this point is validation, everything after is notification.
+With JavaScript, the page's inline script catches the form's `submit`,
+shows "Sending..." at once and posts the same fields with `fetch`.
+`setTapEnabled` marks the button `aria-disabled` rather than `disabled`, so
+a keyboard user who pressed Enter keeps their focus. The script doesn't
+change any counts itself: everything the page shows comes back over the
+stream (section 8), so every open page, this one included, updates the
+same way.
 
-## 2. The write: `tapIfNotRecentlyTapped` (`src/db.ts`)
+## 2. Entry point: `handleTap` (`src/server.ts`)
 
-A single atomic `INSERT ... WHERE NOT EXISTS (...)` statement, not a
-separate SELECT-then-INSERT — this is what makes "one live tap per browser"
-actually hold under concurrent requests, the same discipline `stepCurrentSlide`
-later uses for the Previous/Next race. The `WHERE NOT EXISTS` clause also
-excludes resolved taps (`resolved_at IS NULL`), so "I get it now" can't
-leave a phantom block on a fresh re-tap in the same 60-second window — this
-is the fix for a regression that would otherwise have shipped silently (see
-`spec/reasons.test.ts`'s "after I get it now" test).
+The route the form posts to. Three jobs, in order:
 
-Returns whether a row was actually inserted. If not — the browser already
-has a live tap on this lecture — `handleTap` logs `tap_ignored` and stops
-there: no broadcast, because nothing changed.
+1. **Identify the browser.** `validateBrowserId` looks the `bid` cookie up
+   in the `browsers` table and rejects with 403 if it's missing or unknown.
+   A tap must never mint a fresh identity the way a page view does.
+2. **Validate the slide.** The body names the deck and slide the viewer's
+   own page was showing, not whatever the server thinks is current (ADR 004:
+   flicking back to an earlier slide and tapping there is normal).
+   `deckFor` drops any deck sent for a created lecture, and `isValidSlide`
+   (`src/slides.ts`) checks the slide exists. A bad one is a 400, never
+   silently replaced.
+3. **Write, then tell everyone.** `tapOncePerSlide` (section 3) is the only
+   place the tap is stored. If it inserted a row, `handleTap` calls
+   `broadcast(id)` (section 4) and `scheduleFade(id)` (section 7), and logs
+   `tap` with the hashed browser ID. If not, it logs `tap_ignored` and
+   broadcasts nothing, because nothing changed.
 
-## 3. Telling every open page: `broadcast` / `broadcastToLecturer` (`src/realtime.ts`)
+## 3. The write: `tapOncePerSlide` (`src/db.ts`)
 
-If the insert succeeded, `handleTap` calls `broadcast(id)` and
-`scheduleFade(id)` (more on the latter in §6). `broadcast` is the fan-out
-point — every other route that changes shared state (`handleReason`,
-`handleResolve`, `handleNote`, `handleSlideChange`, stream open/close) also
-ends by calling `broadcast` or `broadcastToLecturer`.
+One statement: `INSERT ... ON CONFLICT DO NOTHING`, against the unique
+index `taps_one_per_slide` on (lecture, run, `COALESCE(deck, '')`, slide,
+browser). That's what makes "one 'I'm lost' per browser per slide" hold
+when two requests arrive at the same moment: the index decides, not a
+SELECT beforehand. `COALESCE` matters because SQLite treats every NULL as
+distinct, and a created lecture's taps have no deck. The run is filled in
+from the `runs` table in the same statement, so a fresh run (ADR 006) can
+take the same slide again. Rows marked `legacy_duplicate` by the one-time
+migration are outside the index and never counted.
 
-`broadcast`'s shape matters: it computes the **shared** state once per call
-(`computeSharedState`), then loops over every connected browser for this
-lecture and merges each one's own fields onto that shared base
-(`meterStateFor`). This replaced a full per-browser recompute — the
-`getLecture`/`presentCount`/`shown`/`bars`/etc. queries used to run once per
-*connection*, not once per *broadcast*, which is wasteful at any real
-audience size. If you're changing what gets broadcast, the shared/per-browser
-split is the first thing to understand: shared fields go in
-`computeSharedState`, genuinely per-recipient fields (only
-`yourTapCount`/`youAreCounted`/`liveForMs` today) go in `meterStateFor`.
+The database runs in WAL mode with `synchronous=NORMAL`, set at the top of
+`src/db.ts`, and startup fails if WAL didn't take. That cut a tap's insert
+from about 7.5 ms (a full disk sync per write) to about 0.1 ms, which is
+what let 50 taps at once reach everyone within about a second on Fly. The
+costs are in ADR 005: a power loss can drop the last moment of taps, and
+`meter.db-wal` and `meter.db-shm` sit beside `meter.db` and must be kept
+with it.
 
-`broadcastToLecturer` is the lecturer-side equivalent, simpler because
-there's no per-browser merge — every lecturer viewing the same lecture sees
-identical state (`computeLecturerState`).
+## 4. Deciding when to send: the throttle (`src/realtime.ts`, `makeThrottle`)
 
-## 4. Deciding what's actually in the payload: the gate functions (`src/realtime.ts`)
+`broadcast` and `broadcastToLecturer` are both built by `makeThrottle`, so
+every trigger goes through it: taps, reasons, "I get it now", notes, slide
+changes, connects, disconnects and fades. It exists so that a burst of
+taps costs a handful of frames, not one per tap per open page.
 
-Three functions decide what a given lecture's broadcast actually contains,
-and each follows the same two-step shape: compute raw counts in `db.ts`,
-then filter by `min_present` here. If you're adding a new piece of
-per-slide data that needs the same privacy treatment, copy one of these,
-don't invent a new pattern:
+- **Leading edge.** If nothing went out for this lecture in the last
+  `BROADCAST_WINDOW_MS` (50 ms), it sends at once. A single tap in a quiet
+  room has no added delay.
+- **One trailing send.** Inside a window, it arms one timer for the window's
+  end, and every further call in that window does nothing. A burst of 50
+  taps inside one window gives two frames per stream; a burst spread over
+  two windows gives three (measured, and tested in
+  `spec/broadcast.test.ts`).
+- **Never out of order.** Each send reads the state fresh when it fires,
+  and there's never more than one pending send per lecture, so a stale
+  frame can't overtake a newer one.
 
-- **`gatedBars`** — distinct browsers per `(deck, slide)`, filtered to
-  `>= min_present`. A slide below threshold is simply absent from the
-  array, not zeroed — "safety in numbers" means a tap below threshold
-  leaves no trace anywhere a request can see, not that the number shown is 0.
-- **`gatedReasonCounts`** — same shape, one level more specific: gated per
-  `(deck, slide, reason)` triple, *not* inherited from the slide's own bar
-  gate. A slide can clear its bar threshold while one specific reason among
-  its tappers was picked by only one or two people; surfacing that would be
-  exactly the one-person signal the bar gate exists to prevent.
-- **`gatedNotes`** — same two-step shape as bars (`slideNoteCounts` decides
-  which `(deck, slide)` pairs qualify; only for those does
-  `visibleNotesForSlide` get called at all), but lecturer-only: it is never
-  called when building `MeterState`, so student state has no path by which
-  note text could leak — not filtered out, never computed for that code
-  path in the first place.
+The student throttle sends to students and then calls the lecturer's
+throttle; the lecturer has its own, so its frames are rate-limited
+separately.
 
-`topReasonFor` is a small helper layered on top of `gatedReasonCounts`,
-picking the current slide's highest count among entries that already
-cleared the gate — it can never surface an under-threshold reason, because
-it only ever looks at the already-filtered list.
+## 5. What every viewer shares: `computeSharedState` (`src/realtime.ts`)
 
-## 5. Reaching the connection: the student/lecturer connection registries (`src/realtime.ts`)
+Called by `sendToStudents` once per deck being watched, not once per
+browser, because almost everything in a frame is the same for everyone
+watching that deck. It is where the privacy gates live, so a value that
+mustn't leave the server is simply never put in the object:
 
-`connections` (`Map<lectureId, Map<browserId, Set<ServerResponse>>>`) and
-`lecturerConnections` (`Map<lectureId, Set<ServerResponse>>>`) are the two
-places an open SSE connection actually lives, entirely in memory (see
-`docs/state.md` for what that costs on a restart). The nesting in
-`connections` is what makes "present" count distinct browsers rather than
-open tabs or connections — `presentCount` is just `byBrowser.size`.
+- `present` counts browsers with an open stream (`presentCount`), not tabs.
+- `live` and `totalTaps` are only added when `present >= min_present`.
+  Below that, the frame has no such keys at all, not zeros (CLAUDE.md:
+  hiding it on screen isn't enough).
+- `bars` come from `gatedBars`: each slide appears only once at least
+  `min_present` distinct browsers have tapped it in this run, whoever is
+  present now, so a lone returning visitor still sees history but no bar is
+  ever one person. `gatedReasonCounts` gates each (slide, reason) the same
+  way, and `topReasonFor` picks only among those that qualified.
+- `slide` and, for the demo, `lectureElapsedMs` are ungated: where the
+  lecture is says nothing about anyone. The demo's live slide comes from
+  that deck's clock in `src/slides.ts`, which starts when the deck's first
+  viewer arrives.
+- `live` counts distinct browsers with a tap inside the live window.
+  `liveWindowMs` (`src/slides.ts`) is 20 s for the condensed demo and 60 s
+  for a created lecture.
 
-`addConnection`/`removeConnection` and `addLecturerConnection`/
-`removeLecturerConnection` are called from `handleEvents`/
-`handleLecturerEvents` (back in `server.ts`) on stream open/close — those
-are the two places a `ServerResponse` enters or leaves these maps, which is
-also where a `broadcast` gets triggered so a newly-connected browser's
-first frame, and everyone else's updated `present`, land immediately.
+## 6. What only this browser gets: `yourStateFor` and `meterStateFor` (`src/realtime.ts`)
 
-## 6. Pushing an update with nothing new to trigger it: the fade and slide timers (`src/realtime.ts`)
+Run once per browser per send, then merged onto the shared state. These are
+the fields a browser may always see, because they're its own:
+`yourSlides` (the slides it tapped in this run, each with whether it's still
+live, resolved, and whether a reason or "what helped" was sent; flags only,
+never the answer text), `yourTapCount`, `youAreCounted`, and `helpUrl`,
+which is only present once this browser has said it's lost on
+`HELP_AFTER_SLIDES` (3) slides in this run. Because it's worked out here,
+the help link only ever reaches that one browser's own frame: never the
+shared state, the lecturer, a log line or a count.
 
-Two timers exist because two kinds of state change *without* a new request
-ever arriving: a tap aging out of the 60-second live window, and the demo's
-slide advancing on its own shared clock. Both follow the same shape —
-`scheduleFade`/`scheduleSlideAdvance` arm a single `setTimeout` per lecture
-for exactly when the next change will happen, and when it fires: broadcast,
-then re-arm for the *next* change. Neither keeps the process alive
-(`.unref()`), and both recompute their delay from the database rather than
-from any state the timer itself is tracking, so a timer lost on restart is
-simply re-armed correctly the next time anything touches that lecture.
+`sendToStudents` then writes one `data:` line per (browser, deck) to every
+open stream for that browser, building the JSON once per pair, not per tab.
 
-If you're adding a new kind of state that can change without a request —
-the pattern here is the one to copy, not a new polling loop.
+## 7. Updates nothing else triggers: fade and slide timers (`src/realtime.ts`)
 
-## 7. The client side: `render(state)` in each page's inline script (`src/server.ts`)
+A tap stops being live with no request to announce it, and the demo's slide
+moves on with nobody clicking. Without these timers, open pages would only
+catch up the next time something else happened.
 
-Every SSE payload lands in one of two `render(state)` functions — one
-inlined into `handleLecture`'s student page, one into `lecturerDashboard`'s
-lecturer page. Both do the same kind of thing: update the gauge
-(`gauge-present` plain, `gauge-lost` aria-live — see the aria-live
-discipline note in `server.ts`), then call a handful of smaller
-`render*`/`attach*` functions for each gated section (`renderBars`,
-`renderReasonCounts`, `renderNotes`, `renderReasonsAndNote`). Each of those
-follows the same create-or-remove-the-DOM-node discipline the gate
-functions above imply: a section with nothing to show removes its element
-entirely, it doesn't hide it — the same "no trace left anywhere a request
-can see" rule that governs the payload also governs what ends up in the
-DOM.
+- `scheduleFade` arms one timer per lecture for the moment the earliest
+  live tap leaves its window, broadcasts then, and re-arms for the next.
+- `scheduleSlideAdvance` arms one timer per running demo deck clock for
+  the next slide change. It's started when a
+  deck's first viewer connects (`addConnection`) and cleared, with the
+  clock, when its last viewer leaves (`removeConnection`).
 
-This is the last stop: from here, what the payload contains (§4) is what a
-real person sees.
+Both only push. The values are always computed from the database and the
+clock, so a lost timer (a restart, say) never makes a value wrong, only
+late (`docs/state.md`).
+
+## 8. The stream: `handleEvents` (`src/server.ts`)
+
+`GET /l/:id/events` is a server-sent event stream. It checks the browser
+cookie (403 without one), registers the connection with `addConnection`
+under the deck it's watching (`?deck=` for the demo), and then:
+
+- `sendInitialState` writes this stream its own first frame at once, so a
+  new page never waits for a throttle window to show anything;
+- `broadcast(id)` tells everyone else that one more person is here.
+
+When the browser goes away, `removeConnection` and another `broadcast`
+update everyone's people count. A lecturer's browser connecting here counts
+as a student, on purpose: lecturer state has its own route (section 10).
+
+## 9. The page catching up: `render(state)` (`src/server.ts`, student page script)
+
+`source.onmessage` parses each frame and calls `render(state)`. It's for
+turning the server's state into the page without the page deciding
+anything itself:
+
+- the live slide, the "Live" marker and "Back to live", and the lecture
+  clock (`syncLectureClock`), ignoring a frame about a deck the page has
+  switched away from;
+- `renderGauge`, shared with the lecturer page, which only touches the
+  aria-live node when the lost count changes or the gauge appears or
+  disappears, so people arriving don't get announced;
+- the bars and the timeline shading (`renderBars`, `markTimeline`), straight
+  from the gated `bars`;
+- this browser's own controls (`updateTapControls`): "You've said you're
+  lost on this slide.", the locked reasons and "what helped", and the help
+  offer (`renderHelpOffer`).
+
+`source.onerror` shows "Reconnecting..." until the next frame clears it.
+The browser's EventSource reconnects by itself, and the new stream gets its
+own first frame (section 8).
+
+## 10. The lecturer's copy (`handleLecturerEvents`, `sendToLecturers`)
+
+The lecturer's page uses its own route, `/l/:id/lecturer/events`, behind
+the lecturer session, so lecturer state never travels on a student stream.
+`computeLecturerState` applies the same gates and adds what only the
+lecturer sees: the gated reason and "what helped" counts, notes (each
+slide's only once enough people have written one), and the activity log
+(`src/activity.ts`, one line per `min_present` more people, never one
+person). It sends through its own throttle, `broadcastToLecturer`. Nothing
+per browser is in it, and never the help link.
+
+## Where to start a change
+
+- What the gauge says: `gaugeWords` and `lostText` in `src/server.ts`, and
+  their browser copy in `GAUGE_CLIENT_JS`. Change both.
+- How often pages update: `BROADCAST_WINDOW_MS` in `src/realtime.ts`.
+- How long a tap counts: `liveWindowMs` in `src/slides.ts`.
+- Who may see a number: the gate functions in `src/realtime.ts`, and
+  CLAUDE.md's Privacy rules first.
