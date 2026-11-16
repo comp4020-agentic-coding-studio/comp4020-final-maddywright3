@@ -15,7 +15,16 @@ const VIEWPORTS = [
   { name: "phone", width: 390, height: 844 },
   { name: "desktop", width: 1920, height: 1080 },
 ];
-const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/new", "/no-such-page"];
+const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/l/demo/lecturer?projector=1", "/new", "/no-such-page"];
+const COLOUR_SCHEMES = ["light", "dark"] as const;
+// The header's nav, in order, on every page.
+const NAV = [
+  { text: "Home", href: "/" },
+  { text: "Join the demo", href: "/l/demo" },
+  { text: "Lecturer view", href: "/l/demo/lecturer" },
+  { text: "Create a lecture", href: "/new" },
+  { text: "How it works", href: "/readme/" },
+];
 
 let browser: Browser;
 beforeAll(async () => {
@@ -33,8 +42,13 @@ interface Watched {
 
 // Every console error, failed request and off-origin request is a test
 // failure, whatever the test is checking. A page can look fine and throw.
-async function openWatched(width: number, height: number, expectedNotFound?: string): Promise<Watched> {
-  const context = await browser.newContext({ viewport: { width, height } });
+async function openWatched(
+  width: number,
+  height: number,
+  expectedNotFound?: string,
+  options: { colorScheme?: "light" | "dark"; javaScriptEnabled?: boolean } = {},
+): Promise<Watched> {
+  const context = await browser.newContext({ viewport: { width, height }, ...options });
   const page = await context.newPage();
   const problems: string[] = [];
   page.on("console", (msg) => {
@@ -93,13 +107,13 @@ async function hasHorizontalScroll(page: Page): Promise<boolean> {
   return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 }
 
-async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string; visible: boolean }> {
+async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string; visible: boolean; href: string | null }> {
   return page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
-    if (!el || el === document.body) return { tag: "body", text: "", visible: false };
+    if (!el || el === document.body) return { tag: "body", text: "", visible: false, href: null };
     const style = getComputedStyle(el);
     const visible = el.matches(":focus-visible") && style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
-    return { tag: el.tagName, text: (el.textContent ?? "").trim(), visible };
+    return { tag: el.tagName, text: (el.textContent ?? "").trim(), visible, href: el.getAttribute("href") };
   });
 }
 
@@ -108,7 +122,7 @@ async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string
 // the page, as a keyboard user would.
 async function tabTo(
   page: Page,
-  matches: (f: { tag: string; text: string }) => boolean,
+  matches: (f: { tag: string; text: string; href: string | null }) => boolean,
   maxTabs = 60,
   key: "Tab" | "Shift+Tab" = "Tab",
 ): Promise<void> {
@@ -131,12 +145,126 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     const url = new URL(path, baseUrl).toString();
     const w = await openWatched(width, height, path === "/no-such-page" ? url : undefined);
     try {
-      if (path === "/l/demo/lecturer") await logInAsDemoLecturer(w.context);
+      if (path.startsWith("/l/demo/lecturer")) await logInAsDemoLecturer(w.context);
       const res = await w.page.goto(url);
       expect(res?.status()).toBe(path === "/no-such-page" ? 404 : 200);
       await w.page.waitForLoadState("networkidle").catch(() => {});
       expect(await axeViolations(w.page)).toEqual([]);
       expect(await hasHorizontalScroll(w.page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  // The same sweep in the dark theme, with contrast: every colour is
+  // redefined there, so passing in light says nothing about dark.
+  it.each(PAGES)("%s in the dark theme has no axe violations (contrast included) and no horizontal scroll", async (path) => {
+    const url = new URL(path, baseUrl).toString();
+    const w = await openWatched(width, height, path === "/no-such-page" ? url : undefined, { colorScheme: "dark" });
+    try {
+      if (path.startsWith("/l/demo/lecturer")) await logInAsDemoLecturer(w.context);
+      await w.page.goto(url);
+      await w.page.waitForLoadState("networkidle").catch(() => {});
+      expect(await w.page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)).toBe(true);
+      expect(await axeViolations(w.page)).toEqual([]);
+      expect(await hasHorizontalScroll(w.page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  it("the header nav is reached by Tab, in order, with a visible focus ring at every stop", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/readme/", baseUrl).toString());
+      // Skip link, then the app name (home), then the nav in order.
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Skip to content", 1);
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Confusion meter" && f.href === "/", 1);
+      for (const link of NAV) {
+        await tabTo(page, (f) => f.tag === "A" && f.text === link.text && f.href === link.href, 1);
+        // Every nav link is on screen when it has focus: none is clipped
+        // or pushed off the side at 390px.
+        const box = await page.evaluate(() => {
+          const r = document.activeElement!.getBoundingClientRect();
+          return { left: r.left, right: r.right, height: r.height };
+        });
+        expect(box.left, link.text).toBeGreaterThanOrEqual(0);
+        expect(box.right, link.text).toBeLessThanOrEqual(width);
+        expect(box.height, link.text).toBeGreaterThanOrEqual(44);
+      }
+      // Enter follows the focused link: the last one is How it works.
+      await page.keyboard.press("Enter");
+      await page.waitForURL(new URL("/readme/", baseUrl).toString());
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  it("projector mode turns on and off by its link, with and without JavaScript, and scales type 1.5x", async () => {
+    for (const javaScriptEnabled of [true, false]) {
+      const w = await openWatched(width, height, undefined, { javaScriptEnabled });
+      const { page } = w;
+      try {
+        await logInAsDemoLecturer(w.context);
+        await page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
+        const main = page.locator("main");
+        const fontSize = (): Promise<number> => main.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+        const normal = await fontSize();
+        expect(await main.getAttribute("class")).toBe("lecturer");
+
+        await page.locator("#projector-link").click();
+        await page.waitForURL(/\?projector=1$/);
+        expect(await main.getAttribute("class")).toBe("lecturer projector");
+        expect(await page.locator("#projector-link").textContent()).toBe("Leave projector mode");
+        expect(await fontSize()).toBeCloseTo(normal * 1.5, 0);
+        expect(await hasHorizontalScroll(page)).toBe(false);
+
+        await page.locator("#projector-link").click();
+        await page.waitForURL(/\/lecturer$/);
+        expect(await main.getAttribute("class")).toBe("lecturer");
+        expect(await page.locator("#projector-link").textContent()).toBe("Projector mode");
+        expect(await fontSize()).toBeCloseTo(normal, 1);
+        expect(w.problems).toEqual([]);
+      } finally {
+        await w.context.close();
+      }
+    }
+  }, 30_000);
+
+  it("the lecturer layout: tiles on top, 2x2 graph slots beside the live column, activity log under both", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await logInAsDemoLecturer(w.context);
+      await page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
+      const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
+      const [tiles, lost, reasons, helped, resolved, now, log] = await Promise.all(
+        [".stat-tiles", "#graph-lost", "#graph-reasons", "#graph-helped", "#graph-resolved", "#now", "#activity-log"].map(box),
+      );
+      for (const b of [lost, reasons, helped, resolved, now]) expect(b.y).toBeGreaterThan(tiles.y + tiles.height - 1);
+      for (const b of [lost, reasons, helped, resolved, now]) expect(log.y).toBeGreaterThanOrEqual(b.y + b.height);
+      if (width >= 1200) {
+        // 2x2: lost beside reasons, helped beside resolved, one row down.
+        expect(Math.abs(lost.y - reasons.y)).toBeLessThan(1);
+        expect(reasons.x).toBeGreaterThan(lost.x);
+        expect(Math.abs(helped.x - lost.x)).toBeLessThan(1);
+        expect(helped.y).toBeGreaterThan(lost.y);
+        expect(Math.abs(resolved.x - reasons.x)).toBeLessThan(1);
+        // The live column is on the right; the log spans both.
+        expect(now.x).toBeGreaterThan(reasons.x + reasons.width - 1);
+        expect(log.width).toBeGreaterThan(now.x + now.width - lost.x - 2);
+        // About 1200px wide, at normal type.
+        expect(log.width).toBeLessThanOrEqual(1200);
+        expect(await page.locator("main").evaluate((el) => getComputedStyle(el).fontSize)).toBe("18px");
+      } else {
+        // One column: every block starts at the same left edge.
+        for (const b of [reasons, helped, resolved, now, log]) expect(Math.abs(b.x - lost.x)).toBeLessThan(1);
+      }
+      expect(await hasHorizontalScroll(page)).toBe(false);
       expect(w.problems).toEqual([]);
     } finally {
       await w.context.close();
@@ -308,19 +436,23 @@ it("live updates name the deck and slide the same way the server does", async ()
       await other.context.close();
     }
 
-    await expect.poll(() => lecturer.page.locator("#slide-label").textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ \(live\)$/);
-    await expect.poll(() => lecturer.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
-    await expect.poll(() => student.page.locator("#bars td", { hasText: "Week 6, slide 9" }).count(), { timeout: 3000 }).toBe(1);
+    await expect.poll(() => lecturer.page.locator("#slide-label").textContent(), { timeout: 3000 }).toMatch(/^Week 4 \u00b7 slide \d+ \(live\)$/);
+    await expect.poll(() => lecturer.page.locator("#bars td", { hasText: "Week 6 \u00b7 slide 9" }).count(), { timeout: 3000 }).toBe(1);
+    await expect.poll(() => student.page.locator("#bars td", { hasText: "Week 6 \u00b7 slide 9" }).count(), { timeout: 3000 }).toBe(1);
 
     // Browsing away drops "(live)", and the marker names the deck.
     const label = student.page.locator("#slide-label");
-    await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4, slide \d+ of 10 \(live\)$/);
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toMatch(/^Week 4 \u00b7 slide \d+ of 10 \(live\)$/);
     const live = Number((await label.textContent())!.match(/slide (\d+)/)![1]);
+    // On the live slide, the marker is the LIVE pill.
+    expect(await student.page.locator("#slide-bar").getAttribute("class")).toBe("slide-bar on-live");
     await student.page.keyboard.press(live > 1 ? "ArrowLeft" : "ArrowRight");
     const viewed = live > 1 ? live - 1 : live + 1;
-    await expect.poll(() => label.textContent()).toBe(`Week 4, slide ${viewed} of 10`);
+    await expect.poll(() => label.textContent()).toBe(`Week 4 \u00b7 slide ${viewed} of 10`);
+    // Off the live slide, the marker isn't the LIVE pill any more.
+    expect(await student.page.locator("#slide-bar").getAttribute("class")).toBe("slide-bar");
     expect(await student.page.locator("#live-marker").textContent()).toBe(
-      `You're on Week 4, slide ${viewed}. The lecture is on Week 4, slide ${live}.`,
+      `You're on Week 4 \u00b7 slide ${viewed}. The lecture is on Week 4 \u00b7 slide ${live}.`,
     );
 
     expect(student.problems).toEqual([]);

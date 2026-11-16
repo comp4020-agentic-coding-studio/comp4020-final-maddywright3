@@ -269,7 +269,7 @@ it("below min_present, no tap data (live count, total, or timeline) leaves the s
     body: "title=Privacy+check+lecture",
   });
   const createHtml = await createRes.text();
-  const lectureId = createHtml.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
   if (!lectureId || !code) throw new Error("couldn't parse the new lecture's id/code");
   // This lecture's min_present defaults to 5; one streaming browser plus one

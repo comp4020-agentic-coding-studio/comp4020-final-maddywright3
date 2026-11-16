@@ -52,6 +52,7 @@ import type { Bar } from "./realtime.ts";
 import {
   DECK_IDS,
   DECK_SHORT_NAMES,
+  DECK_SLIDE_SEPARATOR,
   DECK_TITLES,
   LIVE_DECK,
   currentSlideIndex,
@@ -81,7 +82,38 @@ const escapeHtml = (s: string): string =>
 // style="" attribute, so there is exactly one place the look lives.
 const STYLESHEET = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 
-const page = (title: string, bodyHtml: string, mainClass?: string): string => `<!doctype html>
+// The header on every page: the app name (home) and the main nav. Plain
+// links in a wrapping list, so it works without JS and folds onto a second
+// row at 390px instead of scrolling sideways. `current` marks the page the
+// visitor is on with aria-current, for a screen reader and for the style.
+type NavKey = "home" | "demo" | "lecturer" | "new" | "readme";
+const NAV_LINKS: { key: NavKey; href: string; label: string }[] = [
+  { key: "home", href: "/", label: "Home" },
+  { key: "demo", href: "/l/demo", label: "Join the demo" },
+  { key: "lecturer", href: "/l/demo/lecturer", label: "Lecturer view" },
+  { key: "new", href: "/new", label: "Create a lecture" },
+  { key: "readme", href: "/readme/", label: "How it works" },
+];
+
+function siteHeaderHtml(current?: NavKey): string {
+  const links = NAV_LINKS.map(
+    (link) =>
+      `<li><a href="${link.href}"${link.key === current ? ' aria-current="page"' : ""}>${escapeHtml(link.label)}</a></li>`,
+  ).join("\n");
+  return `<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+<div class="site-header-inner">
+<a class="site-name" href="/">Confusion meter</a>
+<nav class="site-nav" aria-label="Main">
+<ul>
+${links}
+</ul>
+</nav>
+</div>
+</header>`;
+}
+
+const page = (title: string, bodyHtml: string, mainClass?: string, current?: NavKey): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -90,7 +122,8 @@ const page = (title: string, bodyHtml: string, mainClass?: string): string => `<
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main${mainClass ? ` class="${mainClass}"` : ""}>
+${siteHeaderHtml(current)}
+<main id="main"${mainClass ? ` class="${mainClass}"` : ""}>
 ${bodyHtml}
 </main>
 </body>
@@ -148,13 +181,32 @@ function safeDecode(value: string): string | undefined {
   }
 }
 
+// Three ways in, one card each. The demo's code isn't shown here: CLAUDE.md
+// allows DEMO on the demo's own pages only, so the lecturer card links to
+// the demo's lecturer view, which is where the code is asked for.
 async function handleHome(): Promise<Response> {
   const body = `
     <h1>Confusion meter</h1>
-    <p>Tap "I'm lost" during a lecture, and the tap is saved so it's still there when anyone comes back.</p>
-    <p><a href="/l/demo">Try the demo lecture</a> &middot; <a href="/readme/">About this app</a> &middot; <a href="/new">Start a lecture</a></p>
+    <p class="lede">A button for the moment you stop following a lecture. Nobody sees who pressed it.</p>
+    <ul class="home-cards">
+      <li class="card home-card" id="home-student">
+        <h2>I'm a student</h2>
+        <p>Open the demo lecture and tap when you stop following.</p>
+        <p><a href="/l/demo" class="pill-link primary">Join the demo</a></p>
+      </li>
+      <li class="card home-card" id="home-lecturer">
+        <h2>I'm a lecturer</h2>
+        <p>See what the room sees, or start a lecture of your own.</p>
+        <p class="card-links"><a href="/l/demo/lecturer" class="pill-link">Open the demo lecturer view</a> <a href="/new">Create a lecture</a></p>
+      </li>
+      <li class="card home-card" id="home-how">
+        <h2>How it works</h2>
+        <p>What the meter counts, and what it never shows.</p>
+        <p><a href="/readme/" class="pill-link">Read how it works</a></p>
+      </li>
+    </ul>
   `;
-  return new Response(page("Confusion meter", body), {
+  return new Response(page("Confusion meter", body, "home", "home"), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
@@ -259,10 +311,11 @@ const GAUGE_CLIENT_JS = `
 // live update.
 const SLIDE_NAME_CLIENT_JS = `
         var deckShortNames = ${JSON.stringify(DECK_SHORT_NAMES)};
+        var deckSlideSeparator = ${JSON.stringify(DECK_SLIDE_SEPARATOR)};
         function slideName(deck, slide, options) {
           options = options || {};
           var short = deck ? deckShortNames[deck] : undefined;
-          var name = short ? short + ", slide " + slide : "Slide " + slide;
+          var name = short ? short + deckSlideSeparator + "slide " + slide : "Slide " + slide;
           var of = options.of !== undefined ? " of " + options.of : "";
           return name + of + (options.live ? " (live)" : "");
         }
@@ -541,6 +594,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // Layout containers only; the order in the markup is the phone order
   // (slide, gauge, the sticky tap bar, then reasons and the note below it).
   // style.css places the same blocks in two columns on a wide screen.
+  // The slide card's top row is the slide chip and the live marker; the
+  // row carries "on-live" while the viewer is on the live slide, which is
+  // what turns the marker into the LIVE pill (the script toggles it too).
+  const onLiveNow = viewedSlide === liveSlide;
   const body = `
     <div class="lecture-head">
       <h1>${escapeHtml(lecture.title)}</h1>
@@ -548,12 +605,14 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     </div>
     <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
       <div class="slide-col">
-        <div class="slide-bar">
-          ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
-          ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
+        <div class="slide-card">
+          <div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
+            ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
+            ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
+          </div>
+          ${slideSectionHtml(id, viewedDeck, viewedSlide)}
         </div>
-        ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
-        ${slideSectionHtml(id, viewedDeck, viewedSlide)}
+        ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
       </div>
       <div class="gauge-panel">
         ${gaugeHtml(state, lecture.min_present)}
@@ -598,6 +657,7 @@ ${SLIDE_NAME_CLIENT_JS}
         var connectionStatus = document.getElementById("connection-status");
 
         var liveMarker = document.getElementById("live-marker");
+        var slideBar = document.getElementById("slide-bar");
 
         // Kept separate: the deck/slide this browser is looking at (what a
         // tap records, what the arrows move), and the live slide of that
@@ -628,6 +688,7 @@ ${SLIDE_NAME_CLIENT_JS}
           if (label) {
             label.textContent = slideName(labelDeck, viewedSlide, { of: maxSlideFor(viewedDeck), live: onLive });
           }
+          if (slideBar) slideBar.classList.toggle("on-live", onLive);
           if (liveMarker) {
             liveMarker.textContent = onLive
               ? "Live"
@@ -1069,7 +1130,10 @@ ${SLIDE_NAME_CLIENT_JS}
     </script>
   `;
 
-  return new Response(page(lecture.title, body, "lecture"), { status: 200, headers });
+  return new Response(page(lecture.title, body, "lecture", id === "demo" ? "demo" : undefined), {
+    status: 200,
+    headers,
+  });
 }
 
 async function handleTap(id: string, req: Request): Promise<Response> {
@@ -1530,6 +1594,7 @@ function lecturerDashboard(
         notes: DashboardNote[];
       },
   minPresent: number,
+  projector = false,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
@@ -1549,35 +1614,81 @@ function lecturerDashboard(
       ? slideLabelHtml
       : `
     ${slideLabelHtml}
+    <div class="slide-controls">
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
     </form>
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/next" id="slide-next-form">
       <button type="submit">Next slide</button>
-    </form>`;
+    </form>
+    </div>`;
 
   const nowKey: SlideKey = { deck: id === "demo" ? LIVE_DECK : null, slide: state.slide };
   const isNow = onSlide(nowKey);
+  const lecturerUrl = `/l/${encodeURIComponent(id)}/lecturer`;
+  // A plain link, so it works without JS: ?projector=1 is rendered with
+  // larger type by the server, and the same link without it turns it off.
+  const projectorLinkHtml = projector
+    ? `<a href="${lecturerUrl}" id="projector-link" class="pill-link">Leave projector mode</a>`
+    : `<a href="${lecturerUrl}?projector=1" id="projector-link" class="pill-link">Projector mode</a>`;
 
+  // The layout shell: stat tiles across the top; below them the live
+  // column (the current slide and its notes) and a 2x2 grid of graph
+  // slots; the activity log full width at the bottom. The live column
+  // comes first in the markup, so a phone and a screen reader reach the
+  // current slide before the history; style.css puts it on the right on a
+  // wide screen. The graph slots and the activity log are headings over an
+  // empty body (.slot-body) for the graphs to fill; until they do, the bars
+  // and reason tables sit in the matching slot.
   return `
     <div class="lecturer-head">
       <h1>Lecturer view</h1>
-${slideControlsHtml}
+      ${projectorLinkHtml}
     </div>
-    <div class="lecturer-layout">
-      <div class="now-panel">
+    <section class="stat-tiles" aria-label="Right now">
+      <div class="card stat-tile tile-gauge">
+        <h2 class="tile-label">Lost right now</h2>
         ${gaugeHtml(state, minPresent)}
         <p id="connection-status" aria-live="polite"></p>
-${tapCountHtml}
-        <section id="now" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
       </div>
-      <div class="all-panel">
-        <h2>Every slide so far</h2>
-        <div id="bars">${barsHtml(state.bars)}</div>
-        <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
+      <div class="card stat-tile tile-taps">
+        <h2 class="tile-label">Taps this lecture</h2>
+        <p class="tile-wait">Shows once enough people are here</p>
+        <div id="tap-count-slot">${tapCountHtml}</div>
+      </div>
+      <div class="card stat-tile tile-slide">
+        <h2 class="tile-label">Live slide</h2>
+        ${slideControlsHtml}
+      </div>
+    </section>
+    <div class="lecturer-layout">
+      <div class="live-column">
+        <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
         <div id="other-notes">${notesHtml(id, state.notes.filter((n) => !isNow(n)))}</div>
       </div>
+      <div class="graph-grid">
+        <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
+          <h2 id="graph-lost-heading">Lost, per slide</h2>
+          <div class="slot-body"><div id="bars">${barsHtml(state.bars)}</div></div>
+        </section>
+        <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
+          <h2 id="graph-reasons-heading">What kind of lost</h2>
+          <div class="slot-body"><div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div></div>
+        </section>
+        <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
+          <h2 id="graph-helped-heading">What helped</h2>
+          <div class="slot-body"></div>
+        </section>
+        <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
+          <h2 id="graph-resolved-heading">Got it now</h2>
+          <div class="slot-body"></div>
+        </section>
+      </div>
     </div>
+    <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
+      <h2 id="activity-log-heading">Activity</h2>
+      <div class="slot-body"></div>
+    </section>
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -1859,13 +1970,13 @@ ${SLIDE_NAME_CLIENT_JS}
           // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
           renderGauge(state, minPresent);
-          var gauge = document.getElementById("gauge");
+          var tapCountSlot = document.getElementById("tap-count-slot");
           if (state.shown) {
             var tapCount = document.getElementById("tap-count");
             if (!tapCount) {
               tapCount = document.createElement("p");
               tapCount.id = "tap-count";
-              gauge.insertAdjacentElement("afterend", tapCount);
+              tapCountSlot.appendChild(tapCount);
             }
             setText(tapCount, "Total taps: " + state.totalTaps);
           } else {
@@ -1897,9 +2008,11 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
 
   const { headers } = ensureBrowserIdentity(req);
 
+  const navKey: NavKey | undefined = id === "demo" ? "lecturer" : undefined;
   if (!validateLecturerSession(id, req.headers.get("cookie"))) {
-    return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
+    return new Response(page("Lecturer view", lecturerLoginForm(id), undefined, navKey), { status: 200, headers });
   }
+  const projector = new URL(req.url).searchParams.get("projector") === "1";
 
   const state = computeLecturerState(id) ?? {
     present: 0,
@@ -1909,7 +2022,8 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
+  const mainClass = projector ? "lecturer projector" : "lecturer";
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present, projector), mainClass, navKey), {
     status: 200,
     headers,
   });
@@ -2004,7 +2118,7 @@ const LECTURE_TOTAL_CAP = 500;
 
 async function handleNewGet(req: Request): Promise<Response> {
   const { headers } = ensureBrowserIdentity(req);
-  return new Response(page("Start a lecture", newLectureForm()), { status: 200, headers });
+  return new Response(page("Start a lecture", newLectureForm(), undefined, "new"), { status: 200, headers });
 }
 
 async function handleNewPost(req: Request): Promise<Response> {
@@ -2058,7 +2172,7 @@ async function handleReadme(): Promise<Response> {
   const md = await readFile("README.md", "utf8");
   const html = await marked.parse(md);
   const body = `<div>${html}</div>`;
-  return new Response(page("About", body), {
+  return new Response(page("About", body, "readme", "readme"), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });

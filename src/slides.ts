@@ -12,14 +12,20 @@ export const DECK_TITLES: Record<DeckId, string> = {
 };
 
 // The deck's short human name, for wherever a slide is named to a person:
-// "Week 4, slide 6". The full title is for the deck menu.
+// "Week 4 &middot; slide 6". The full title is for the deck menu.
 export const DECK_SHORT_NAMES: Record<DeckId, string> = {
   "week-4": "Week 4",
   "week-6": "Week 6",
 };
 
+// Between the deck and the slide: a middle dot (&middot;, U+00B7), written
+// as an escape so the source stays ASCII, as in the slide card's chip
+// "Week 4 &middot; slide 3 of 9". SLIDE_NAME_CLIENT_JS in src/server.ts uses
+// this same constant, so a live update never names a slide differently.
+export const DECK_SLIDE_SEPARATOR = " \u00b7 ";
+
 export interface SlideNameOptions {
-  // The deck's slide count, for "Week 4, slide 6 of 10".
+  // The deck's slide count, for "Week 4 &middot; slide 6 of 10".
   of?: number;
   // Whether this is the live slide: adds "(live)".
   live?: boolean;
@@ -32,7 +38,7 @@ export interface SlideNameOptions {
 // how a slide is named.
 export function slideName(deck: string | null, slide: number, options: SlideNameOptions = {}): string {
   const short = deck !== null && isDeckId(deck) ? DECK_SHORT_NAMES[deck] : undefined;
-  const name = short !== undefined ? `${short}, slide ${slide}` : `Slide ${slide}`;
+  const name = short !== undefined ? `${short}${DECK_SLIDE_SEPARATOR}slide ${slide}` : `Slide ${slide}`;
   const of = options.of !== undefined ? ` of ${options.of}` : "";
   return `${name}${of}${options.live ? " (live)" : ""}`;
 }

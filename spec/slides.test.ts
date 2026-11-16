@@ -109,7 +109,7 @@ async function createLectureAndLogIn(title: string): Promise<NewLecture> {
     body: `title=${encodeURIComponent(title)}`,
   });
   const createHtml = await createRes.text();
-  const id = createHtml.match(/\/l\/([a-f0-9]+)/)?.[1];
+  const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
   const code = createHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
   if (!id || !code) throw new Error("couldn't parse the new lecture's id/code");
 
@@ -377,7 +377,7 @@ it(
       expect(visibleSlide(week4Html, "week-4")).toBe(2);
       expect(liveMarker(week4Html)).toBe("Live");
       expect(liveMarker(await demoPage("/l/demo?deck=week-4&slide=1", cookieB))).toBe(
-        "You're on Week 4, slide 1. The lecture is on Week 4, slide 2.",
+        "You're on Week 4 \u00b7 slide 1. The lecture is on Week 4 \u00b7 slide 2.",
       );
 
       // Nobody is watching week-6 yet: a page render shows its slide 1, and
@@ -428,7 +428,7 @@ it("the live marker says Live on an unwatched deck's slide 1, and where the lect
   const cookie = await newBrowserCookie("demo");
   expect(liveMarker(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Live");
   expect(liveMarker(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe(
-    "You're on Week 6, slide 3. The lecture is on Week 6, slide 1.",
+    "You're on Week 6 \u00b7 slide 3. The lecture is on Week 6 \u00b7 slide 1.",
   );
   // A created lecture has no clock of its own to be off, so no marker.
   const lecture = await createLectureAndLogIn("Live marker test");
@@ -669,8 +669,8 @@ async function tapReasonNote(lectureId: string, cookie: string, deck: string | n
 it("the demo's student page names the deck and slide, with (live) only on the live slide", async () => {
   const cookie = await newBrowserCookie("demo");
   // Nobody is watching week-6, so its live slide is 1.
-  expect(slideLabel(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Week 6, slide 1 of 9 (live)");
-  expect(slideLabel(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe("Week 6, slide 3 of 9");
+  expect(slideLabel(await demoPage("/l/demo?deck=week-6", cookie))).toBe("Week 6 \u00b7 slide 1 of 9 (live)");
+  expect(slideLabel(await demoPage("/l/demo?deck=week-6&slide=3", cookie))).toBe("Week 6 \u00b7 slide 3 of 9");
 });
 
 it("the demo's lecturer view names the deck on its current slide, bars, reasons and notes", async () => {
@@ -679,15 +679,15 @@ it("the demo's lecturer view names the deck on its current slide, bars, reasons 
     await tapReasonNote("demo", cookie, "week-6", 9, `deck naming note ${i}`);
   }
   const html = await demoPage("/l/demo/lecturer", await demoLecturerCookie());
-  expect(slideLabel(html)).toMatch(/^Week 4, slide \d+ \(live\)$/);
-  expect(html).toContain("<tr><td>Week 6, slide 9</td><td>");
-  expect(html).toContain("<tr><td>Week 6, slide 9</td><td>Notation</td><td>");
-  expect(html).toContain('<p class="note-slide">Week 6, slide 9</p>');
+  expect(slideLabel(html)).toMatch(/^Week 4 \u00b7 slide \d+ \(live\)$/);
+  expect(html).toContain("<tr><td>Week 6 \u00b7 slide 9</td><td>");
+  expect(html).toContain("<tr><td>Week 6 \u00b7 slide 9</td><td>Notation</td><td>");
+  expect(html).toContain('<p class="note-slide">Week 6 \u00b7 slide 9</p>');
   expect(html).not.toContain("week-6 / slide");
 
   // The student page's bars name the deck too.
   const studentHtml = await demoPage("/l/demo", cookies[0]);
-  expect(studentHtml).toContain("<tr><td>Week 6, slide 9</td><td>");
+  expect(studentHtml).toContain("<tr><td>Week 6 \u00b7 slide 9</td><td>");
 });
 
 it("a created lecture has no deck: its pages say Slide N, with (live) on the current slide", async () => {

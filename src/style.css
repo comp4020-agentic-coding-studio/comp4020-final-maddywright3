@@ -1,69 +1,85 @@
 /*
   The one stylesheet, served at /style.css and linked from every page.
 
-  Calm is the point (README: "It's calm"): a muted palette with one accent,
-  no red or warning colour anywhere (being lost is normal, not an alarm),
-  short transitions only and none at all under prefers-reduced-motion, and
-  numbers that change in place. Every text colour token below is checked
-  against every background token at >= 4.5:1, in both themes, by
-  spec/calm-ui.test.ts.
+  Calm but engaging (README: "It's calm"): warm paper, white cards, and a
+  small set of named colours, each with one job. Being lost is normal, not
+  an alarm, so it's violet, never red; nothing flashes, transitions are
+  short, and there are none at all under prefers-reduced-motion.
+
+  spec/calm-ui.test.ts reads the tokens below and checks, in both themes:
+  text at >= 4.5:1 on every background, --on-colour at >= 4.5:1 on every
+  filled button, graph marks at >= 3:1 on --surface and --paper, and the
+  gauge's --lost fill at >= 4.5:1 on its --line track.
 */
 
-/* ---------- Tokens ---------- */
+/* ---------- Tokens ----------
+   The colour names are shared with the graph markup, so they're exact.
+   Graphs take categories in this order: --lost, --accent, --clicked,
+   --sky, --fern, --clay (the .cat-1 to .cat-6 classes below). */
 
 :root {
   color-scheme: light dark;
 
   /* Colours: light */
-  --bg: #f6f5f1;
-  --surface: #ffffff;
-  --surface-2: #ebe8e1;
-  --text: #24221f;
-  --text-muted: #57534c;
-  --accent: #2e5873;
-  --on-accent: #ffffff;
-  /* The focus ring is the accent: one accent, visible in both themes. */
-  --focus: var(--accent);
-  --border: #d6d2c9;
-  --track: #dedad1;
-  --diagram-bg: #23211e;
+  --paper: #f6f1e7;
+  --surface: #fffdf8;
+  --ink: #1e2733;
+  --ink-muted: #5a6370;
+  --line: #e2dacb;
+  /* Eucalypt: links, focus, the Live marker. */
+  --accent: #2f6f5e;
+  /* Violet: the I'm lost button, the gauge, lost bars. */
+  --lost: #6a4bb5;
+  /* Wattle: "I get it now" and what helped. Darkened from #c98a12 (same
+     hue and saturation) so --on-colour text on it clears 4.5:1. */
+  --clicked: #9e6d0e;
+  --sky: #3b78b5;
+  --fern: #5e8c31;
+  --clay: #a0603a;
+  --on-colour: #ffffff;
+  --shadow: 0 1px 2px rgb(30 39 51 / 0.05), 0 4px 16px rgb(30 39 51 / 0.05);
 
-  /* Spacing */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.5rem;
-  --space-6: 2rem;
-  --space-7: 3rem;
+  /* Spacing: an 8px grid (--space-half is the one 4px step, for chips). */
+  --space-half: 0.25rem;
+  --space-1: 0.5rem;
+  --space-2: 1rem;
+  --space-3: 1.5rem;
+  --space-4: 2rem;
+  --space-5: 3rem;
 
   /* Type scale: fluid, never below 1rem for body text */
   --step-0: clamp(1rem, 0.96rem + 0.2vw, 1.125rem);
   --step-1: clamp(1.15rem, 1.07rem + 0.4vw, 1.375rem);
   --step-2: clamp(1.35rem, 1.2rem + 0.75vw, 1.75rem);
   --step-3: clamp(1.6rem, 1.35rem + 1.25vw, 2.25rem);
-  --small: 0.9375rem;
+  --small: 0.875rem;
 
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --measure: 65ch;
-  --radius: 0.5rem;
+  --wide: 75rem;
+  --radius: 14px;
+  --radius-small: 8px;
+  --pill: 999px;
   --tap-height: 3.5rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     /* Colours: dark */
-    --bg: #1a1c1e;
-    --surface: #232629;
-    --surface-2: #2d3134;
-    --text: #e9e7e2;
-    --text-muted: #b0aba2;
-    --accent: #93bad6;
-    --on-accent: #12181d;
-    --border: #3d4246;
-    --track: #393e42;
-    --diagram-bg: #23211e;
+    --paper: #12171e;
+    --surface: #1b222c;
+    --ink: #ece7dc;
+    --ink-muted: #a7afba;
+    --line: #2c3542;
+    --accent: #6cc3a6;
+    --lost: #a68df0;
+    --clicked: #e9b949;
+    --sky: #7fb2e5;
+    --fern: #9cc86a;
+    --clay: #d9956a;
+    --on-colour: #12171e;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.2);
   }
 }
 
@@ -99,18 +115,19 @@ html {
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--paper);
+  color: var(--ink);
   font-family: var(--font);
   font-size: var(--step-0);
   line-height: 1.55;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: break-word;
 }
 
 main {
   max-width: var(--measure);
   margin: 0 auto;
-  padding: var(--space-5) var(--space-4) var(--space-7);
+  padding: var(--space-3) var(--space-2) var(--space-5);
 }
 
 h1,
@@ -118,7 +135,7 @@ h2,
 h3 {
   line-height: 1.2;
   font-weight: 650;
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-2);
 }
 
 h1 {
@@ -127,7 +144,7 @@ h1 {
 
 h2 {
   font-size: var(--step-2);
-  margin-top: var(--space-6);
+  margin-top: var(--space-4);
 }
 
 h3 {
@@ -140,7 +157,7 @@ ol,
 table,
 pre,
 blockquote {
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-2);
 }
 
 p,
@@ -162,16 +179,17 @@ pre {
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: var(--surface-2);
-  color: var(--text);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-small);
 }
 
 blockquote {
-  border-left: 3px solid var(--border);
-  padding-left: var(--space-4);
-  color: var(--text-muted);
+  border-left: 3px solid var(--line);
+  padding-left: var(--space-2);
+  color: var(--ink-muted);
 }
 
 table {
@@ -181,8 +199,8 @@ table {
 
 th,
 td {
-  border-bottom: 1px solid var(--border);
-  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  padding: var(--space-1) var(--space-1);
   text-align: left;
   vertical-align: top;
   /* break-word doesn't shrink a cell's min-content width; anywhere does, so
@@ -191,13 +209,126 @@ td {
 }
 
 th {
-  font-weight: 600;
+  font-weight: 650;
+  font-size: var(--small);
+  color: var(--ink-muted);
 }
 
 /* Keyboard focus: always visible, in both themes. */
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* A card: --surface over --paper, a hairline and a very soft shadow. The
+   hairline is decoration (the surface and shadow already set a card
+   apart), so it's the quiet --line; anything you click has a border that
+   clears 3:1. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
+}
+
+.card > :first-child {
+  margin-top: 0;
+}
+
+.card > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Header ----------
+   The app name and the main nav. A wrapping row of links, so at 390px it
+   folds onto a second row with no script and no sideways scroll. */
+
+.skip-link {
+  position: absolute;
+  left: var(--space-1);
+  top: -10rem;
+  z-index: 10;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface);
+  color: var(--accent);
+  border-radius: var(--radius-small);
+}
+
+.skip-link:focus {
+  top: var(--space-1);
+}
+
+.site-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.site-header-inner {
+  max-width: var(--wide);
+  margin: 0 auto;
+  padding: var(--space-1) var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.site-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 2.75rem;
+  color: var(--ink);
+  font-weight: 650;
+  font-size: var(--step-1);
+  text-decoration: none;
+}
+
+/* A small violet dot: the meter's colour, before its name. */
+.site-name::before {
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: var(--pill);
+  background: var(--lost);
+}
+
+.site-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-half) var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.site-nav li {
+  max-width: none;
+}
+
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 var(--space-1);
+  border-radius: var(--pill);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: var(--small);
+}
+
+.site-nav a:hover {
+  text-decoration: underline;
+}
+
+.site-nav a[aria-current="page"] {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35em;
+  font-weight: 650;
 }
 
 /* ---------- Controls ---------- */
@@ -210,55 +341,81 @@ textarea {
   color: inherit;
 }
 
+/* A quiet pill outlined in eucalypt; the filled ones (I'm lost, I get it
+   now) are below. */
 button {
   min-height: 2.75rem;
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--pill);
   background: var(--surface);
-  color: var(--text);
+  color: var(--ink);
   cursor: pointer;
 }
 
 button:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--surface-2);
+  background: var(--paper);
 }
 
 button:disabled,
 button[aria-disabled="true"] {
   cursor: default;
-  background: var(--surface-2);
-  color: var(--text-muted);
+  border-color: var(--line);
+  background: var(--paper);
+  color: var(--ink-muted);
 }
 
 input:not([type="hidden"]),
 select,
 textarea {
   min-height: 2.75rem;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-1);
+  border: 1px solid var(--ink-muted);
+  border-radius: var(--radius-small);
   background: var(--surface);
-  color: var(--text);
+  color: var(--ink);
   max-width: 100%;
 }
 
 label {
   display: block;
-  font-weight: 600;
-  margin-bottom: var(--space-1);
+  font-weight: 650;
+  margin-bottom: var(--space-half);
 }
 
 form {
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-2);
+}
+
+/* A link that looks like a quiet button. */
+.pill-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--pill);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.pill-link:hover {
+  background: var(--paper);
+}
+
+.pill-link.primary {
+  background: var(--accent);
+  color: var(--on-colour);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   button,
   a {
     transition:
-      background-color 150ms ease,
-      color 150ms ease;
+      background-color 120ms ease,
+      color 120ms ease;
   }
 }
 
@@ -272,13 +429,13 @@ form {
   }
 }
 
-/* ---------- Simple pages: home, /readme/, /new, 404, login ---------- */
+/* ---------- Simple pages: /readme/, /new, 404, login ---------- */
 
 .inline-form {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: var(--space-2) var(--space-3);
+  gap: var(--space-1) var(--space-2);
 }
 
 .inline-form label {
@@ -290,15 +447,80 @@ form {
 }
 
 .form-error {
-  color: var(--text);
-  border-left: 3px solid var(--accent);
-  padding-left: var(--space-3);
+  color: var(--ink);
+  border-left: 3px solid var(--sky);
+  padding-left: var(--space-2);
+}
+
+main.readme > div {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
+}
+
+/* ---------- Home ---------- */
+
+main.home {
+  max-width: var(--wide);
+}
+
+.lede {
+  font-size: var(--step-1);
+  color: var(--ink-muted);
+}
+
+.home-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-3);
+  list-style: none;
+  padding: 0;
+  margin: var(--space-4) 0 0;
+}
+
+.home-card {
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 6px solid var(--line);
+}
+
+.home-card h2 {
+  margin-top: 0;
+}
+
+/* Each card's top edge carries its colour: decoration only, since the
+   heading says what the card is. */
+#home-student {
+  border-top-color: var(--lost);
+}
+
+#home-lecturer {
+  border-top-color: var(--accent);
+}
+
+#home-how {
+  border-top-color: var(--sky);
+}
+
+.home-card p:last-child {
+  margin-top: auto;
+  margin-bottom: 0;
+}
+
+.card-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
 }
 
 /* ---------- Student lecture page ---------- */
 
 main.lecture {
-  max-width: 90rem;
+  max-width: var(--wide);
 }
 
 .lecture-head {
@@ -306,8 +528,8 @@ main.lecture {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2) var(--space-5);
-  margin-bottom: var(--space-4);
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .lecture-head h1 {
@@ -317,14 +539,14 @@ main.lecture {
 #deck-form {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   margin: 0;
 }
 
 #deck-form label {
   margin: 0;
   font-weight: 400;
-  color: var(--text-muted);
+  color: var(--ink-muted);
 }
 
 #deck-form select {
@@ -336,36 +558,62 @@ main.lecture {
   min-width: 0;
 }
 
+/* The slide card: the slide chip and the live marker across the top, the
+   slide itself in large type below. */
+.slide-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
 .slide-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-4);
-  margin-bottom: var(--space-3);
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
+/* The chip: "Week 4 · slide 3 of 9". */
 #slide-label {
   margin: 0;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+  padding: var(--space-half) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--pill);
+  background: var(--paper);
+  color: var(--ink-muted);
+  font-size: var(--small);
 }
 
-/* The other half of the slide clock: "Live", or where you are against
-   where the lecture is. Quiet, but always readable. */
+/* The other half of the slide clock: where you are against where the
+   lecture is, in quiet text; on the live slide it's the LIVE pill. */
 #live-marker {
-  margin: 0 0 var(--space-3);
-  padding: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: var(--space-half) 0 var(--space-half) var(--space-1);
   border-left: 3px solid var(--accent);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  font-size: var(--small);
+}
+
+.slide-bar.on-live #live-marker {
+  padding: var(--space-half) var(--space-2);
+  border: none;
+  border-radius: var(--pill);
+  background: var(--accent);
+  color: var(--on-colour);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 #slide-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
 }
 
 #slide-nav a,
@@ -373,84 +621,96 @@ main.lecture {
   display: inline-flex;
   align-items: center;
   min-height: 2.75rem;
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--pill);
   background: var(--surface);
   text-decoration: none;
 }
 
 #slide-nav span[aria-disabled="true"] {
-  color: var(--text-muted);
-  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink-muted);
+  background: var(--paper);
 }
 
 #slides {
-  margin-bottom: var(--space-5);
+  margin-bottom: 0;
 }
 
 .slide {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-5) var(--space-5) var(--space-4);
+  font-size: var(--step-1);
 }
 
 .slide > :first-child {
   margin-top: 0;
 }
 
+.slide h1,
 .slide h2 {
   margin-top: 0;
+  font-size: var(--step-3);
+}
+
+.slide h3 {
+  font-size: var(--step-2);
 }
 
 .slide-credit {
   margin-top: var(--space-3);
-  color: var(--text-muted);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
   font-size: var(--small);
 }
 
 .slide-credit p {
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
-/* The gauge: a quiet horizontal bar with words beside it. No width is ever
-   set inline: the fill is an SVG <rect> whose width attribute is the
-   percentage, and it isn't rendered at all below min_present. */
+/* The gauge: the words, then a thick rounded track in --line with a --lost
+   fill. No width is ever set inline: the fill is an SVG <rect> whose width
+   attribute is the percentage, and it isn't rendered at all below
+   min_present. */
 .gauge-panel {
-  margin-bottom: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 #gauge {
   display: grid;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
 }
 
 .gauge-words {
   margin: 0;
   font-size: var(--step-1);
-  font-variant-numeric: tabular-nums;
+  font-weight: 650;
 }
 
 #gauge-present {
-  color: var(--text-muted);
+  color: var(--ink-muted);
 }
 
 svg.gauge-bar {
   display: block;
   width: 100%;
-  height: 0.625rem;
-  border-radius: 999px;
+  height: 1rem;
+  border-radius: var(--pill);
   overflow: hidden;
 }
 
 .gauge-track {
-  fill: var(--track);
+  fill: var(--line);
 }
 
 .gauge-fill {
-  fill: var(--accent);
+  fill: var(--lost);
 }
 
 #connection-status:empty {
@@ -462,7 +722,11 @@ svg.gauge-bar {
 #tap-hint,
 #tap-count,
 #your-count {
-  color: var(--text-muted);
+  color: var(--ink-muted);
+}
+
+#top-reason {
+  margin: var(--space-1) 0 0;
 }
 
 /* The tap bar. On a phone it sticks to the bottom of the screen, within
@@ -472,38 +736,55 @@ svg.gauge-bar {
   position: sticky;
   bottom: 0;
   z-index: 1;
-  margin: 0 calc(-1 * var(--space-4)) var(--space-4);
-  padding: var(--space-3) var(--space-4) max(var(--space-3), env(safe-area-inset-bottom));
-  background: var(--bg);
-  border-top: 1px solid var(--border);
+  margin: 0 calc(-1 * var(--space-2)) var(--space-2);
+  padding: var(--space-1) var(--space-2) max(var(--space-1), env(safe-area-inset-bottom));
+  background: var(--paper);
+  border-top: 1px solid var(--line);
 }
 
 .tap-bar form {
   margin: 0;
 }
 
+/* I'm lost: a full-width violet pill. */
 .tap-button {
   display: block;
   width: 100%;
   min-height: var(--tap-height);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-1) var(--space-2);
   font-size: var(--step-1);
-  font-weight: 600;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
+  font-weight: 650;
+  border: 2px solid var(--lost);
+  border-radius: var(--pill);
+  background: var(--lost);
+  color: var(--on-colour);
+  box-shadow: var(--shadow);
 }
 
 .tap-button:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--lost);
+  color: var(--on-colour);
 }
 
+/* Counted: the same pill, outlined, so it still reads as yours. */
 .tap-button:disabled,
 .tap-button[aria-disabled="true"] {
-  border-color: var(--border);
-  background: var(--surface-2);
-  color: var(--text-muted);
+  border-color: var(--lost);
+  background: var(--surface);
+  color: var(--lost);
+  box-shadow: none;
+}
+
+/* I get it now: wattle. */
+#resolve-form button {
+  border-color: var(--clicked);
+  background: var(--clicked);
+  color: var(--on-colour);
+  font-weight: 650;
+}
+
+#resolve-form button:hover {
+  background: var(--clicked);
 }
 
 .tap-status {
@@ -511,17 +792,16 @@ svg.gauge-bar {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2) var(--space-3);
+  gap: var(--space-1) var(--space-2);
 }
 
 .tap-status:has(> :not([hidden])) {
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
 }
 
 #tap-countdown {
   margin: 0;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
 }
 
 #tap-feedback:empty,
@@ -532,16 +812,16 @@ svg.gauge-bar {
 #reasons {
   border: none;
   padding: 0;
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-2);
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 #reasons legend {
-  font-weight: 600;
+  font-weight: 650;
   padding: 0;
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 #reasons .reason-form {
@@ -557,37 +837,134 @@ svg.gauge-bar {
 
 #note-hint,
 #note-counter {
-  color: var(--text-muted);
+  color: var(--ink-muted);
   font-size: var(--small);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 #note-counter {
-  margin-top: var(--space-1);
-  font-variant-numeric: tabular-nums;
+  margin-top: var(--space-half);
 }
 
-/* Bars per slide: an SVG chart with a table alternative. Its height is
-   capped so a single bar is a column, not a wall. */
+/* Bars per slide: an SVG chart with a table alternative, so every bar also
+   has a label. Its height is capped so a single bar is a column, not a
+   wall. */
 svg.bar-chart {
   display: block;
   width: 100%;
   height: clamp(7rem, 18vh, 11rem);
-  margin-bottom: var(--space-3);
-  color: var(--accent);
+  margin-bottom: var(--space-1);
+  color: var(--lost);
 }
 
 svg.bar-chart rect {
-  fill: var(--accent);
+  fill: var(--lost);
 }
 
 svg.bar-chart text {
-  fill: var(--text-muted);
+  fill: var(--ink-muted);
 }
 
-table.bars,
-table.reason-counts {
-  font-variant-numeric: tabular-nums;
+/* The graphs' categorical colours, in order. In SVG a mark takes the fill;
+   a legend swatch (.swatch) takes the background. Colour is never the only
+   signal: every mark also has a text label. */
+svg .cat-1 { fill: var(--lost); }
+svg .cat-2 { fill: var(--accent); }
+svg .cat-3 { fill: var(--clicked); }
+svg .cat-4 { fill: var(--sky); }
+svg .cat-5 { fill: var(--fern); }
+svg .cat-6 { fill: var(--clay); }
+
+.swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 3px;
+  vertical-align: baseline;
+}
+
+.swatch.cat-1 { background: var(--lost); }
+.swatch.cat-2 { background: var(--accent); }
+.swatch.cat-3 { background: var(--clicked); }
+.swatch.cat-4 { background: var(--sky); }
+.swatch.cat-5 { background: var(--fern); }
+.swatch.cat-6 { background: var(--clay); }
+
+/* Graph series, for the dashboard's SVG: .series-1 to .series-6 in the
+   categorical order, and two named series. Fill for areas and bars;
+   stroke for lines. */
+svg .series-1 { fill: var(--lost); stroke: var(--lost); }
+svg .series-2 { fill: var(--accent); stroke: var(--accent); }
+svg .series-3 { fill: var(--clicked); stroke: var(--clicked); }
+svg .series-4 { fill: var(--sky); stroke: var(--sky); }
+svg .series-5 { fill: var(--fern); stroke: var(--fern); }
+svg .series-6 { fill: var(--clay); stroke: var(--clay); }
+svg .series-lost { fill: var(--lost); stroke: var(--lost); }
+svg .series-resolved { fill: var(--clicked); stroke: var(--clicked); }
+
+/* A line series draws no fill. */
+svg path.series-1, svg path.series-2, svg path.series-3,
+svg path.series-4, svg path.series-5, svg path.series-6,
+svg path.series-lost, svg path.series-resolved,
+svg polyline[class*="series-"] {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Text labels inside a graph. */
+svg text {
+  fill: var(--ink-muted);
+}
+
+/* The timeline: a quiet segment per slide, shaded where enough people
+   were lost, an accent ring on the live slide and an ink ring on yours. */
+.timeline-segment {
+  fill: var(--line);
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+
+.timeline-segment.shaded {
+  fill: var(--lost);
+}
+
+.timeline-live {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.timeline-you {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+/* HTML timeline segments (links) take a background, not a fill. */
+a.timeline-segment,
+span.timeline-segment {
+  background: var(--line);
+}
+
+a.timeline-segment.shaded,
+span.timeline-segment.shaded {
+  background: var(--lost);
+}
+
+/* A fixed-list answer (what helped) that wasn't picked is dimmed; the one
+   picked stays in wattle. */
+.answer[aria-pressed="false"] {
+  color: var(--ink-muted);
+}
+
+.answer[aria-pressed="true"] {
+  border-color: var(--clicked);
+  background: var(--clicked);
+  color: var(--on-colour);
+  font-weight: 650;
 }
 
 /* Desktop: the slide on the left at about two thirds of the width; the
@@ -601,7 +978,7 @@ table.reason-counts {
       "slide gauge"
       "slide tap"
       "slide after";
-    column-gap: var(--space-7);
+    column-gap: var(--space-4);
     align-items: start;
   }
 
@@ -616,7 +993,7 @@ table.reason-counts {
   .tap-bar {
     grid-area: tap;
     position: static;
-    margin: 0 0 var(--space-5);
+    margin: 0 0 var(--space-3);
     padding: 0;
     border: none;
     background: none;
@@ -632,7 +1009,7 @@ table.reason-counts {
   }
 
   .lecture-layout.no-deck .tap-bar {
-    margin-bottom: var(--space-4);
+    margin-bottom: var(--space-2);
   }
 }
 
@@ -643,16 +1020,14 @@ table.reason-counts {
   }
 }
 
-/* ---------- Lecturer view: readable on a projector ---------- */
+/* ---------- Lecturer view ----------
+   Normal type and about 1200px wide: stat tiles across the top, the graph
+   slots in a 2x2 grid with the live slide and its notes on the right, and
+   the activity log full width at the bottom. One column on a phone.
+   Projector mode (?projector=1) scales the type 1.5x. */
 
 main.lecturer {
-  max-width: 100rem;
-  --step-0: clamp(1.25rem, 0.85rem + 1.1vw, 1.875rem);
-  --step-1: clamp(1.4rem, 0.95rem + 1.4vw, 2.25rem);
-  --step-2: clamp(1.6rem, 1rem + 1.8vw, 2.75rem);
-  --step-3: clamp(1.9rem, 1.2rem + 2.2vw, 3.25rem);
-  --small: var(--step-0);
-  font-size: var(--step-0);
+  max-width: var(--wide);
 }
 
 main.lecturer p,
@@ -660,49 +1035,140 @@ main.lecturer li {
   max-width: none;
 }
 
+main.lecturer.projector {
+  max-width: 112rem;
+  --step-0: clamp(1.5rem, 1.44rem + 0.3vw, 1.6875rem);
+  --step-1: clamp(1.725rem, 1.605rem + 0.6vw, 2.0625rem);
+  --step-2: clamp(2.025rem, 1.8rem + 1.125vw, 2.625rem);
+  --step-3: clamp(2.4rem, 2.025rem + 1.875vw, 3.375rem);
+  --small: 1.3125rem;
+  font-size: var(--step-0);
+}
+
 .lecturer-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3) var(--space-5);
-  margin-bottom: var(--space-5);
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
-.lecturer-head h1,
-.lecturer-head p,
-.lecturer-head form {
+.lecturer-head h1 {
   margin: 0;
 }
 
-.now-panel,
-.all-panel {
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.stat-tile {
+  padding: var(--space-2) var(--space-3);
   min-width: 0;
 }
 
-.now-panel h2:first-child,
-.all-panel h2:first-child {
-  margin-top: 0;
+.tile-label {
+  margin: 0 0 var(--space-1);
+  font-size: var(--small);
+  font-weight: 650;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-#now {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-5);
-  margin-top: var(--space-5);
+.stat-tile #gauge {
+  margin-bottom: 0;
 }
 
-#now h2 {
+.stat-tile #tap-count {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--step-2);
+  font-weight: 650;
+}
+
+.tile-taps .tile-wait {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.tile-taps:has(#tap-count) .tile-wait {
+  display: none;
+}
+
+/* In the tile the slide name is the stat itself, not a chip. */
+.tile-slide #slide-label {
+  margin: 0 0 var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-size: var(--step-1);
+  font-weight: 650;
+}
+
+.slide-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.slide-controls form {
+  margin: 0;
+}
+
+.lecturer-layout {
+  display: grid;
+  gap: var(--space-2);
+  align-items: start;
+  margin-bottom: var(--space-3);
+}
+
+.lecturer-layout > *,
+.graph-grid > * {
+  min-width: 0;
+}
+
+.graph-grid {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.graph-slot h2,
+#activity-log h2,
+#now h2,
+#notes h2 {
   margin-top: 0;
+  font-size: var(--step-1);
+}
+
+/* An empty slot keeps its shape, so the layout reads before its graph
+   arrives. */
+.slot-body:empty {
+  min-height: 6rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-small);
+}
+
+.live-column {
+  display: grid;
+  gap: var(--space-2);
+}
+
+#now h3 {
+  font-size: var(--step-0);
+  margin-top: var(--space-3);
 }
 
 #now-bar p {
   font-size: var(--step-1);
-  font-variant-numeric: tabular-nums;
 }
 
 #now-bar svg.gauge-bar {
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 #now-reasons {
@@ -710,12 +1176,23 @@ main.lecturer li {
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2) var(--space-5);
-  font-variant-numeric: tabular-nums;
+  gap: var(--space-1) var(--space-3);
 }
 
 #now-empty {
-  color: var(--text-muted);
+  color: var(--ink-muted);
+}
+
+#other-notes:empty {
+  display: none;
+}
+
+#notes {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
 }
 
 .notes-list {
@@ -729,20 +1206,20 @@ li.note {
   flex-wrap: wrap;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  border-top: 1px solid var(--border);
-  padding: var(--space-3) 0;
+  gap: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--line);
+  padding: var(--space-1) 0;
 }
 
 li.note .note-slide {
   flex-basis: 100%;
   margin: 0;
-  color: var(--text-muted);
+  color: var(--ink-muted);
   font-size: var(--small);
 }
 
 li.note .note-text {
-  flex: 1 1 16rem;
+  flex: 1 1 12rem;
   margin: 0;
 }
 
@@ -751,26 +1228,35 @@ li.note form {
 }
 
 #tap-count {
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
 }
 
-@media (min-width: 64rem) {
+@media (min-width: 60rem) {
   .lecturer-layout {
-    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+    grid-template-areas: "graphs live";
+    gap: var(--space-3);
+  }
+
+  .live-column {
+    grid-area: live;
+  }
+
+  .graph-grid {
+    grid-area: graphs;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-7);
-    align-items: start;
   }
 }
 
 /* ---------- Slide diagrams ----------
    Moved here from the slide markdown, where each was an inline <style>.
    They were drawn for a dark slide, so they keep a dark panel in both
-   themes; text.msg is lightened from #0085ad to clear 4.5:1 on it. */
+   themes (their own panel colour, not a palette token); text.msg is
+   lightened from #0085ad to clear 4.5:1 on it. */
 
 .diagram-skill-loading,
 .diagram-actions-run {
-  background: var(--diagram-bg);
+  background: #23211e;
   border-radius: var(--radius);
   padding: var(--space-3);
   margin-bottom: var(--space-4);

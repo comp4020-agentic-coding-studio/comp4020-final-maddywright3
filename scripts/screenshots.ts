@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Full-page screenshots of /l/demo and the demo lecturer view at 390x844 and
-// 1920x1080, for the Phase 5 before/after comparison of the calm UI:
+// Full-page screenshots of the home page, /l/demo and the demo lecturer view
+// at 390x844 and 1920x1080, for the Phase 5 before/after comparison of the calm UI:
 //
 //   APP_URL=http://localhost:8092 node scripts/screenshots.ts docs/screenshots/before
 //
@@ -288,6 +288,7 @@ async function main(): Promise<void> {
     );
 
     for (const viewport of VIEWPORTS) {
+      await capture(cdp, sessionId, "/", viewport, `home-${viewport.name}.png`);
       await capture(cdp, sessionId, "/l/demo", viewport, `demo-${viewport.name}.png`);
       await capture(cdp, sessionId, "/l/demo/lecturer", viewport, `lecturer-${viewport.name}.png`);
     }
