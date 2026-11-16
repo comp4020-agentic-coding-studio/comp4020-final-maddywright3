@@ -2119,12 +2119,13 @@ function nowSectionInnerHtml(
   bars: Bar[],
   reasonCounts: DashboardReasonCount[],
   notes: DashboardNote[],
+  minPresent: number,
 ): string {
   const bar = bars.find(onSlide(key));
   const maxCount = Math.max(1, ...bars.map((b) => b.distinctBrowsers));
   const barHtml = bar
-    ? `<p>${bar.distinctBrowsers} ${plural(bar.distinctBrowsers, "person has", "people have")} been lost on this slide</p>${quietBarHtml("now-bar-svg", bar.distinctBrowsers / maxCount)}`
-    : `<p id="now-empty">Not enough taps on this slide to show yet</p>`;
+    ? `<p>${bar.distinctBrowsers} ${plural(bar.distinctBrowsers, "person has", "people have")} said they were lost here</p>${quietBarHtml("now-bar-svg", bar.distinctBrowsers / maxCount)}`
+    : `<p id="now-empty">Shows once ${minPresent} people have said they were lost here.</p>`;
   const reasons = reasonCounts.filter(onSlide(key)).sort((a, b) => b.count - a.count);
   const reasonsHtml =
     reasons.length > 0
@@ -2135,7 +2136,7 @@ function nowSectionInnerHtml(
     slideNotes.length > 0
       ? `<h3 id="now-notes-heading">What didn't make sense</h3><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
       : "";
-  return `<h2 id="now-heading">On this slide</h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
+  return `<h2 id="now-heading">On the live slide: <span id="now-slide-name">${escapeHtml(slideName(key.deck, key.slide))}</span></h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
 }
 
 // A timed lecture has no Previous/Next: its clock moves the slides. Before
@@ -2223,7 +2224,7 @@ ${runControlsHtml(id, state.run)}
       </div>
       <div class="card stat-tile tile-taps">
         <h2 class="tile-label">Taps this lecture</h2>
-        <p class="tile-wait">Shows once enough people are here</p>
+        <p class="tile-wait" id="tap-count-wait"${state.shown ? " hidden" : ""}>Shows once ${minPresent} people are here</p>
         <div id="tap-count-slot">${tapCountHtml}</div>
       </div>
       <div class="card stat-tile tile-slide">
@@ -2234,7 +2235,7 @@ ${runControlsHtml(id, state.run)}
     </section>
     <div class="lecturer-layout">
       <div class="live-column">
-        <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
+        <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes, minPresent)}</section>
         <section id="notes" class="card" aria-labelledby="notes-heading">
           <h2 id="notes-heading">What didn't make sense, by slide</h2>
           ${notesFilterFormHtml(lecture, notesFilter)}
@@ -2338,6 +2339,8 @@ ${dashboardClientJs(notesFilter, minPresent)}
         function renderNow(state) {
           var now = document.getElementById("now");
           if (!now) return;
+          var nowName = document.getElementById("now-slide-name");
+          if (nowName) setText(nowName, slideName(nowDeck, state.slide));
           var barBox = document.getElementById("now-bar");
           var bar = null;
           var maxCount = 1;
@@ -2349,7 +2352,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
           var svg = document.getElementById("now-bar-svg");
           if (bar) {
             if (empty) empty.remove();
-            var text = bar.distinctBrowsers + " " + plural(bar.distinctBrowsers, "person has", "people have") + " been lost on this slide";
+            var text = bar.distinctBrowsers + " " + plural(bar.distinctBrowsers, "person has", "people have") + " said they were lost here";
             var p = barBox.querySelector("p");
             if (!p) {
               p = document.createElement("p");
@@ -2370,7 +2373,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
             if (!empty) {
               empty = document.createElement("p");
               empty.id = "now-empty";
-              empty.textContent = "Not enough taps on this slide to show yet";
+              empty.textContent = "Shows once " + minPresent + " people have said they were lost here.";
               barBox.appendChild(empty);
             }
           }
@@ -2427,6 +2430,8 @@ ${dashboardClientJs(notesFilter, minPresent)}
           // boundary crossing.
           renderGauge(state, minPresent);
           var tapCountSlot = document.getElementById("tap-count-slot");
+          var tapCountWait = document.getElementById("tap-count-wait");
+          if (tapCountWait) tapCountWait.hidden = !!state.shown;
           if (state.shown) {
             var tapCount = document.getElementById("tap-count");
             if (!tapCount) {

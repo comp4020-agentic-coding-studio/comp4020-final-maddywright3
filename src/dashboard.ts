@@ -8,9 +8,9 @@
 // The same functions render the first page and every live update: the
 // lecturer stream carries these fragments already rendered, so a live frame
 // can't format anything differently from the page it updates.
-import { distinctLostCount, resolvedTotals, slideResolvedCounts } from "./db.ts";
+import { distinctLostCount, highestSlideUsed, resolvedTotals, slideResolvedCounts } from "./db.ts";
 import type { HelpedCount, Lecture } from "./db.ts";
-import { DECK_IDS, DECK_SHORT_NAMES, DECK_TITLES, isDeckId, slideName } from "./slides.ts";
+import { DECK_IDS, DECK_SHORT_NAMES, DECK_TITLES, currentSlideIndex, deckSlideCount, isDeckId, slideName } from "./slides.ts";
 import type { Bar, NoteEntry, ReasonCountEntry } from "./realtime.ts";
 
 const escapeHtml = (s: string): string =>
@@ -466,10 +466,22 @@ export function notesFilterFormHtml(lecture: Lecture, filter: NotesFilter): stri
       : "";
   const showAll =
     filter.deck !== undefined || filter.slide !== undefined ? `<a href="${action}#notes" id="notes-filter-clear">Show every slide</a>` : "";
+  // Every slide the lecture has, not just the ones with notes: listing only
+  // those would show where the few notes below the threshold are.
+  const slideCount =
+    lecture.id === "demo"
+      ? Math.max(...DECK_IDS.map((d) => deckSlideCount(d)))
+      : (lecture.slide_count ?? Math.max(1, currentSlideIndex(lecture), highestSlideUsed(lecture.id)));
+  const slideOptions = Array.from({ length: slideCount }, (_, i) => i + 1)
+    .map((n) => `<option value="${n}"${filter.slide === n ? " selected" : ""}>Slide ${n}</option>`)
+    .join("");
   return `<form method="get" action="${action}" id="notes-filter" class="inline-form">
         ${deckField}
         <label for="notes-filter-slide">Slide</label>
-        <input id="notes-filter-slide" name="slide" type="number" min="1" inputmode="numeric" value="${filter.slide ?? ""}">
+        <select id="notes-filter-slide" name="slide">
+          <option value=""${filter.slide === undefined ? " selected" : ""}>Every slide</option>
+          ${slideOptions}
+        </select>
         <button type="submit">Show notes</button>
         ${showAll}
       </form>`;

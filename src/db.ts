@@ -703,6 +703,19 @@ export interface ResolvedTotals {
   stillLostBrowsers: number;
 }
 
+// The highest slide number this run has a tap or a note on: the notes
+// filter's dropdown on a lecture with no fixed slide count reaches this far.
+export function highestSlideUsed(lectureId: string, run: number = currentRun(lectureId)): number {
+  const row = db
+    .prepare(
+      `SELECT MAX(slide) AS top FROM (
+         SELECT slide FROM taps WHERE lecture_id = ? AND run_id = ? AND slide IS NOT NULL
+         UNION ALL SELECT slide FROM notes WHERE lecture_id = ? AND run_id = ?)`,
+    )
+    .get(lectureId, run, lectureId, run) as { top: number | null };
+  return row.top ?? 1;
+}
+
 export function resolvedTotals(lectureId: string, run: number = currentRun(lectureId)): ResolvedTotals {
   return db
     .prepare(

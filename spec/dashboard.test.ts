@@ -340,7 +340,8 @@ it("the notes filter works without JS: plain GET by deck and slide, grouped by s
   const filtered = section(await lecturerPage(lecture, "?slide=2"), "notes");
   expect(filtered.textContent).toContain("slide two note 0");
   expect(filtered.textContent).not.toContain("slide three note");
-  expect((filtered.querySelector('[name="slide"]') as HTMLInputElement).value).toBe("2");
+  // The slide filter is a dropdown of every slide; the chosen one stays selected.
+  expect(filtered.querySelector('select[name="slide"] option[selected]')!.getAttribute("value")).toBe("2");
 
   const none = section(await lecturerPage(lecture, "?slide=9"), "notes");
   expect(none.querySelectorAll(".note-group").length).toBe(0);

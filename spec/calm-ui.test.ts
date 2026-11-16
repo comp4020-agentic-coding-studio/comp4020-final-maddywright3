@@ -442,7 +442,7 @@ it("the lecturer view puts the current slide's bar and notes first, and projecto
 
   const now = doc.getElementById("now")!;
   expect(now).not.toBeNull();
-  expect(now.textContent).toContain("5 people have been lost on this slide");
+  expect(now.textContent).toContain("5 people have said they were lost here");
   expect(now.querySelector(".gauge-fill")).not.toBeNull();
   expect(now.textContent).toContain("current slide note 0");
   // #now comes before the every-slide history.
