@@ -598,10 +598,12 @@ function sendToLecturers(lectureId: string): void {
 }
 
 // How long to wait, from `now`, until a tap made at `createdAtMs` has left
-// its live window. Exported for spec/fade-timer.test.ts. Today's version
-// waits until the window's last millisecond, when the tap still counts.
+// its live window. The live check is created_at >= now - window, so the tap
+// still counts at exactly created_at + window; the timer fires 1 ms later,
+// once it doesn't. Firing at the boundary sent a "still live" frame and
+// re-armed with zero delay for the same tap (spec/fade-timer.test.ts).
 export function fadeDelayMs(createdAtMs: number, windowMs: number, now: number): number {
-  return Math.max(0, createdAtMs + windowMs - now);
+  return Math.max(0, createdAtMs + windowMs + 1 - now);
 }
 
 export function scheduleFade(lectureId: string): void {
