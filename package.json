@@ -11,7 +11,8 @@
     "check:evidence": "node scripts/check-evidence.ts",
     "test": "vitest run",
     "load": "node scripts/load-test.ts",
-    "persist": "node scripts/persistence-check.ts"
+    "persist": "node scripts/persistence-check.ts",
+    "try-it": "node scripts/try-it.ts"
   },
   "dependencies": {
     "marked": "^18.2.0"
