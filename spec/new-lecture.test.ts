@@ -136,3 +136,96 @@ it("the help link must be https and at most 300 characters", async () => {
   );
   await create({ title: "Good help", help_url: "https://example.org/help" });
 });
+
+// ---------- Pasted slides: escaped, no images, only web links ----------
+
+async function loginLecturer(lecture: Created): Promise<string> {
+  const cookie = await newBrowserCookie(lecture.id);
+  const res = await fetch(new URL(`/l/${lecture.id}/lecturer`, baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: `code=${lecture.code}`,
+    redirect: "manual",
+  });
+  const lsess = res.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("lsess="))
+    ?.split(";")[0];
+  if (!lsess) throw new Error("lecturer login failed");
+  return `${cookie}; ${lsess}`;
+}
+
+function slideSections(html: string): Element[] {
+  return [...new JSDOM(html).window.document.querySelectorAll("#slides .slide")];
+}
+
+const HOSTILE = [
+  "# Intro\n\n<script>alert('pasted')</script>\n\nHello <b onclick=\"x()\">there</b>",
+  "## Pictures\n\n![a diagram of the stack](https://example.org/diagram.png)\n\n<img src=\"https://example.org/x.png\">",
+  "## Links\n\n[bad](javascript:alert(1)) [data](data:text/html,hi) [relative](/l/demo) [good](https://example.org/notes)",
+].join("\n---\n");
+
+it("pasted slides show on the student page and the lecturer view, with HTML escaped", async () => {
+  const lecture = await create({ title: "Pasted slides", slides: "9", slides_text: HOSTILE });
+  const studentHtml = await getHtml(`/l/${lecture.id}`);
+
+  // The page's own scripts carry a nonce; the pasted one is text.
+  expect(studentHtml).not.toMatch(/<script>alert/);
+  expect(studentHtml).toContain("&lt;script&gt;alert(&#39;pasted&#39;)&lt;/script&gt;");
+  expect(studentHtml).not.toMatch(/<b onclick/);
+
+  const sections = slideSections(studentHtml);
+  // The pasted text's count (3) wins over the number field (9).
+  expect(sections).toHaveLength(3);
+  expect(sections[0].querySelector("h1")?.textContent).toBe("Intro");
+  expect(sections[0].hasAttribute("hidden")).toBe(false);
+  expect(sections[1].hasAttribute("hidden")).toBe(true);
+  expect(sections[0].querySelector("script, [onclick]")).toBeNull();
+
+  const lecturerHtml = await getHtml(`/l/${lecture.id}/lecturer`, await loginLecturer(lecture));
+  const lecturerSlides = slideSections(lecturerHtml);
+  expect(lecturerSlides).toHaveLength(3);
+  expect(lecturerSlides[0].querySelector("h1")?.textContent).toBe("Intro");
+  expect(lecturerHtml).not.toMatch(/<script>alert/);
+});
+
+it("an image in pasted slides loads nothing: no <img>, just its alt text", async () => {
+  const lecture = await create({ title: "Pasted images", slides_text: HOSTILE });
+  const html = await getHtml(`/l/${lecture.id}`);
+  const pictures = slideSections(html)[1];
+  expect(pictures.querySelector("img")).toBeNull();
+  expect(pictures.textContent).toContain("a diagram of the stack");
+  expect(html).not.toMatch(/<img/i);
+  expect(html).not.toContain('src="https://example.org');
+});
+
+it("only http and https links in pasted slides stay links", async () => {
+  const lecture = await create({ title: "Pasted links", slides_text: HOSTILE });
+  const links = slideSections(await getHtml(`/l/${lecture.id}`))[2];
+  const anchors = [...links.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")]);
+  expect(anchors).toEqual([["good", "https://example.org/notes"]]);
+  expect(links.textContent).toContain("bad");
+  expect(links.innerHTML).not.toMatch(/javascript:|data:text/);
+});
+
+it("pasted slides' count sets the lecture's slide count: Next stops at the last one", async () => {
+  const lecture = await create({ title: "Two pasted", slides: "40", slides_text: "One\n---\nTwo" });
+  const lecturerCookie = await loginLecturer(lecture);
+  for (let i = 0; i < 3; i++) {
+    await fetch(new URL(`/l/${lecture.id}/lecturer/slide/next`, baseUrl), {
+      method: "POST",
+      headers: { cookie: lecturerCookie },
+      redirect: "manual",
+    });
+  }
+  const doc = new JSDOM(await getHtml(`/l/${lecture.id}`)).window.document;
+  expect(doc.getElementById("slide-label")?.textContent).toBe("Slide 2 (live)");
+  expect(doc.querySelector("#slides .slide:not([hidden])")?.textContent?.trim()).toBe("Two");
+});
+
+it("a created lecture without slide text still shows just Slide N", async () => {
+  const lecture = await create({ title: "No slide text", slides: "5" });
+  const doc = new JSDOM(await getHtml(`/l/${lecture.id}`)).window.document;
+  expect(doc.getElementById("slides")).toBeNull();
+  expect(doc.getElementById("slide-label")?.textContent).toBe("Slide 1 (live)");
+});
