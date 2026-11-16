@@ -4,10 +4,10 @@ A confusion meter for lectures. Nobody sees who pressed it. Everybody sees how m
 
 ## Try it
 
-1. Open [/l/demo](/l/demo) in Chrome and in an incognito window. Each window is one person. It replays a COMP4020 lecture, condensed 12 times.
+1. Open [/l/demo](https://comp4020-final-maddywright3.fly.dev/l/demo) in Chrome and in an incognito window. Each window is one person. It replays a COMP4020 lecture, condensed 12 times.
 2. Press "I'm lost" in one. Both update within a second, and the tap counts for 20 seconds. Say why, or which part lost you. When it clicks, press "I get it now".
-3. Open [/l/demo/lecturer](/l/demo/lecturer) with the code DEMO. A slide's data shows once two people have tapped it.
-4. [Create your own lecture](/new). Real lectures wait for five people.
+3. Open [/l/demo/lecturer](https://comp4020-final-maddywright3.fly.dev/l/demo/lecturer) with the code DEMO. A slide's data shows once two people have tapped it.
+4. [Create your own lecture](https://comp4020-final-maddywright3.fly.dev/new). Real lectures wait for five people.
 
 ## Who it's for
 
