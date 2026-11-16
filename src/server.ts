@@ -14,6 +14,7 @@ import {
   liveTapOn,
   resolveTap,
   runsOf,
+  setHelpUrl,
   startRun,
   stepCurrentSlide,
   setNote,
@@ -38,6 +39,7 @@ import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
 import {
+  HELP_AFTER_SLIDES,
   LIVE_WINDOW_MS,
   addConnection,
   addLecturerConnection,
@@ -523,6 +525,15 @@ function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number
   `;
 }
 
+const HELP_OFFER_TEXT = "Want a hand with this?";
+const HELP_OFFER_LINK_TEXT = "Your lecturer offers help here.";
+
+// rel="noreferrer": following the link doesn't tell the other site which
+// lecture page the student came from.
+function helpOfferInnerHtml(url: string): string {
+  return `<p id="help-offer" class="help-offer">${HELP_OFFER_TEXT} <a href="${escapeHtml(url)}" rel="noreferrer">${HELP_OFFER_LINK_TEXT}</a></p>`;
+}
+
 async function handleLecture(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -588,6 +599,9 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   // not zeroed, just absent — since a hidden gauge still leaking the real
   // total in a sibling element would defeat the point of hiding it.
   const tapCountHtml = state.shown ? `<p id="tap-count">Total taps: ${state.totalTaps}</p>` : "";
+  // Only in this browser's own render, and only once it has said it's lost
+  // on HELP_AFTER_SLIDES slides in the current run (realtime.ts decides).
+  const helpOfferHtml = state.helpUrl !== undefined ? helpOfferInnerHtml(state.helpUrl) : "";
   const topReasonHtml =
     "topReason" in state && state.topReason !== undefined
       ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
@@ -624,6 +638,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         ${tapStatusHtml}
       </div>
       <div class="after-tap">
+        <div id="help-offer-slot" aria-live="polite">${helpOfferHtml}</div>
         ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
         ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
         <p id="tap-feedback" aria-live="polite"></p>
@@ -1031,9 +1046,34 @@ ${SLIDE_NAME_CLIENT_JS}
           } else if (topReasonEl) {
             topReasonEl.remove();
           }
+          renderHelpOffer(state.helpUrl);
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
           lastYourSlides = state.yourSlides || [];
           updateTapControls();
+        }
+
+        // This browser's own help offer: present in its frame only once it
+        // has said it's lost on enough slides in this run.
+        var helpOfferSlot = document.getElementById("help-offer-slot");
+        function renderHelpOffer(url) {
+          if (!helpOfferSlot) return;
+          var link = helpOfferSlot.querySelector("a");
+          if (!url) {
+            if (helpOfferSlot.firstChild) helpOfferSlot.textContent = "";
+            return;
+          }
+          if (link && link.getAttribute("href") === url) return;
+          var p = document.createElement("p");
+          p.id = "help-offer";
+          p.className = "help-offer";
+          p.appendChild(document.createTextNode(${JSON.stringify(HELP_OFFER_TEXT)} + " "));
+          var a = document.createElement("a");
+          a.href = url;
+          a.rel = "noreferrer";
+          a.textContent = ${JSON.stringify(HELP_OFFER_LINK_TEXT)};
+          p.appendChild(a);
+          helpOfferSlot.textContent = "";
+          helpOfferSlot.appendChild(p);
         }
 
         // The tap controls for the slide being viewed, from this browser's
@@ -2006,6 +2046,8 @@ ${SLIDE_NAME_CLIENT_JS}
 }
 
 const DEMO_RUN_MESSAGE = "The shared demo keeps its history. Create your own lecture to try a fresh run.";
+const DEMO_HELP_LINK_MESSAGE =
+  "The shared demo's help link is fixed, because its code is public. Create your own lecture to set one.";
 
 // The run picker and the fresh-run button, in their own block near the top
 // of the lecturer view (ADR 006 section 3). Plain links, so they work
@@ -2035,6 +2077,35 @@ function runControlsHtml(id: string, viewing: number): string {
       <h2 id="runs-heading">Runs</h2>
       <ul class="run-picker">${items}</ul>
       ${freshRun}
+    </section>
+${helpLinkSectionHtml(id)}`;
+}
+
+// The lecturer's help link, editable here (the demo's is fixed). Students
+// see it only on their own page, once they've said they're lost on
+// HELP_AFTER_SLIDES slides in the current run; nothing here says who.
+function helpLinkSectionHtml(id: string): string {
+  const lecture = getLecture(id);
+  const current = lecture?.help_url ?? null;
+  const explain = `<p>A student who says they're lost on ${HELP_AFTER_SLIDES} or more slides in this run sees this link on their own page. You never see who.</p>`;
+  if (id === "demo") {
+    return `
+    <section id="help-link" class="help-link" aria-labelledby="help-link-heading">
+      <h2 id="help-link-heading">Help link</h2>
+      ${explain}
+      <p id="help-url-current">${current ? escapeHtml(current) : "None"}</p>
+      <p>${escapeHtml(DEMO_HELP_LINK_MESSAGE)}</p>
+    </section>`;
+  }
+  return `
+    <section id="help-link" class="help-link" aria-labelledby="help-link-heading">
+      <h2 id="help-link-heading">Help link</h2>
+      ${explain}
+      <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/help-link" class="inline-form" id="help-link-form">
+        <label for="help-url">Where students can get help (https, leave empty for none)</label>
+        <input id="help-url" name="url" type="url" maxlength="${HELP_URL_MAX_LENGTH}" value="${current ? escapeHtml(current) : ""}" autocomplete="off">
+        <button type="submit">Save help link</button>
+      </form>
     </section>`;
 }
 
@@ -2153,6 +2224,59 @@ async function handleFreshRunPost(id: string, req: Request): Promise<Response> {
     broadcast(id);
   }
   return new Response(null, { status: 303, headers: { location: `/l/${encodeURIComponent(id)}/lecturer` } });
+}
+
+const HELP_URL_MAX_LENGTH = 300;
+
+// https only, at most 300 characters, as typed and as stored. Empty clears
+// it. Returns the URL to store, null for none, or an error message.
+function parseHelpUrl(raw: string): { url: string | null } | { error: string } {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { url: null };
+  if (trimmed.length > HELP_URL_MAX_LENGTH) return { error: `Help links are limited to ${HELP_URL_MAX_LENGTH} characters.` };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { error: "That isn't a web address. Use one starting with https://." };
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname === "") return { error: "Help links must start with https://." };
+  if (parsed.username !== "" || parsed.password !== "") return { error: "Help links can't contain a username or password." };
+  if (parsed.href.length > HELP_URL_MAX_LENGTH) return { error: `Help links are limited to ${HELP_URL_MAX_LENGTH} characters.` };
+  return { url: parsed.href };
+}
+
+async function handleHelpLinkPost(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!validateLecturerSession(id, cookieHeader)) {
+    logAction("help_url_rejected", id, browserId);
+    return forbiddenText();
+  }
+  if (id === "demo") {
+    logAction("help_url_rejected", id, browserId);
+    return demoRefusal("Help link", DEMO_HELP_LINK_MESSAGE);
+  }
+  const result = parseHelpUrl(new URLSearchParams(await req.text()).get("url") ?? "");
+  const base = `/l/${encodeURIComponent(id)}/lecturer`;
+  if ("error" in result) {
+    logAction("help_url_rejected", id, browserId);
+    return new Response(
+      page(
+        "Help link",
+        `<h1>Help link not saved</h1><p class="form-error">${escapeHtml(result.error)}</p><p><a href="${base}">Back to the lecturer view</a></p>`,
+      ),
+      { status: 400, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+  }
+  setHelpUrl(id, result.url);
+  logAction("help_url_set", id, browserId);
+  // Students who already qualify see the new link (or lose a cleared one)
+  // at once, each in their own frame.
+  broadcast(id);
+  return new Response(null, { status: 303, headers: { location: base } });
 }
 
 async function handleLecturerGet(id: string, req: Request): Promise<Response> {
@@ -2456,6 +2580,13 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(runsMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleFreshRunPost(id, req);
+  }
+
+  const helpLinkMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/help-link$/);
+  if (method === "POST" && helpLinkMatch) {
+    const id = safeDecode(helpLinkMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleHelpLinkPost(id, req);
   }
 
   const hideNoteMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/note\/(\d+)\/hide$/);

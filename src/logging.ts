@@ -19,7 +19,9 @@ export type LogAction =
   | "note_rejected"
   | "note_hidden"
   | "run_started"
-  | "run_start_rejected";
+  | "run_start_rejected"
+  | "help_url_set"
+  | "help_url_rejected";
 
 // `who` is never the raw browser ID: a real ID is hashed (one-way, so repeat
 // activity from the same browser still correlates in the logs); a missing
