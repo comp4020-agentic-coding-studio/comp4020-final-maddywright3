@@ -482,7 +482,7 @@ export function liveTapInfo(lectureId: string, sinceIso: string, run: number = c
   return row;
 }
 
-// One "I'm lost" per browser per slide, ever: a single INSERT that the
+// One "I'm lost" per browser per slide: a single INSERT that the
 // taps_one_per_slide index turns into a no-op when this browser has already
 // tapped this (lecture, run, deck, slide). Two requests at the same moment
 // can't both get in, because the index, not a prior SELECT, decides. ON
@@ -497,6 +497,26 @@ export function tapOncePerSlide(lectureId: string, browserId: string, deck: stri
        ON CONFLICT DO NOTHING`,
     )
     .run(lectureId, lectureId, new Date().toISOString(), browserId, deck, slide);
+  return result.changes > 0;
+}
+
+// Undoing "I get it now": "I'm lost" pressed again on a slide this browser
+// resolved reopens that same row. One UPDATE clears resolved_at and starts a
+// fresh live window (created_at = now). "AND resolved_at IS NOT NULL" in the
+// WHERE makes it atomic: ten presses at once reopen it once, and a tap that's
+// still open is left alone. reason and helped are untouched, since answers
+// lock once sent (ADR 006). No row is added, so yourTapCount, totalTaps and
+// the bars (distinct rows and browsers) don't change; only live counts this
+// browser again. Returns whether a row was reopened.
+export function reopenResolvedTap(lectureId: string, browserId: string, deck: string | null, slide: number): boolean {
+  const result = db
+    .prepare(
+      `UPDATE taps SET resolved_at = NULL, created_at = ?
+       WHERE lecture_id = ? AND run_id = (SELECT MAX(number) FROM runs WHERE lecture_id = ?)
+         AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+         AND legacy_duplicate = 0 AND resolved_at IS NOT NULL`,
+    )
+    .run(new Date().toISOString(), lectureId, lectureId, browserId, deck ?? "", slide);
   return result.changes > 0;
 }
 

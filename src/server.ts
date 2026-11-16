@@ -28,6 +28,7 @@ import {
   setNote,
   setTapReason,
   tapOncePerSlide,
+  reopenResolvedTap,
 } from "./db.ts";
 import type { Lecture, SlideRef, YourSlide } from "./db.ts";
 import {
@@ -675,15 +676,16 @@ function helpedHtml(lectureId: string, deck: DeckId | undefined, slide: number, 
     </div>`;
 }
 
-// What this browser has said about the slide it's looking at: nothing yet,
-// lost and still counted, or lost earlier (resolved, or past the live
-// window). One "I'm lost" per slide, ever, so once tapped a slide stays
-// tapped for this browser. Only ever computed from its own taps.
+// What the tap button says for the slide this browser is looking at:
+// "none" when it can press "I'm lost" (never tapped, or resolved with "I get
+// it now", which a press reopens), "live" while its tap is counted, "said"
+// when its open tap is past the live window. Only ever computed from its own
+// taps. The page script's viewedTapStatus mirrors this.
 type SlideTapStatus = "none" | "live" | "said";
 
 function slideTapStatus(yourSlides: YourSlide[], deck: string | null, slide: number): SlideTapStatus {
   const mine = yourSlides.find((s) => s.deck === deck && s.slide === slide);
-  if (mine === undefined) return "none";
+  if (mine === undefined || mine.resolved) return "none";
   return mine.live ? "live" : "said";
 }
 
@@ -776,8 +778,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     yourSlides: [] as YourSlide[],
   };
   // The tap controls follow the slide this browser is viewing: "I'm lost"
-  // on a slide it hasn't tapped, and on one it has, the button stays
-  // unavailable and says so. Reasons, the note and "I get it now" appear
+  // on a slide it hasn't tapped or has resolved (a press reopens that tap),
+  // and on one with an open tap, the button stays unavailable and says so. Reasons, the note and "I get it now" appear
   // while that slide's tap is live. The status line and "I get it now" are
   // always in the DOM (hidden when not needed), so a live update from
   // another tab has stable elements to change rather than building them.
@@ -1231,6 +1233,13 @@ ${SLIDE_NAME_CLIENT_JS}
             var set = pressed[i].closest("fieldset").id;
             chosenAnswers[set + ":" + viewedDeck + ":" + viewedSlide] = pressed[i].textContent;
           }
+          // A reason sent before "I get it now" isn't on a resolved slide's
+          // page, but reopening the tap brings the reasons back locked to
+          // it, so this page is told it too (its own page only; never a stream).
+          var own = ${JSON.stringify({ reasons: yourAnswers?.reason ?? null, helped: yourAnswers?.helped ?? null })};
+          for (var setId in own) {
+            if (own[setId] !== null) chosenAnswers[setId + ":" + viewedDeck + ":" + viewedSlide] = own[setId];
+          }
         })();
 
         // A sent answer locks at once, before the stream confirms it: the
@@ -1526,9 +1535,11 @@ ${SLIDE_NAME_CLIENT_JS}
           }
           return null;
         }
+        // Mirrors slideTapStatus on the server: a resolved tap offers
+        // "I'm lost" again, and pressing it reopens the same tap.
         function viewedTapStatus() {
           var mine = viewedMine();
-          if (!mine) return "none";
+          if (!mine || mine.resolved) return "none";
           return mine.live ? "live" : "said";
         }
         function updateTapControls() {
@@ -1694,11 +1705,20 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const inserted = tapOncePerSlide(id, browserId, submittedDeck ?? null, submittedSlide);
-  if (inserted) {
+  // First "I'm lost" on this slide inserts the one row. If the row is
+  // already there and resolved ("I get it now"), the same row is reopened
+  // instead: no second row, so yourTapCount and the bars don't stack, and
+  // live counts this browser again. Still open (counted) is a no-op. Each
+  // step is one statement, so presses landing at once can't double up.
+  const deckOrNull = submittedDeck ?? null;
+  if (tapOncePerSlide(id, browserId, deckOrNull, submittedSlide)) {
     broadcast(id);
     scheduleFade(id);
     logAction("tap", id, browserId);
+  } else if (reopenResolvedTap(id, browserId, deckOrNull, submittedSlide)) {
+    broadcast(id);
+    scheduleFade(id);
+    logAction("tap_reopened", id, browserId);
   } else {
     logAction("tap_ignored", id, browserId);
   }

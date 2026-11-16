@@ -4,6 +4,7 @@ export type LogAction =
   | "page_view"
   | "tap"
   | "tap_ignored"
+  | "tap_reopened"
   | "tap_rejected"
   | "stream_open"
   | "stream_close"
