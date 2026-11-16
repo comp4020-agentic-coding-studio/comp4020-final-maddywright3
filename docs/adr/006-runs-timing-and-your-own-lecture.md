@@ -1,6 +1,6 @@
 # ADR 006: Runs, timing, and your own lecture
 
-Status: proposed, 16 November 2026 (finishing stage)
+Status: accepted, 17 November 2026 (finishing stage). Built as written, with the amendments below.
 
 ## Context
 
@@ -82,4 +82,10 @@ In my hand test I wanted every lecture to run on time, but still to be mine to s
 
 ## Amendment, 16 November 2026: the activity log is a per-press trail
 
-The user replaced the grouped activity log (a line each time min_present more people did something on a slide) with a trail of every press: each "I'm lost", reason, "I get it now", what helped and note is its own line, newest first, with an AEST time, labelled only "Person N", numbered per run in order of first press. The label is never a browser ID or derived from one, never reaches a student, and note text never appears in it (CLAUDE.md, b35eaa3). The cost: the min_present guarantee no longer covers the log, so a lecturer watching the room can match Person N to someone by timing, and then read that person's later presses.
+The user replaced the grouped activity log (a line each time min_present more people did something on a slide) with a trail of presses: "I'm lost", a reason, "I get it now", what helped and a note each give a line, newest first, with an AEST time, labelled only "Person N", numbered per run in order of first press. The label is never a browser ID or derived from one, never reaches a student, and note text never appears in it (CLAUDE.md, b35eaa3). It shows each row's latest state rather than every press ever: "I'm lost" again after "I get it now" reopens the same tap and moves its time, a replaced note keeps one row, and a hidden note drops out. The cost: within a room big enough to see it, a lecturer watching can match Person N to someone by timing, and then read that person's later presses.
+
+## Amendment, 17 November 2026: the activity log waits for the room
+
+A consistency check found the per-press log broke README's "Safety in numbers": below min_present it reached the lecturer from the first tap, so a lecturer could count lines to recover the live count and total the threshold hides. The user chose to gate it like live and totalTaps ([`0085a6d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0085a6d)). Below min_present people present, activityLog is absent from the lecturer's page and stream, not emptied; the section says "The activity log shows once N people are here", and an open page clears its lines when the room drops below. A past run's trail follows its total's rule, since nobody is present in a past run: min_present here now and min_present who tapped in that run.
+
+What it costs: a small class, or a lecturer rehearsing alone, never sees the trail.
