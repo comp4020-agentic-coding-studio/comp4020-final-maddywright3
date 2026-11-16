@@ -335,13 +335,14 @@ async function demoLecturerCookie(): Promise<string> {
 
 // "Slide 1 on entry" (docs/prompts/finish.md): each demo deck's shared clock
 // starts when its first student stream opens, so nobody lands mid-lecture in
-// an empty room. Real timing — SLIDE_DURATION_MS is 40s, so one wait for
-// the first advance covers every scenario below in a single run:
+// an empty room. Real timing: week-4's first slide lasts 10 s (its
+// duration in slides/week-4.md, ADR 006), so one wait for the first
+// advance covers every scenario below in a single run:
 // - the first viewer of an empty deck gets slide 1;
 // - the slide change reaches an open stream on its own, with no tap or
 //   reload (the bug this once guarded alone: slides only updated when
 //   something else happened to cause a broadcast);
-// - a second viewer who joins after 40s gets the same slide as the first;
+// - a second viewer who joins after that gets the same slide as the first;
 // - watching one deck doesn't restart the other;
 // - a lecturer stream never counts as watching;
 // - after every viewer closes, the next one gets slide 1.
@@ -363,8 +364,12 @@ it(
       expect(first.deck).toBe("week-4");
       expect(first.slide).toBe(1);
 
-      const advanced = await a.waitFor((s) => s.slide !== 1, 41_000);
+      // Exactly the first slide's 10 s: not before (a lower bound the 40 s
+      // version never had), and within the same 1 s of slack as before.
+      const clockStarted = Date.now();
+      const advanced = await a.waitFor((s) => s.slide !== 1, 11_000);
       expect(advanced.slide).toBe(2);
+      expect(Date.now() - clockStarted).toBeGreaterThanOrEqual(9_900);
 
       // Joining a running deck lands on its current slide, not slide 1 —
       // on the stream and on a page render alike.
@@ -738,4 +743,26 @@ it("a created lecture's tap form sends no deck, and its taps are filed with no d
   } finally {
     await stream.close();
   }
+});
+
+// Condensed timing (ADR 006): each demo deck stands in for a 60-minute
+// lecture condensed 12x into 5 minutes, and says so beside its clock.
+function lectureTime(html: string): string | undefined {
+  return html.match(/<p id="lecture-time">([^<]*)<\/p>/)?.[1];
+}
+function condensedNote(html: string): string | undefined {
+  return html.match(/<p id="lecture-condensed">([^<]*)<\/p>/)?.[1];
+}
+
+it("the demo shows its lecture time out of 5:00, condensed 12x from 60 minutes", async () => {
+  const cookie = await newBrowserCookie("demo");
+  // Nobody is watching week-6, so its clock reads 0:00.
+  const html = await demoPage("/l/demo?deck=week-6", cookie);
+  expect(lectureTime(html)).toBe("Lecture time 0:00 / 5:00");
+  expect(condensedNote(html)).toBe("Condensed 12x from a 60-minute lecture (real time 0:00)");
+  // A created lecture has no fixed length, so no lecture time.
+  const lecture = await createLectureAndLogIn("No lecture time test");
+  const created = await demoPage(`/l/${lecture.id}`, lecture.cookie);
+  expect(lectureTime(created)).toBeUndefined();
+  expect(condensedNote(created)).toBeUndefined();
 });
