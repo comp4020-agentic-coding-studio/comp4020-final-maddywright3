@@ -229,3 +229,125 @@ it("a created lecture without slide text still shows just Slide N", async () => 
   expect(doc.getElementById("slides")).toBeNull();
   expect(doc.getElementById("slide-label")?.textContent).toBe("Slide 1 (live)");
 });
+
+// ---------- Timed lectures start on the lecturer's cue ----------
+
+interface Frame {
+  slide: number;
+}
+
+// The student stream's frames, read as they arrive.
+async function openStream(lectureId: string): Promise<{ next: (ms: number) => Promise<Frame>; close: () => void }> {
+  const cookie = await newBrowserCookie(lectureId);
+  const controller = new AbortController();
+  const res = await fetch(new URL(`/l/${lectureId}/events`, baseUrl), { signal: controller.signal, headers: { cookie } });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  async function next(ms: number): Promise<Frame> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const sep = buffer.indexOf("\n\n");
+      if (sep !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const data = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (data) return JSON.parse(data.slice(6)) as Frame;
+        continue;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`no frame within ${ms}ms`);
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`no frame within ${ms}ms`)), remaining)),
+      ]);
+      if (chunk.done) throw new Error("stream closed");
+      buffer += decoder.decode(chunk.value, { stream: true });
+    }
+  }
+  return { next, close: () => controller.abort() };
+}
+
+async function waitForSlide(stream: { next: (ms: number) => Promise<Frame> }, slide: number, ms: number): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const frame = await stream.next(Math.max(1, ms - (Date.now() - started)));
+    if (frame.slide === slide) return Date.now() - started;
+  }
+}
+
+function startLecture(lectureId: string, cookie?: string): Promise<Response> {
+  return fetch(new URL(`/l/${lectureId}/lecturer/start`, baseUrl), {
+    method: "POST",
+    headers: cookie ? { cookie } : {},
+    redirect: "manual",
+  });
+}
+
+async function liveSlideOnPage(lectureId: string): Promise<string | null | undefined> {
+  return new JSDOM(await getHtml(`/l/${lectureId}`)).window.document.getElementById("slide-label")?.textContent;
+}
+
+it("Start lecture needs the lecture's own lecturer session", async () => {
+  const lecture = await create({ title: "Start needs a session", slides: "10", pacing: "timed", minutes: "30" });
+  const other = await create({ title: "Someone else's", slides: "10", pacing: "timed", minutes: "30" });
+
+  expect((await startLecture(lecture.id)).status).toBe(403);
+  expect((await startLecture(lecture.id, await newBrowserCookie(lecture.id))).status).toBe(403);
+  expect((await startLecture(lecture.id, await loginLecturer(other))).status).toBe(403);
+  expect((await startLecture("demo", await newBrowserCookie("demo"))).status).toBe(403);
+
+  const ok = await startLecture(lecture.id, await loginLecturer(lecture));
+  expect(ok.status).toBe(303);
+  expect(ok.headers.get("location")).toBe(`/l/${lecture.id}/lecturer`);
+});
+
+it("the lecturer view of a timed lecture offers Start lecture, not Previous and Next", async () => {
+  const lecture = await create({ title: "Timed controls", slides: "10", pacing: "timed", minutes: "30" });
+  const cookie = await loginLecturer(lecture);
+  const before = new JSDOM(await getHtml(`/l/${lecture.id}/lecturer`, cookie)).window.document;
+  const startForm = before.querySelector(`form[action="/l/${lecture.id}/lecturer/start"]`);
+  expect(startForm?.textContent).toContain("Start lecture");
+  expect(before.getElementById("slide-next-form")).toBeNull();
+
+  // Pressing Next by hand doesn't move a timed lecture either.
+  const next = await fetch(new URL(`/l/${lecture.id}/lecturer/slide/next`, baseUrl), {
+    method: "POST",
+    headers: { cookie },
+    redirect: "manual",
+  });
+  expect(next.status).toBe(409);
+  expect(await liveSlideOnPage(lecture.id)).toBe("Slide 1 (live)");
+
+  await startLecture(lecture.id, cookie);
+  const after = new JSDOM(await getHtml(`/l/${lecture.id}/lecturer`, cookie)).window.document;
+  expect(after.querySelector(`form[action="/l/${lecture.id}/lecturer/start"]`)).toBeNull();
+  expect(after.getElementById("timed-status")?.textContent).toMatch(/started/i);
+});
+
+// The shortest legal timing: 5 minutes over 60 slides is 5 seconds a slide.
+it(
+  "a timed lecture stays on slide 1 until Start lecture, then moves on its clock",
+  async () => {
+    const lecture = await create({ title: "Timed clock", slides: "60", pacing: "timed", minutes: "5" });
+    const stream = await openStream(lecture.id);
+    try {
+      expect((await stream.next(1000)).slide).toBe(1);
+      // A student arriving doesn't start it: still slide 1 past a slide's length.
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      expect(await liveSlideOnPage(lecture.id)).toBe("Slide 1 (live)");
+
+      const started = await startLecture(lecture.id, await loginLecturer(lecture));
+      expect(started.status).toBe(303);
+      expect(await liveSlideOnPage(lecture.id)).toBe("Slide 1 (live)");
+
+      // The open stream is told on time, with nothing else happening.
+      const tookMs = await waitForSlide(stream, 2, 7000);
+      expect(tookMs).toBeGreaterThan(3500);
+      expect(await liveSlideOnPage(lecture.id)).toBe("Slide 2 (live)");
+    } finally {
+      stream.close();
+    }
+  },
+  20_000,
+);
