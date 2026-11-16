@@ -466,3 +466,22 @@ CLAUDE.md rules to add:
 When both branches are done: merge whichever finishes first, rebase the other, run
 pnpm check twice, and show me the merged diff before merging. Commit in small steps.
 Ask before pushing or deploying.
+
+## Final
+
+Final wrap-up. Save this message word for word to docs/prompts/finish.md under
+"## Final" (its own commit). Don't edit README.md, PROCESS.md, reflections/ or
+docs/feedback/finish.md. I'm writing those.
+
+PART 1, then stop and wait for me to say "docs done":
+1. Merge my-own-change into main with --no-ff so 3ea713b keeps its hash.
+2. Copy /tmp/consistency-report.md and /tmp/live-checks.md into docs/checks/,
+   unchanged except removing anything that contains note text. Its own commit.
+3. Make sure docs/walkthrough.md and docs/state.md match the merged code (WAL, the
+   50 ms throttle, the activity log gate, runs, I'm lost reopening a tap). Update if not.
+4. Mark ADR 006 accepted if the build matches it, and check every ADR's status line
+   is still true.
+5. Check CLAUDE.md agrees with the build: the Person N activity log rule, the 20 s demo
+   window, one I'm lost per slide that reopens rather than stacks. Trim anything stale,
+   keep every bracketed reason, and show me the diff before committing.
+6. Tell me the hashes of every commit from this part.
