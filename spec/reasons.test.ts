@@ -216,12 +216,13 @@ it("I get it now drops live by one within a second, and youAreCounted flips fals
   }
 });
 
-// One "I'm lost" per slide, ever: "I get it now" ends the tap's live status
-// but doesn't free the slide. This replaces the C10-era test that a fresh
-// tap inside the 60s window was accepted after resolving, which was right
-// for one live tap per browser and is the opposite of the rule now
-// (README: "One "I'm lost" per browser per slide").
-it("after I get it now, the same slide can't be tapped again, but another slide can", async () => {
+// One "I'm lost" per browser per slide, but a person can undo their own
+// "I get it now": after it, "I'm lost" is offered again on that slide, and
+// pressing it reopens the same tap rather than adding a second one. This
+// replaces the test that the same slide couldn't be tapped again after "I
+// get it now": the user changed the rule on purpose. The no-spam half still
+// holds: a reopen adds no row, so yourTapCount and the bars don't stack.
+it("after I get it now, the same slide reopens its tap rather than adding one, and another slide adds one", async () => {
   const cookie = await newBrowserCookie("demo");
   const post = (path: string, body: string) =>
     fetch(new URL(path, baseUrl), {
@@ -239,8 +240,11 @@ it("after I get it now, the same slide can't be tapped again, but another slide 
   const afterRetap = await SseStream.open("/l/demo/events", cookie);
   try {
     const state = await afterRetap.next();
-    expect(state.youAreCounted).toBe(false);
+    expect(state.youAreCounted).toBe(true);
     expect(state.yourTapCount).toBe(1);
+    expect(state.yourSlides).toEqual([
+      { deck: "week-4", slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    ]);
   } finally {
     await afterRetap.close();
   }
@@ -253,6 +257,142 @@ it("after I get it now, the same slide can't be tapped again, but another slide 
     expect(state.yourTapCount).toBe(2);
   } finally {
     await afterOther.close();
+  }
+});
+
+// The page, without JS, after "I get it now": the tap button is "I'm lost"
+// and available again, the "You've said you're lost" line, the reasons and
+// the note are gone, and what helped is asked.
+it("after I get it now the page offers I'm lost again, with no said-line, reasons or note, and asks what helped", async () => {
+  const cookie = await newBrowserCookie("demo");
+  await postForm("demo", cookie, "tap", { deck: "week-6", slide: "9" });
+  await postForm("demo", cookie, "resolve", { deck: "week-6", slide: "9" });
+  const html = await (await fetch(new URL("/l/demo?deck=week-6&slide=9", baseUrl), { headers: { cookie } })).text();
+  const doc = new JSDOM(html).window.document;
+  const button = doc.getElementById("tap-button")!;
+  expect(button.textContent).toBe("I'm lost");
+  expect(button.hasAttribute("disabled")).toBe(false);
+  expect(doc.getElementById("tap-said")!.hasAttribute("hidden")).toBe(true);
+  expect(doc.getElementById("reasons")).toBeNull();
+  expect(doc.getElementById("note-form")).toBeNull();
+  expect(doc.getElementById("resolve-form")!.hasAttribute("hidden")).toBe(true);
+  expect(doc.getElementById("glad-text")!.textContent).toBe("Glad you've got it now.");
+  expect(doc.querySelector("#helped legend")!.textContent).toBe("What helped your understanding?");
+});
+
+// Five people present on a lecture of its own, so live, totalTaps and the
+// slide's bar are all in the stream. One of them says "I get it now", then
+// taps the same slide again: live counts them again, and nothing else moves.
+async function fivePresentAllTapped(title: string) {
+  const lecture = await createLectureAndLogIn(title);
+  const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
+  const streams = await Promise.all(cookies.map((c) => SseStream.open(`/l/${lecture.id}/events`, c)));
+  await streams[0].waitFor((s) => s.shown && s.present === 5);
+  for (const cookie of cookies) await postForm(lecture.id, cookie, "tap", { slide: "1" });
+  const tapped = await streams[0].waitFor((s) => s.live === 5 && s.yourTapCount === 1);
+  expect(tapped.totalTaps).toBe(5);
+  expect(tapped.bars).toEqual([{ deck: null, slide: 1, distinctBrowsers: 5 }]);
+  await postForm(lecture.id, cookies[0], "resolve", { slide: "1" });
+  const resolved = await streams[0].waitFor((s) => s.live === 4 && !s.youAreCounted);
+  expect(resolved.yourSlides).toEqual([
+    { deck: null, slide: 1, live: false, resolved: true, answeredReason: false, answeredHelped: false },
+  ]);
+  return { lecture, cookies, streams };
+}
+
+it("I'm lost again after I get it now reopens the same tap: live counts you again, your count and the bar don't move", async () => {
+  const { lecture, cookies, streams } = await fivePresentAllTapped("Reopen test");
+  try {
+    const retap = await postForm(lecture.id, cookies[0], "tap", { slide: "1" });
+    expect(retap.status).toBe(303);
+    expect(retap.headers.get("location")).toBe(`/l/${lecture.id}?slide=1`);
+    const reopened = await streams[0].waitFor((s) => s.youAreCounted, 1000);
+    expect(reopened.live).toBe(5);
+    expect(reopened.yourTapCount).toBe(1);
+    expect(reopened.totalTaps).toBe(5);
+    expect(reopened.bars).toEqual([{ deck: null, slide: 1, distinctBrowsers: 5 }]);
+    expect(reopened.yourSlides).toEqual([
+      { deck: null, slide: 1, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    ]);
+
+    // The page agrees: counted, with "I get it now", the reasons and the note back.
+    const html = await (await fetch(new URL(`/l/${lecture.id}?slide=1`, baseUrl), { headers: { cookie: cookies[0] } })).text();
+    const doc = new JSDOM(html).window.document;
+    expect(doc.getElementById("tap-button")!.textContent).toBe("You're counted");
+    expect(doc.getElementById("tap-button")!.hasAttribute("disabled")).toBe(true);
+    expect(doc.getElementById("tap-said")!.hasAttribute("hidden")).toBe(false);
+    expect(doc.getElementById("resolve-form")!.hasAttribute("hidden")).toBe(false);
+    expect(doc.querySelectorAll("#reasons button").length).toBe(4);
+    expect(doc.getElementById("note-form")).not.toBeNull();
+    expect(doc.getElementById("helped")).toBeNull();
+
+    // A still-counted tap is a no-op, as before: nothing moves.
+    expect((await postForm(lecture.id, cookies[0], "tap", { slide: "1" })).status).toBe(303);
+    const own = await SseStream.open(`/l/${lecture.id}/events`, cookies[0]);
+    try {
+      const state = await own.next();
+      expect(state.live).toBe(5);
+      expect(state.totalTaps).toBe(5);
+      expect(state.yourTapCount).toBe(1);
+    } finally {
+      await own.close();
+    }
+  } finally {
+    for (const s of streams) await s.close();
+  }
+});
+
+// No spam through the undo: ten "I'm lost" presses at once on a resolved
+// slide reopen it once and add no rows.
+it("ten I'm lost presses at once on a resolved slide reopen it once and add no rows", async () => {
+  const { lecture, cookies, streams } = await fivePresentAllTapped("Reopen spam test");
+  try {
+    const results = await Promise.all(Array.from({ length: 10 }, () => postForm(lecture.id, cookies[0], "tap", { slide: "1" })));
+    expect(results.every((r) => r.status === 303)).toBe(true);
+    await streams[0].waitFor((s) => s.youAreCounted, 1000);
+    const own = await SseStream.open(`/l/${lecture.id}/events`, cookies[0]);
+    try {
+      const state = await own.next();
+      expect(state.live).toBe(5);
+      expect(state.totalTaps).toBe(5);
+      expect(state.yourTapCount).toBe(1);
+      expect(state.bars).toEqual([{ deck: null, slide: 1, distinctBrowsers: 5 }]);
+    } finally {
+      await own.close();
+    }
+  } finally {
+    for (const s of streams) await s.close();
+  }
+});
+
+// Answers lock once sent (ADR 006), and a reopen doesn't unlock them: the
+// reason chosen before "I get it now" is still chosen afterwards.
+it("a reason chosen before I get it now stays chosen and locked after the tap is reopened", async () => {
+  const cookie = await newBrowserCookie("demo");
+  await postForm("demo", cookie, "tap", { deck: "week-4", slide: "7" });
+  expect((await postForm("demo", cookie, "reason", { deck: "week-4", slide: "7", reason: "Notation" })).status).toBe(303);
+  await postForm("demo", cookie, "resolve", { deck: "week-4", slide: "7" });
+  expect((await postForm("demo", cookie, "tap", { deck: "week-4", slide: "7" })).status).toBe(303);
+
+  const html = await (await fetch(new URL("/l/demo?deck=week-4&slide=7", baseUrl), { headers: { cookie } })).text();
+  const doc = new JSDOM(html).window.document;
+  expect(doc.getElementById("tap-button")!.textContent).toBe("You're counted");
+  const buttons = [...doc.querySelectorAll("#reasons button")];
+  expect(buttons.map((b) => [b.textContent, b.getAttribute("aria-pressed"), b.hasAttribute("disabled")])).toEqual([
+    ["Too fast", "false", true],
+    ["Missed a step", "false", true],
+    ["Notation", "true", true],
+    ["Can't see or hear", "false", true],
+  ]);
+  expect((await postForm("demo", cookie, "reason", { deck: "week-4", slide: "7", reason: "Too fast" })).status).toBe(409);
+  const stream = await SseStream.open("/l/demo/events", cookie);
+  try {
+    const state = await stream.next();
+    expect(state.yourSlides).toEqual([
+      { deck: "week-4", slide: 7, live: true, resolved: false, answeredReason: true, answeredHelped: false },
+    ]);
+  } finally {
+    await stream.close();
   }
 });
 

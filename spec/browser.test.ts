@@ -349,14 +349,12 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       // reasons and note, so from Send it's back up the page.
       await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I get it now", 60, "Shift+Tab");
       await page.keyboard.press("Enter");
-      // One "I'm lost" per slide, ever: after "I get it now" this slide stays
-      // used for this browser, and the page says so rather than offering a
-      // tap the server would ignore.
+      // After "I get it now" the person can undo it: "I'm lost" is offered
+      // again on this slide (pressing it reopens the same tap; see below).
       const tapButton = page.locator("#tap-button");
-      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("Counted on this slide");
-      expect(await tapButton.getAttribute("aria-disabled")).toBe("true");
-      expect(await page.locator("#tap-said").textContent()).toBe("You've said you're lost on this slide.");
-      expect(await page.locator("#tap-said").isVisible()).toBe(true);
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("I'm lost");
+      expect(await tapButton.getAttribute("aria-disabled")).toBeNull();
+      expect(await page.locator("#tap-said").isVisible()).toBe(false);
       expect(await page.locator("#resolve-form").isVisible()).toBe(false);
       expect((await focusedIsVisible(page)).visible, "focus lost after I get it now").toBe(true);
 
@@ -371,6 +369,61 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       await page.keyboard.press("Enter");
       await expect.poll(() => label.textContent()).toBe(startLabel);
 
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 60_000);
+
+  // One "I'm lost" per slide, but undoable: after "I get it now", "I'm
+  // lost" reopens the same tap. All by keyboard, focus never dropped, and a
+  // reason chosen before stays chosen.
+  it("keyboard only: tap, reason, I get it now, then I'm lost again reopens the same tap", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo?deck=week-6&slide=2", baseUrl).toString());
+      const tapButton = page.locator("#tap-button");
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I'm lost");
+      await page.keyboard.press("Enter");
+      await page.locator("#reasons").waitFor();
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("You're counted");
+      expect((await focusedIsVisible(page)).visible, "focus lost after the tap").toBe(true);
+
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "Notation");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => page.locator("#reasons button.answer-chosen").textContent()).toBe("Notation");
+      expect((await focusedIsVisible(page)).visible, "focus lost after picking a reason").toBe(true);
+
+      await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I get it now", 60, "Shift+Tab");
+      await page.keyboard.press("Enter");
+      await page.locator("#helped").waitFor();
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("I'm lost");
+      expect(await tapButton.getAttribute("aria-disabled")).toBeNull();
+      expect(await page.locator("#tap-said").isVisible()).toBe(false);
+      expect(await page.locator("#reasons").count()).toBe(0);
+      expect(await page.locator("#note-form").count()).toBe(0);
+      expect(await page.locator("#glad-text").textContent()).toBe("Glad you've got it now.");
+      // Hiding "I get it now" hands focus to the tap button, now available.
+      const afterResolve = await focusedIsVisible(page);
+      expect(afterResolve.visible, "focus lost after I get it now").toBe(true);
+      expect(afterResolve.text).toBe("I'm lost");
+
+      await page.keyboard.press("Enter");
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("You're counted");
+      expect(await tapButton.getAttribute("aria-disabled")).toBe("true");
+      await page.locator("#reasons").waitFor();
+      await page.locator("#note-form").waitFor();
+      expect(await page.locator("#resolve-form").isVisible()).toBe(true);
+      expect(await page.locator("#tap-said").isVisible()).toBe(true);
+      expect(await page.locator("#helped").count()).toBe(0);
+      // The reason sent before is still chosen and locked.
+      expect(await page.locator("#reasons button.answer-chosen").textContent()).toBe("Notation");
+      expect(await page.locator("#reasons button[aria-disabled=true]").count()).toBe(4);
+      expect((await focusedIsVisible(page)).visible, "focus lost after I'm lost again").toBe(true);
+      // The same tap, reopened: still one in this browser's count.
+      expect(await yourTapCount(page)).toBe(1);
+      expect(await hasHorizontalScroll(page)).toBe(false);
       expect(w.problems).toEqual([]);
     } finally {
       await w.context.close();
