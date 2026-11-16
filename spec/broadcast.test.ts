@@ -116,13 +116,30 @@ it("a burst of 50 taps sends at most 2 updates per stream", async () => {
     const tappers = await Promise.all(Array.from({ length: 50 }, () => newBrowserCookie(lectureId)));
     const before = streams.map((s) => s.frames.length);
 
+    const sentAt = performance.now();
     await Promise.all(tappers.map((c) => tap(lectureId, c)));
+    const span = performance.now() - sentAt;
     await Promise.all(streams.map((s) => s.waitFor((st) => st.live === 50)));
     await sleep(WINDOW_MS * 4);
 
+    // The throttle promises one update per 50 ms window plus the leading
+    // edge. On an idle machine the 50 taps arrive within one window (2
+    // updates); under load they were measured spanning two (3 updates, live
+    // 1, 49, 50). So the allowance comes from the burst's own span, from the
+    // first tap sent to the last response. Without the throttle each stream
+    // got 50.
+    const windows = Math.ceil(span / WINDOW_MS);
+    const allowed = windows + 1;
+    expect(
+      allowed,
+      `the burst took ${Math.round(span)} ms (${windows} windows): too slow a machine for this test to mean anything`,
+    ).toBeLessThanOrEqual(5);
     for (const [i, s] of streams.entries()) {
       const burstFrames = s.frames.slice(before[i]);
-      expect(burstFrames.length, `stream ${i} got ${burstFrames.length} frames`).toBeLessThanOrEqual(2);
+      expect(
+        burstFrames.length,
+        `stream ${i} got ${burstFrames.length} updates for a burst of ${Math.round(span)} ms (${windows} windows)`,
+      ).toBeLessThanOrEqual(allowed);
       expect(burstFrames.at(-1)!.state.live).toBe(50);
     }
   } finally {
