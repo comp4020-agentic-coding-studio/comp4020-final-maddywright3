@@ -597,12 +597,18 @@ function sendToLecturers(lectureId: string): void {
   for (const res of set) res.write(payload);
 }
 
+// How long to wait, from `now`, until a tap made at `createdAtMs` has left
+// its live window. Exported for spec/fade-timer.test.ts. Today's version
+// waits until the window's last millisecond, when the tap still counts.
+export function fadeDelayMs(createdAtMs: number, windowMs: number, now: number): number {
+  return Math.max(0, createdAtMs + windowMs - now);
+}
+
 export function scheduleFade(lectureId: string): void {
   if (fadeTimers.has(lectureId)) return;
   const { earliest } = liveTapInfo(lectureId, new Date(Date.now() - liveWindowMs(lectureId)).toISOString());
   if (!earliest) return;
-  const fadesAt = new Date(earliest).getTime() + liveWindowMs(lectureId);
-  const delay = Math.max(0, fadesAt - Date.now());
+  const delay = fadeDelayMs(new Date(earliest).getTime(), liveWindowMs(lectureId), Date.now());
   const timer = setTimeout(() => {
     fadeTimers.delete(lectureId);
     broadcast(lectureId);

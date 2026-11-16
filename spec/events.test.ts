@@ -207,6 +207,69 @@ async function fadeAfterMs(lectureId: string, watchers: number, tapBody: string)
   }
 }
 
+// The fade timer used to fire at the exact last millisecond of a tap's
+// window, when the live check (created_at >= now - window) still counted
+// the tap. That fade frame said the tap was still live, and the timer
+// re-armed with zero delay; under load the throttle's trailing send that
+// should carry the faded state could be lost, so the fade never arrived
+// (measured: 27 zero-delay re-arms in one full run; CI failed on it). This
+// records every frame after the window ends: none may still count the tap.
+it(
+  "once a tap's window has ended, no frame still counts it as live",
+  async () => {
+    const createHtml = await (
+      await fetch(new URL("/new", baseUrl), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: await newBrowserCookie("demo") },
+        body: "title=Fade+boundary+test&slides=10&minutes=60",
+      })
+    ).text();
+    const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
+    if (!lectureId) throw new Error("couldn't parse the new lecture's id");
+    const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lectureId)));
+    const streams = await Promise.all(cookies.map((c) => SseStream.open(`/l/${lectureId}/events`, c)));
+    const stream = streams[0];
+    try {
+      await stream.waitFor((s) => s.shown && s.present === 5, 3000);
+      const tapRes = await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
+        method: "POST",
+        headers: { cookie: cookies[0], "content-type": "application/x-www-form-urlencoded" },
+        body: "slide=1",
+        redirect: "manual",
+      });
+      expect(tapRes.status).toBe(303);
+      const tappedAt = Date.now();
+      await stream.waitFor((s) => s.youAreCounted, 2000);
+
+      // Record every frame with its arrival time until 64 s after the tap.
+      const frames: { at: number; youAreCounted: boolean; live?: number }[] = [];
+      while (Date.now() - tappedAt < 64_000) {
+        const left = 64_000 - (Date.now() - tappedAt);
+        try {
+          const f = await stream.waitFor(() => true, Math.max(1, left));
+          frames.push({ at: Date.now() - tappedAt, youAreCounted: f.youAreCounted, live: f.live });
+        } catch {
+          break;
+        }
+      }
+      const fadeFrames = frames.filter((f) => !f.youAreCounted);
+      expect(fadeFrames.length, `frames around the fade: ${JSON.stringify(frames)}`).toBeGreaterThan(0);
+      // Every frame after the first faded one must also be faded, and no
+      // frame after the window may still count the tap.
+      const firstFade = frames.findIndex((f) => !f.youAreCounted);
+      expect(frames.slice(firstFade).every((f) => !f.youAreCounted), JSON.stringify(frames)).toBe(true);
+      // The frame the fade timer sends is the faded one: no frame within the
+      // last second of the window says "live" and is then followed by a
+      // second, faded frame a moment later (the zero-delay re-arm).
+      const liveAfter59 = frames.filter((f) => f.youAreCounted && f.at >= 59_500);
+      expect(liveAfter59, `a frame still counted the tap at the window's end: ${JSON.stringify(frames)}`).toEqual([]);
+    } finally {
+      for (const s of streams) await s.close();
+    }
+  },
+  90_000,
+);
+
 it(
   "a demo tap fades out of `live` 20 seconds after it was made",
   async () => {
