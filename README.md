@@ -1,4 +1,4 @@
-# Confusion meter
+# Hands Down
 
 A button for the moment you stop following a lecture. Nobody sees who pressed it. Everybody sees how many did.
 
