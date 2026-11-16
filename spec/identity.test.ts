@@ -123,28 +123,108 @@ it("two different browser cookies count as two present; two streams on the same 
   expect(updated.present).toBe(initial.present + 1);
 });
 
-it("a second tap within 60 seconds from the same browser doesn't change the count", async () => {
+// One "I'm lost" per browser per slide, ever (ADR 004's amendment, README
+// "What's enforced"). The previous version of this test read "Total taps"
+// from a page with nobody present, where the total isn't rendered, so both
+// counts were NaN and toBe(NaN) passed without checking anything. These read
+// the total from a stream while two other browsers keep demo above its
+// min_present of 2, and check each count is a real number.
+// The newest frame a watcher has seen, after `action`. An ignored tap
+// broadcasts nothing, so this drains whatever arrived and keeps the last
+// shown frame rather than waiting for one that may never come.
+const lastShown = new WeakMap<SseStream, MeterState>();
+async function demoTotalAfter(watcher: SseStream, action: () => Promise<unknown>): Promise<number> {
+  if (!lastShown.has(watcher)) lastShown.set(watcher, await watcher.waitFor((s) => s.shown));
+  await action();
+  // Let the throttled broadcast for this action land, then drain to the newest.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  for (;;) {
+    let frame: MeterState;
+    try {
+      frame = await watcher.next(100);
+    } catch {
+      break;
+    }
+    if (frame.shown) lastShown.set(watcher, frame);
+  }
+  const latest = lastShown.get(watcher)!;
+  expect(Number.isInteger(latest.totalTaps)).toBe(true);
+  return latest.totalTaps;
+}
+
+async function postTap(cookie: string, body: string): Promise<Response> {
+  return fetch(new URL("/l/demo/tap", baseUrl), {
+    method: "POST",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body,
+    redirect: "manual",
+  });
+}
+
+it("a second tap on the same slide from the same browser is ignored, however much later", async () => {
+  const watcher = await trackedStream("/l/demo/events", await newBrowserCookie("demo"));
+  await trackedStream("/l/demo/events", await newBrowserCookie("demo"));
   const cookie = await newBrowserCookie("demo");
-  const before = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
-  const beforeCount = Number(before.match(/Total taps: (\d+)/)?.[1]);
 
-  await fetch(new URL("/l/demo/tap", baseUrl), {
+  const before = await demoTotalAfter(watcher, async () => {});
+  const afterFirst = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-4&slide=3"));
+  expect(afterFirst).toBe(before + 1);
+  const afterSecond = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-4&slide=3"));
+  expect(afterSecond).toBe(afterFirst);
+
+  // After "I get it now" the slide is still used up for this browser.
+  await fetch(new URL("/l/demo/resolve", baseUrl), {
     method: "POST",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
+    body: "deck=week-4&slide=3",
   });
-  const afterFirst = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
-  const afterFirstCount = Number(afterFirst.match(/Total taps: (\d+)/)?.[1]);
-  expect(afterFirstCount).toBe(beforeCount + 1);
+  const afterResolveAndRetap = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-4&slide=3"));
+  expect(afterResolveAndRetap).toBe(afterFirst);
+});
 
-  await fetch(new URL("/l/demo/tap", baseUrl), {
-    method: "POST",
-    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: "deck=week-4&slide=1",
-  });
-  const afterSecond = await (await fetch(new URL("/l/demo", baseUrl), { headers: { cookie } })).text();
-  const afterSecondCount = Number(afterSecond.match(/Total taps: (\d+)/)?.[1]);
-  expect(afterSecondCount).toBe(afterFirstCount);
+it("a tap on another slide, or the same slide number in the other deck, counts exactly once more", async () => {
+  const watcher = await trackedStream("/l/demo/events", await newBrowserCookie("demo"));
+  await trackedStream("/l/demo/events", await newBrowserCookie("demo"));
+  const cookie = await newBrowserCookie("demo");
+
+  const before = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-4&slide=3"));
+  const anotherSlide = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-4&slide=4"));
+  expect(anotherSlide).toBe(before + 1);
+  const otherDeck = await demoTotalAfter(watcher, () => postTap(cookie, "deck=week-6&slide=3"));
+  expect(otherDeck).toBe(anotherSlide + 1);
+});
+
+it("a created lecture (no deck) also takes one tap per browser per slide", async () => {
+  // A created lecture's deck is NULL, and SQLite's unique indexes treat
+  // NULLs as distinct, so this is the case a plain index on deck would miss.
+  const createHtml = await (
+    await fetch(new URL("/new", baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "title=Null+deck+dedup+test",
+    })
+  ).text();
+  const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
+  if (!lectureId) throw new Error("couldn't parse the new lecture's id");
+  const cookie = await newBrowserCookie(lectureId);
+  const tapCreated = (slide: number) =>
+    fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `slide=${slide}`,
+      redirect: "manual",
+    });
+  await tapCreated(1);
+  await tapCreated(1);
+  await tapCreated(2);
+
+  const stream = await trackedStream(`/l/${lectureId}/events`, cookie);
+  const state = await stream.next();
+  expect(state.yourTapCount).toBe(2);
+  expect((state as unknown as { yourSlides: unknown[] }).yourSlides).toEqual([
+    { deck: null, slide: 1, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    { deck: null, slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+  ]);
 });
 
 it("a tap with no cookie, or a made-up cookie, is rejected", async () => {

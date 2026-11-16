@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -10,13 +11,17 @@ import {
   getLecture,
   hideNoteById,
   lectureCount,
-  liveTapFor,
+  liveTapOn,
   resolveTap,
+  resolvedTapOn,
+  setTapHelped,
+  yourAnswersOn,
   stepCurrentSlide,
   setNote,
   setTapReason,
-  tapIfNotRecentlyTapped,
+  tapOncePerSlide,
 } from "./db.ts";
+import type { Lecture, SlideRef, YourSlide } from "./db.ts";
 import {
   BROWSER_COOKIE,
   LECTURER_COOKIE,
@@ -34,7 +39,6 @@ import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
 import {
-  LIVE_WINDOW_MS,
   addConnection,
   addLecturerConnection,
   broadcast,
@@ -55,7 +59,12 @@ import {
   DECK_SLIDE_SEPARATOR,
   DECK_TITLES,
   LIVE_DECK,
+  CONDENSED_FACTOR,
+  clockText,
   currentSlideIndex,
+  deckLengthMs,
+  lectureElapsedMs,
+  liveWindowMs,
   deckCreditHtml,
   deckSlideCount,
   deckSlides,
@@ -113,7 +122,42 @@ ${links}
 </header>`;
 }
 
-const page = (title: string, bodyHtml: string, mainClass?: string, current?: NavKey): string => `<!doctype html>
+// The Content-Security-Policy every response carries (CLAUDE.md: never
+// weaken it). Scripts run only with this response's nonce, so an inline
+// script the server didn't write, or an on*="" attribute, never runs;
+// nothing loads from another site; no page can be framed. Styles fall under
+// default-src 'self', which /style.css satisfies: no page has inline styles.
+function contentSecurityPolicy(nonce: string): string {
+  return [
+    "default-src 'self'",
+    "img-src 'self'",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+  ].join("; ");
+}
+
+// One nonce per request, made in handleRequest and held here for the rest
+// of that request, so page() can stamp it on every inline script without
+// each handler passing it along. A page built outside a request (there are
+// none today) gets a fresh nonce that no header names, so its scripts
+// simply don't run rather than running unchecked.
+const requestNonce = new AsyncLocalStorage<string>();
+
+function currentNonce(): string {
+  return requestNonce.getStore() ?? randomBytes(16).toString("base64");
+}
+
+// Every inline <script> in a page gets this request's nonce, here in one
+// place, so a script added anywhere inside page() (this branch's or the
+// colour branch's) is covered without remembering to add it.
+function withNonce(html: string): string {
+  const nonce = currentNonce();
+  return html.replace(/<script>/g, `<script nonce="${nonce}">`);
+}
+
+const page = (title: string, bodyHtml: string, mainClass?: string, current?: NavKey): string => withNonce(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -127,7 +171,7 @@ ${siteHeaderHtml(current)}
 ${bodyHtml}
 </main>
 </body>
-</html>`;
+</html>`);
 
 const notFoundPage = (): string =>
   page("Not found", `<h1>Not found</h1><p>There's nothing here. <a href="/">Back home</a>.</p>`);
@@ -453,10 +497,28 @@ function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number
   `;
 }
 
+// The demo's condensed clock (ADR 006): how far into the deck's 5 minutes
+// the shared clock is, and what that would be in the 60-minute lecture it
+// stands in for. The page script ticks both each second between frames.
+function lectureTimeText(deck: DeckId, elapsedMs: number): string {
+  return `Lecture time ${clockText(elapsedMs)} / ${clockText(deckLengthMs(deck))}`;
+}
+
+function condensedText(elapsedMs: number): string {
+  return `Condensed ${CONDENSED_FACTOR}x from a 60-minute lecture (real time ${clockText(elapsedMs * CONDENSED_FACTOR)})`;
+}
+
+function lectureTimeHtml(deck: DeckId, elapsedMs: number): string {
+  return `<div class="lecture-clock">
+          <p id="lecture-time">${lectureTimeText(deck, elapsedMs)}</p>
+          <p id="lecture-condensed">${condensedText(elapsedMs)}</p>
+        </div>`;
+}
+
 // Says whether this viewer is on the live slide, or where the lecture is if
 // they've browsed away. Rendered here so it's right without JS; the script
 // rewrites the same text on browsing and on every stream frame. Plain text,
-// not aria-live: the clock moves every 40s, and announcing that each time
+// not aria-live: the clock moves every few seconds, and announcing that each time
 // would chatter.
 function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): string {
   return viewedSlide === liveSlide
@@ -464,48 +526,134 @@ function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): s
     : `You're on ${slideName(deck, viewedSlide)}. The lecture is on ${slideName(deck, liveSlide)}.`;
 }
 
+// The fixed list of reasons, checked on the server. A function so it can be
+// used above where REASONS is declared, at module load.
+function REASONS_LIST(): string[] {
+  return ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
+}
+
 // Reason buttons appear after tapping, while the caller's own tap is live.
 // A fixed list, checked server-side — no free text for students, per
 // CLAUDE.md. Each is a tiny one-field <form>, so it works with no JS as a
 // full page POST; the enhancement script intercepts submit to send it via
-// fetch instead, same pattern as the tap form. A reason can be changed
-// while live by just submitting a different one.
-function reasonButtonsHtml(lectureId: string, youAreCounted: boolean): string {
-  if (!youAreCounted) return "";
+// fetch instead, same pattern as the tap form. A reason locks once sent
+// (ADR 006); see answerButtonsHtml. Each form names the deck
+// and slide it's about: with one tap per slide, a browser can have live
+// taps on two slides at once.
+function slideFieldsHtml(deck: DeckId | undefined, slide: number): string {
+  const deckInput = deck !== undefined ? `<input type="hidden" name="deck" value="${deck}">` : "";
+  return `${deckInput}<input type="hidden" name="slide" value="${slide}">`;
+}
+
+// One button per answer on a fixed list, each its own one-field form so it
+// works without JS. Answers lock once sent (ADR 006): after one is chosen
+// it's marked aria-pressed="true" and class "answer-chosen", the others
+// "answer-other" (style.css dims those), and every button is disabled. The
+// page script builds the same markup (buildAnswersHtml) from the same
+// inputs, so the two can't drift apart.
+interface AnswerSet {
+  id: string;
+  legend: string;
+  path: string;
+  field: string;
+  formClass: string;
+  options: string[];
+}
+
+function answerButtonsHtml(
+  lectureId: string,
+  set: AnswerSet,
+  deck: DeckId | undefined,
+  slide: number,
+  chosen: string | null,
+  locked: boolean,
+): string {
   const base = `/l/${encodeURIComponent(lectureId)}`;
-  const buttons = REASONS.map(
-    (reason) => `<form method="post" action="${base}/reason" class="reason-form">
-      <input type="hidden" name="reason" value="${escapeHtml(reason)}">
-      <button type="submit">${escapeHtml(reason)}</button>
-    </form>`,
-  ).join("\n");
+  const buttons = set.options
+    .map((option) => {
+      const pressed = chosen === option;
+      const cls = chosen === null ? "answer" : pressed ? "answer answer-chosen" : "answer answer-other";
+      return `<form method="post" action="${base}${set.path}" class="${set.formClass}">
+      ${slideFieldsHtml(deck, slide)}
+      <input type="hidden" name="${set.field}" value="${escapeHtml(option)}">
+      <button type="submit" class="${cls}" aria-pressed="${pressed}"${locked ? " disabled" : ""}>${escapeHtml(option)}</button>
+    </form>`;
+    })
+    .join("\n");
   return `
-    <fieldset id="reasons">
-      <legend>What kind of lost?</legend>
+    <fieldset id="${set.id}">
+      <legend>${escapeHtml(set.legend)}</legend>
       ${buttons}
     </fieldset>
   `;
 }
 
-// The no-JS unlock time is computed once, server-side, as an absolute
-// instant ("You can tap again at 3:45pm") — a static page has no ticking
-// countdown to show, so there's no point sending a relative duration here.
-function unlockTimeLabel(liveForMs: number): string {
-  const unlockAt = new Date(Date.now() + liveForMs);
-  const formatter = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "Australia/Sydney",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `You can tap again at ${formatter.format(unlockAt)}`;
+const REASON_SET: AnswerSet = {
+  id: "reasons",
+  legend: "What kind of lost?",
+  path: "/reason",
+  field: "reason",
+  formClass: "reason-form",
+  options: REASONS_LIST(),
+};
+
+// Shown in place of the reasons once "I get it now" is pressed for the
+// slide being viewed: the reasons no longer apply, what helped does.
+const HELPED = ["The next slide", "Re-reading it", "The example", "Someone explained it", "Worked it out myself"];
+const GLAD_TEXT = "Glad you've got it now.";
+const HELPED_SET: AnswerSet = {
+  id: "helped",
+  legend: "What helped your understanding?",
+  path: "/helped",
+  field: "helped",
+  formClass: "helped-form",
+  options: HELPED,
+};
+
+function reasonButtonsHtml(
+  lectureId: string,
+  deck: DeckId | undefined,
+  slide: number,
+  live: boolean,
+  chosen: string | null,
+): string {
+  if (!live) return "";
+  return answerButtonsHtml(lectureId, REASON_SET, deck, slide, chosen, chosen !== null);
 }
+
+function helpedHtml(lectureId: string, deck: DeckId | undefined, slide: number, resolved: boolean, chosen: string | null): string {
+  if (!resolved) return "";
+  return `<div id="after-clicked">
+      <p id="glad-text">${GLAD_TEXT}</p>
+      ${answerButtonsHtml(lectureId, HELPED_SET, deck, slide, chosen, chosen !== null)}
+    </div>`;
+}
+
+// What this browser has said about the slide it's looking at: nothing yet,
+// lost and still counted, or lost earlier (resolved, or past the live
+// window). One "I'm lost" per slide, ever, so once tapped a slide stays
+// tapped for this browser. Only ever computed from its own taps.
+type SlideTapStatus = "none" | "live" | "said";
+
+function slideTapStatus(yourSlides: YourSlide[], deck: string | null, slide: number): SlideTapStatus {
+  const mine = yourSlides.find((s) => s.deck === deck && s.slide === slide);
+  if (mine === undefined) return "none";
+  return mine.live ? "live" : "said";
+}
+
+const TAP_BUTTON_TEXT: Record<SlideTapStatus, string> = {
+  none: "I'm lost",
+  live: "You're counted",
+  said: "Counted on this slide",
+};
+const SAID_ON_SLIDE = "You've said you're lost on this slide.";
 
 // The note field: optional, appears alongside the reason buttons while a
 // tap is live. "Only your lecturer sees this" is not just a UI claim —
 // MeterState never carries note text at all, so a student page has nothing
 // to leak even if this copy were wrong.
-function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number, youAreCounted: boolean): string {
-  if (!youAreCounted) return "";
+function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number, live: boolean): string {
+  if (!live) return "";
   const base = `/l/${encodeURIComponent(lectureId)}`;
   const deckInput = deck !== undefined ? `<input type="hidden" name="deck" value="${deck}">` : "";
   return `
@@ -560,24 +708,31 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     bars: [] as Bar[],
     yourTapCount: 0,
     youAreCounted: false,
+    yourSlides: [] as YourSlide[],
   };
-  // Without JS, the unlock instant is printed as static text ("You can tap
-  // again at 3:45pm") — a static page has no countdown to tick. With JS,
-  // the script below counts down locally from liveForMs instead. The
-  // countdown paragraph and "I get it now" form are always in the DOM
-  // (hidden when the tap isn't live), rather than created only when the
-  // page happens to render with youAreCounted already true — another tab's
-  // tap reaching this one over SSE needs stable elements to update, not
-  // ones it has to build from scratch mid-stream.
-  const youAreCountedNow = state.youAreCounted;
-  const liveForMsNow = "liveForMs" in state ? state.liveForMs : undefined;
-  // The countdown and "I get it now" sit beside the tap form, not inside it:
-  // a <form> nested in another is dropped by the HTML parser, which left
+  // The tap controls follow the slide this browser is viewing: "I'm lost"
+  // on a slide it hasn't tapped, and on one it has, the button stays
+  // unavailable and says so. Reasons, the note and "I get it now" appear
+  // while that slide's tap is live. The status line and "I get it now" are
+  // always in the DOM (hidden when not needed), so a live update from
+  // another tab has stable elements to change rather than building them.
+  const viewedDeckOrNull = id === "demo" ? viewedDeck : null;
+  const tapStatus = slideTapStatus(state.yourSlides, viewedDeckOrNull, viewedSlide);
+  const viewedLive = tapStatus === "live";
+  const viewedMine = state.yourSlides.find((s) => s.deck === viewedDeckOrNull && s.slide === viewedSlide);
+  const viewedResolved = viewedMine?.resolved ?? false;
+  // This browser's own answers on the viewed slide, to mark the chosen
+  // button pressed. Read for this page only; never put in a stream.
+  const yourAnswers =
+    viewedMine !== undefined ? yourAnswersOn(id, browserId, { deck: viewedDeckOrNull, slide: viewedSlide }) : undefined;
+  // The status line and "I get it now" sit beside the tap form, not inside
+  // it: a <form> nested in another is dropped by the HTML parser, which left
   // "I get it now" submitting a tap instead of resolving one.
-  const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${youAreCountedNow ? " disabled" : ""}>${youAreCountedNow ? "You're already counted" : "I'm lost"}</button>`;
+  const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${tapStatus === "none" ? "" : " disabled"}>${TAP_BUTTON_TEXT[tapStatus]}</button>`;
   const tapStatusHtml = `<div class="tap-status">
-        <p id="tap-countdown"${youAreCountedNow ? "" : " hidden"}>${liveForMsNow !== undefined ? escapeHtml(unlockTimeLabel(liveForMsNow)) : ""}</p>
-        <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${youAreCountedNow ? "" : " hidden"}>
+        <p id="tap-said"${tapStatus === "none" ? " hidden" : ""}>${SAID_ON_SLIDE}</p>
+        <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${viewedLive ? "" : " hidden"}>
+          ${slideFieldsHtml(id === "demo" ? viewedDeck : undefined, viewedSlide)}
           <button type="submit">I get it now</button>
         </form>
       </div>`;
@@ -612,6 +767,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           </div>
           ${slideSectionHtml(id, viewedDeck, viewedSlide)}
         </div>
+        ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
         ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
       </div>
       <div class="gauge-panel">
@@ -621,15 +777,16 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       </div>
       <div class="tap-bar">
         <form method="post" action="/l/${encodeURIComponent(id)}/tap" id="tap-form">
-          <input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">
+          ${id === "demo" ? `<input type="hidden" name="deck" id="deck-input" value="${viewedDeck}">` : ""}
           <input type="hidden" name="slide" id="slide-input" value="${viewedSlide}">
           ${buttonHtml}
         </form>
         ${tapStatusHtml}
       </div>
       <div class="after-tap">
-        ${reasonButtonsHtml(id, state.youAreCounted)}
-        ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, state.youAreCounted)}
+        ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive, yourAnswers?.reason ?? null)}
+        ${helpedHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedResolved, yourAnswers?.helped ?? null)}
+        ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
         <p id="tap-feedback" aria-live="polite"></p>
         ${tapCountHtml}
         <div id="bars">${barsHtml(state.bars)}</div>
@@ -643,6 +800,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var deckSlideCounts = ${JSON.stringify(
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
         )};
+        var deckLengths = ${JSON.stringify(
+          id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckLengthMs(d)])) : undefined,
+        )};
+        var condensedFactor = ${JSON.stringify(CONDENSED_FACTOR)};
 ${GAUGE_CLIENT_JS}
 ${SLIDE_NAME_CLIENT_JS}
         var form = document.getElementById("tap-form");
@@ -734,6 +895,7 @@ ${SLIDE_NAME_CLIENT_JS}
           }
           updateLiveState();
           attachNavHandlers();
+          updateTapControls();
         }
 
         function attachNavHandlers() {
@@ -786,6 +948,10 @@ ${SLIDE_NAME_CLIENT_JS}
           var active = document.activeElement;
           var tag = active && active.tagName;
           if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+          // A created lecture has no slides here to browse: its slide is the
+          // lecturer's, and the arrows mustn't quietly change what a tap
+          // records.
+          if (!isDemo) return;
           var maxSlide = maxSlideFor(viewedDeck);
           if (event.key === "ArrowLeft" && viewedSlide > 1) {
             landOnLive = false;
@@ -862,50 +1028,60 @@ ${SLIDE_NAME_CLIENT_JS}
           container.appendChild(table);
         }
 
-        var countdownTimer = null;
+        // Answers this browser chose, by "set:deck:slide", kept on this page
+        // only so the chosen button stays marked after a live update. The
+        // stream never carries the answer itself, only that one was sent.
+        var chosenAnswers = {};
+        // The server-rendered page already marks this browser's own choice.
+        (function () {
+          var pressed = document.querySelectorAll(".answer[aria-pressed=true]");
+          for (var i = 0; i < pressed.length; i++) {
+            var set = pressed[i].closest("fieldset").id;
+            chosenAnswers[set + ":" + viewedDeck + ":" + viewedSlide] = pressed[i].textContent;
+          }
+        })();
 
-        function stopCountdown() {
-          if (countdownTimer) {
-            clearInterval(countdownTimer);
-            countdownTimer = null;
+        // A sent answer locks at once, before the stream confirms it: the
+        // chosen button pressed, the rest dimmed, all of them unavailable.
+        // aria-disabled, not disabled, so the button a keyboard user just
+        // pressed keeps focus (the tap button does the same).
+        function lockAnswers(fieldset, chosen) {
+          var buttons = fieldset.querySelectorAll("button.answer");
+          for (var i = 0; i < buttons.length; i++) {
+            var isChosen = buttons[i].textContent === chosen;
+            buttons[i].className = "answer " + (isChosen ? "answer-chosen" : "answer-other");
+            buttons[i].setAttribute("aria-pressed", String(isChosen));
+            buttons[i].disabled = false;
+            buttons[i].setAttribute("aria-disabled", "true");
           }
         }
 
-        // Ticks down locally from the most recently received liveForMs,
-        // rather than diffing against the device clock — a wrong or skewed
-        // clock doesn't give a wrong countdown this way.
-        function startCountdown(liveForMs) {
-          stopCountdown();
-          var remainingMs = liveForMs;
-          var countdownEl = document.getElementById("tap-countdown");
-          function tick() {
-            if (!countdownEl) return;
-            var seconds = Math.max(0, Math.ceil(remainingMs / 1000));
-            var m = Math.floor(seconds / 60);
-            var s = seconds % 60;
-            countdownEl.textContent = "You can tap again in " + m + ":" + (s < 10 ? "0" : "") + s;
-            remainingMs -= 1000;
-            if (remainingMs < -1000) stopCountdown();
+        function attachAnswerHandlers(fieldset) {
+          if (!fieldset) return;
+          var disabled = fieldset.querySelectorAll("button.answer[disabled]");
+          for (var d = 0; d < disabled.length; d++) {
+            disabled[d].disabled = false;
+            disabled[d].setAttribute("aria-disabled", "true");
           }
-          tick();
-          countdownTimer = setInterval(tick, 1000);
-        }
-
-        function attachReasonHandlers() {
-          var forms = document.querySelectorAll(".reason-form");
+          var forms = fieldset.querySelectorAll("form");
           for (var i = 0; i < forms.length; i++) {
             forms[i].addEventListener("submit", function (event) {
               event.preventDefault();
-              var reasonForm = event.target;
-              var reasonInput = reasonForm.querySelector("input[name=reason]");
-              fetch(reasonForm.action, {
+              var answerForm = event.target;
+              var pressedButton = answerForm.querySelector("button.answer");
+              if (pressedButton.getAttribute("aria-disabled") === "true") return;
+              var chosen = pressedButton.textContent;
+              chosenAnswers[fieldset.id + ":" + viewedDeck + ":" + viewedSlide] = chosen;
+              lockAnswers(fieldset, chosen);
+              fetch(answerForm.action, {
                 method: "POST",
-                body: new URLSearchParams({ reason: reasonInput.value }),
+                body: new URLSearchParams(new FormData(answerForm)),
               }).catch(function () {});
             });
           }
         }
-        attachReasonHandlers();
+        attachAnswerHandlers(document.getElementById("reasons"));
+        attachAnswerHandlers(document.getElementById("helped"));
 
         function attachNoteHandlers() {
           var noteFormEl = document.getElementById("note-form");
@@ -936,26 +1112,40 @@ ${SLIDE_NAME_CLIENT_JS}
         }
 
         var tapBaseUrl = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
-        var reasonsList = ${JSON.stringify(REASONS)};
+        var answerSets = ${JSON.stringify({ reasons: REASON_SET, helped: HELPED_SET })};
+        var gladText = ${JSON.stringify(GLAD_TEXT)};
         var isDemo = ${JSON.stringify(id === "demo")};
 
-        function buildReasonsHtml() {
-          var html = '<fieldset id="reasons"><legend>What kind of lost?</legend>';
-          for (var i = 0; i < reasonsList.length; i++) {
-            var r = reasonsList[i];
-            html += '<form method="post" action="' + tapBaseUrl + '/reason" class="reason-form">'
-              + '<input type="hidden" name="reason" value="' + r + '">'
-              + '<button type="submit">' + r + '</button></form>';
+        // The deck and slide a reason, note or "I get it now" is about: the
+        // one being viewed when the form was built.
+        function slideFieldsHtml() {
+          return (isDemo ? '<input type="hidden" name="deck" value="' + viewedDeck + '">' : "")
+            + '<input type="hidden" name="slide" value="' + viewedSlide + '">';
+        }
+
+        function escapeText(text) {
+          return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+
+        // The same markup answerButtonsHtml renders on the server.
+        function buildAnswersHtml(set, chosen, locked) {
+          var html = '<fieldset id="' + set.id + '"><legend>' + escapeText(set.legend) + '</legend>';
+          for (var i = 0; i < set.options.length; i++) {
+            var option = set.options[i];
+            var pressed = chosen === option;
+            var cls = chosen === null ? "answer" : pressed ? "answer answer-chosen" : "answer answer-other";
+            html += '<form method="post" action="' + tapBaseUrl + set.path + '" class="' + set.formClass + '">'
+              + slideFieldsHtml()
+              + '<input type="hidden" name="' + set.field + '" value="' + escapeText(option) + '">'
+              + '<button type="submit" class="' + cls + '" aria-pressed="' + pressed + '"' + (locked ? " disabled" : "") + '>'
+              + escapeText(option) + '</button></form>';
           }
-          html += '</fieldset>';
-          return html;
+          return html + '</fieldset>';
         }
 
         function buildNoteFormHtml() {
-          var deckInputHtml = isDemo ? '<input type="hidden" name="deck" value="' + viewedDeck + '">' : "";
           return '<form method="post" action="' + tapBaseUrl + '/note" id="note-form">'
-            + deckInputHtml
-            + '<input type="hidden" name="slide" value="' + viewedSlide + '">'
+            + slideFieldsHtml()
             + '<label for="note-text">What part of this didn\\'t make sense?</label>'
             + '<p id="note-hint">Only your lecturer sees this, and only alongside other people\\'s notes.</p>'
             + '<textarea id="note-text" name="text" maxlength="200" placeholder="e.g. when the budget suddenly included the tool output"></textarea>'
@@ -965,41 +1155,78 @@ ${SLIDE_NAME_CLIENT_JS}
             + '</form>';
         }
 
-        // Builds the reason fieldset and note form fresh each time a tap
-        // goes live (another tab's tap reaching this one via SSE included,
-        // not just this tab's own submit) — removed entirely, not merely
-        // hidden, once the tap is no longer live, same discipline as every
-        // other gated-on-a-condition element on this page.
-        function renderReasonsAndNote(youAreCounted) {
-          var existingReasons = document.getElementById("reasons");
-          var existingNote = document.getElementById("note-form");
-          if (!youAreCounted) {
-            if (existingReasons) existingReasons.remove();
-            if (existingNote) existingNote.remove();
+        // What sits under the tap bar for the slide being viewed:
+        // - its tap is live: the reasons (locked once one is sent) and the note;
+        // - "I get it now" was pressed: "Glad you've got it now." and what
+        //   helped (locked once sent), the reasons gone;
+        // - otherwise nothing.
+        // Each part is rebuilt only when what it shows changes, so an
+        // unrelated live update never tears down a focused button.
+        var shownAnswers = {};
+        // The parts keep the same order as the server renders them, reasons
+        // then note then what helped, so the reading and Tab order never
+        // change: a part being rebuilt replaces itself in place, and a new
+        // one goes in after the parts that come before it.
+        var PART_ORDER = ["reasons", "note-form", "after-clicked"];
+        function placePart(id, html) {
+          var holder = document.createElement("div");
+          holder.innerHTML = html;
+          var el = holder.firstElementChild;
+          var existing = document.getElementById(id);
+          if (existing) {
+            existing.replaceWith(el);
+            return el;
+          }
+          var after = null;
+          for (var i = PART_ORDER.indexOf(id) - 1; i >= 0 && !after; i--) after = document.getElementById(PART_ORDER[i]);
+          if (after) after.insertAdjacentElement("afterend", el);
+          else feedback.insertAdjacentElement("beforebegin", el);
+          return el;
+        }
+        function renderAnswerSet(setId, show, answered, wrap) {
+          var partId = wrap || setId;
+          var key = show ? [viewedDeck, viewedSlide, answered].join(":") : null;
+          var existing = document.getElementById(partId);
+          if (shownAnswers[setId] === key && (existing !== null) === show) return;
+          var hadFocus = existing && existing.contains(document.activeElement);
+          shownAnswers[setId] = key;
+          if (!show) {
+            if (existing) existing.remove();
             return;
           }
-          if (!existingReasons) {
-            var wrapper = document.createElement("div");
-            wrapper.innerHTML = buildReasonsHtml();
-            feedback.insertAdjacentElement("beforebegin", wrapper.firstElementChild);
-            attachReasonHandlers();
+          var chosen = chosenAnswers[setId + ":" + viewedDeck + ":" + viewedSlide];
+          var setHtml = buildAnswersHtml(answerSets[setId], chosen === undefined ? null : chosen, answered);
+          var el = placePart(partId, wrap ? '<div id="' + wrap + '"><p id="glad-text">' + escapeText(gladText) + '</p>' + setHtml + '</div>' : setHtml);
+          attachAnswerHandlers(document.getElementById(setId));
+          if (hadFocus) {
+            var target = el.querySelector(".answer-chosen") || el.querySelector("button.answer");
+            if (target) target.focus();
           }
-          if (!existingNote) {
-            var noteWrapper = document.createElement("div");
-            noteWrapper.innerHTML = buildNoteFormHtml();
-            feedback.insertAdjacentElement("beforebegin", noteWrapper.firstElementChild);
+        }
+        var noteBuiltFor = null;
+        function renderReasonsAndNote(mine) {
+          var live = !!(mine && mine.live);
+          var resolved = !!(mine && mine.resolved);
+          renderAnswerSet("reasons", live, live && mine.answeredReason);
+          var existingNote = document.getElementById("note-form");
+          var key = viewedDeck + ":" + viewedSlide;
+          if (existingNote && (!live || noteBuiltFor !== key)) {
+            existingNote.remove();
+            existingNote = null;
+          }
+          if (live && !existingNote) {
+            noteBuiltFor = key;
+            placePart("note-form", buildNoteFormHtml());
             attachNoteHandlers();
           }
+          renderAnswerSet("helped", resolved, resolved && mine.answeredHelped, "after-clicked");
         }
 
         var resolveForm = document.getElementById("resolve-form");
         if (resolveForm) {
           resolveForm.addEventListener("submit", function (event) {
             event.preventDefault();
-            fetch(resolveForm.action, { method: "POST" })
-              .then(function () {
-                stopCountdown();
-              })
+            fetch(resolveForm.action, { method: "POST", body: new URLSearchParams(new FormData(resolveForm)) })
               .catch(function () {});
           });
         }
@@ -1011,8 +1238,15 @@ ${SLIDE_NAME_CLIENT_JS}
           // deck this page has since switched away from.
           if (!state.deck || state.deck === viewedDeck) {
             liveSlide = state.slide;
+            if (typeof state.lectureElapsedMs === "number") syncLectureClock(state.lectureElapsedMs);
             if (landOnLive && isDemo) {
               landOnLive = false;
+              showSlide(viewedDeck, liveSlide);
+            } else if (!isDemo && viewedSlide !== liveSlide) {
+              // A created lecture's slide is wherever the lecturer's Next or
+              // Previous left it, and there's nothing here to browse, so the
+              // page follows: the label, the slide a tap records, and the
+              // tap controls for that slide.
               showSlide(viewedDeck, liveSlide);
             }
             updateLiveState();
@@ -1047,36 +1281,88 @@ ${SLIDE_NAME_CLIENT_JS}
             topReasonEl.remove();
           }
           yourCount.textContent = "You've said you're lost " + state.yourTapCount + " time" + (state.yourTapCount === 1 ? "" : "s") + " in this lecture";
-          var countdownEl2 = document.getElementById("tap-countdown");
-          var resolveFormEl = document.getElementById("resolve-form");
-          if (state.youAreCounted) {
-            setTapEnabled(false);
-            button.textContent = "You're counted";
-            if (countdownEl2) countdownEl2.hidden = false;
-            if (resolveFormEl) resolveFormEl.hidden = false;
-            if (typeof state.liveForMs === "number") startCountdown(state.liveForMs);
-          } else {
-            setTapEnabled(true);
-            button.textContent = "I'm lost";
-            stopCountdown();
-            if (countdownEl2) {
-              countdownEl2.hidden = true;
-              countdownEl2.textContent = "";
-            }
-            if (resolveFormEl) {
-              // Hiding a focused control drops focus to <body>; hand it to
-              // the tap button, the next thing a keyboard user needs.
-              var hadFocus = resolveFormEl.contains(document.activeElement);
-              resolveFormEl.hidden = true;
-              if (hadFocus) button.focus();
-            }
-          }
-          var afterTap = document.querySelector(".after-tap");
-          var focusInAfterTap = !state.youAreCounted && afterTap && afterTap.contains(document.activeElement)
-            && (document.activeElement.closest("#reasons") || document.activeElement.closest("#note-form"));
-          renderReasonsAndNote(state.youAreCounted);
-          if (focusInAfterTap) button.focus();
+          lastYourSlides = state.yourSlides || [];
+          updateTapControls();
         }
+
+        // The tap controls for the slide being viewed, from this browser's
+        // own taps (the latest frame's yourSlides). Called on every frame and
+        // on every change of slide, so browsing to a slide shows whether
+        // you've already said you're lost on it.
+        var lastYourSlides = ${JSON.stringify(state.yourSlides)};
+        var tapButtonText = ${JSON.stringify(TAP_BUTTON_TEXT)};
+        function viewedMine() {
+          var deck = isDemo ? viewedDeck : null;
+          for (var i = 0; i < lastYourSlides.length; i++) {
+            var mine = lastYourSlides[i];
+            if ((mine.deck || null) === deck && mine.slide === viewedSlide) return mine;
+          }
+          return null;
+        }
+        function viewedTapStatus() {
+          var mine = viewedMine();
+          if (!mine) return "none";
+          return mine.live ? "live" : "said";
+        }
+        function updateTapControls() {
+          if (!button || !resolveForm) return;
+          var status = viewedTapStatus();
+          if (button.textContent !== "Sending...") {
+            setTapEnabled(status === "none");
+            button.textContent = tapButtonText[status];
+          }
+          var said = document.getElementById("tap-said");
+          if (said) said.hidden = status === "none";
+          var deckField = resolveForm.querySelector("input[name=deck]");
+          if (deckField) deckField.value = viewedDeck;
+          var slideField = resolveForm.querySelector("input[name=slide]");
+          if (slideField) slideField.value = String(viewedSlide);
+          if (status === "live") {
+            resolveForm.hidden = false;
+          } else if (!resolveForm.hidden) {
+            // Hiding a focused control drops focus to <body>; hand it to
+            // the tap button, the next thing a keyboard user needs.
+            var hadFocus = resolveForm.contains(document.activeElement);
+            resolveForm.hidden = true;
+            if (hadFocus) button.focus();
+          }
+          var mine = viewedMine();
+          var afterTap = document.querySelector(".after-tap");
+          var focusInAfterTap = status !== "live" && afterTap && afterTap.contains(document.activeElement)
+            && (document.activeElement.closest("#reasons") || document.activeElement.closest("#note-form"));
+          renderReasonsAndNote(mine);
+          // Focus that was in the reasons or note, now gone, moves to the
+          // first thing that replaced it, or else the tap button.
+          if (focusInAfterTap && !afterTap.contains(document.activeElement)) {
+            var next = document.querySelector("#helped button.answer");
+            (next || button).focus();
+          }
+        }
+
+        // The demo's condensed clock: re-synced from every frame, ticked
+        // locally each second in between, so it moves in every open page
+        // without a frame per second. Text only, no animation.
+        var lectureTimeEl = document.getElementById("lecture-time");
+        var condensedEl = document.getElementById("lecture-condensed");
+        var clockBase = null;
+        function clockText(ms) {
+          var total = Math.floor(ms / 1000);
+          var m = Math.floor(total / 60);
+          var sec = total % 60;
+          return m + ":" + (sec < 10 ? "0" : "") + sec;
+        }
+        function showLectureClock() {
+          if (!lectureTimeEl || !clockBase || !deckLengths) return;
+          var length = deckLengths[viewedDeck];
+          var elapsed = (clockBase.elapsed + (Date.now() - clockBase.at)) % length;
+          setText(lectureTimeEl, "Lecture time " + clockText(elapsed) + " / " + clockText(length));
+          setText(condensedEl, "Condensed " + condensedFactor + "x from a 60-minute lecture (real time " + clockText(elapsed * condensedFactor) + ")");
+        }
+        function syncLectureClock(elapsed) {
+          clockBase = { elapsed: elapsed, at: Date.now() };
+          showLectureClock();
+        }
+        if (lectureTimeEl) setInterval(showLectureClock, 1000);
 
         var source = null;
         function connect() {
@@ -1136,6 +1422,15 @@ ${SLIDE_NAME_CLIENT_JS}
   });
 }
 
+// The deck a tap or note is filed under. Only the demo has decks: a created
+// lecture's slides are just numbers, so any deck sent for one (a stale page,
+// a hand-made request) is dropped rather than stored, or its taps would
+// group apart from its notes on the same slide.
+function deckFor(lectureId: string, submitted: string | null): string | undefined {
+  if (lectureId !== "demo") return undefined;
+  return submitted !== null && submitted !== "" ? submitted : undefined;
+}
+
 async function handleTap(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
   if (!lecture) return notFoundResponse();
@@ -1160,7 +1455,7 @@ async function handleTap(id: string, req: Request): Promise<Response> {
   const body = await req.text();
   const params = new URLSearchParams(body);
   const submittedDeckRaw = params.get("deck");
-  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedDeck = deckFor(lecture.id, submittedDeckRaw);
   const submittedSlideRaw = params.get("slide");
   const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
   if (!isValidSlide(lecture, submittedDeck, submittedSlide)) {
@@ -1171,8 +1466,7 @@ async function handleTap(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  const inserted = tapIfNotRecentlyTapped(id, browserId, since, submittedDeck ?? null, submittedSlide);
+  const inserted = tapOncePerSlide(id, browserId, submittedDeck ?? null, submittedSlide);
   if (inserted) {
     broadcast(id);
     scheduleFade(id);
@@ -1195,14 +1489,32 @@ function slidePageLocation(id: string, deck: string | null, slide: number): stri
   return `/l/${encodeURIComponent(id)}?${deckParam}slide=${slide}`;
 }
 
-// The caller's live tap decides where a reason or "I get it now" returns
-// to; with no live tap there's no slide to return to, so the lecture page.
-function tapPageLocation(id: string, tap: { deck: string | null; slide: number | null } | undefined): string {
+// Where a reason or "I get it now" returns to: the slide the form named,
+// or else the tap it acted on; with neither there's no slide to return to,
+// so the lecture page.
+function tapPageLocation(
+  id: string,
+  slideRef: SlideRef | undefined,
+  tap: { deck: string | null; slide: number | null } | undefined,
+): string {
+  if (slideRef !== undefined) return slidePageLocation(id, slideRef.deck, slideRef.slide);
   if (tap === undefined || tap.slide === null) return `/l/${encodeURIComponent(id)}`;
   return slidePageLocation(id, tap.deck, tap.slide);
 }
 
-const REASONS = ["Too fast", "Missed a step", "Notation", "Can't see or hear"];
+// The deck and slide a reason or "I get it now" is about. Pages from before
+// one-tap-per-slide name none, and get the browser's latest live tap
+// (undefined here); a slide that's named but invalid is "invalid".
+function namedSlide(lecture: Lecture, params: URLSearchParams): SlideRef | undefined | "invalid" {
+  const slideRaw = params.get("slide");
+  if (slideRaw === null) return undefined;
+  const deck = deckFor(lecture.id, params.get("deck"));
+  const slide = Number(slideRaw);
+  if (!isValidSlide(lecture, deck, slide)) return "invalid";
+  return { deck: deck ?? null, slide };
+}
+
+const REASONS = REASONS_LIST();
 
 async function handleReason(id: string, req: Request): Promise<Response> {
   const lecture = getLecture(id);
@@ -1218,9 +1530,10 @@ async function handleReason(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const body = await req.text();
-  const reason = new URLSearchParams(body).get("reason") ?? "";
-  if (!REASONS.includes(reason)) {
+  const params = new URLSearchParams(await req.text());
+  const reason = params.get("reason") ?? "";
+  const slideRef = namedSlide(lecture, params);
+  if (!REASONS.includes(reason) || slideRef === "invalid") {
     logAction("reason_rejected", id, browserId);
     return new Response("Invalid reason", {
       status: 400,
@@ -1228,15 +1541,75 @@ async function handleReason(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  setTapReason(id, browserId, since, reason);
+  // Answers lock once sent (ADR 006): a slide whose tap already has a
+  // reason, or has no live tap to put one on, refuses the request. setTapReason's
+  // own "reason IS NULL" holds this even for two requests at once.
+  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
+  const tap = liveTapOn(id, browserId, since, slideRef);
+  if (tap === undefined || !setTapReason(tap.id, reason)) {
+    logAction("reason_refused", id, browserId);
+    return answerRefused("A reason can only be sent once per slide, while you're counted as lost on it.");
+  }
   logAction("reason_set", id, browserId);
   broadcast(id);
   broadcastToLecturer(id);
 
   return new Response(null, {
     status: 303,
-    headers: { location: tapPageLocation(id, liveTapFor(id, browserId, since)) },
+    headers: { location: tapPageLocation(id, slideRef, tap) },
+  });
+}
+
+// 409, with a plain sentence: the request was well formed, but the answer
+// is already given (or there's nothing yet to answer).
+function answerRefused(message: string): Response {
+  return new Response(message, {
+    status: 409,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+// "What helped your understanding?" (ADR 006), asked after "I get it now".
+// Accepted once per slide, and only once that slide's tap is resolved; the
+// answer comes from a fixed list checked here. Counted for the lecturer per
+// (deck, slide, answer), gated like reasons; never sent to any student.
+async function handleHelped(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+  if (!browserId) {
+    logAction("tap_rejected", id, rawBrowserCookie(cookieHeader));
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const params = new URLSearchParams(await req.text());
+  const helped = params.get("helped") ?? "";
+  const slideRef = namedSlide(lecture, params);
+  if (!HELPED.includes(helped) || slideRef === undefined || slideRef === "invalid") {
+    logAction("helped_rejected", id, browserId);
+    return new Response("Invalid answer", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const tap = resolvedTapOn(id, browserId, slideRef);
+  if (tap === undefined || !setTapHelped(tap.id, helped)) {
+    logAction("helped_refused", id, browserId);
+    return answerRefused("What helped can only be sent once per slide, after \"I get it now\".");
+  }
+  logAction("helped_set", id, browserId);
+  broadcast(id);
+  broadcastToLecturer(id);
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: slidePageLocation(id, slideRef.deck, slideRef.slide) },
   });
 }
 
@@ -1258,17 +1631,26 @@ async function handleResolve(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  // Read before resolving: once resolved, it's no longer the live tap.
-  const tap = liveTapFor(id, browserId, since);
-  resolveTap(id, browserId, since);
-  logAction("tap_resolved", id, browserId);
-  broadcast(id);
-  broadcastToLecturer(id);
+  const slideRef = namedSlide(lecture, new URLSearchParams(await req.text()));
+  if (slideRef === "invalid") {
+    logAction("tap_rejected", id, browserId);
+    return new Response("Invalid slide", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
+  const tap = liveTapOn(id, browserId, since, slideRef);
+  if (tap !== undefined && resolveTap(tap.id)) {
+    logAction("tap_resolved", id, browserId);
+    broadcast(id);
+    broadcastToLecturer(id);
+  }
 
   return new Response(null, {
     status: 303,
-    headers: { location: tapPageLocation(id, tap) },
+    headers: { location: tapPageLocation(id, slideRef, tap) },
   });
 }
 
@@ -1311,7 +1693,7 @@ async function handleNote(id: string, req: Request): Promise<Response> {
   const body = await req.text();
   const params = new URLSearchParams(body);
   const submittedDeckRaw = params.get("deck");
-  const submittedDeck = submittedDeckRaw !== null && submittedDeckRaw !== "" ? submittedDeckRaw : undefined;
+  const submittedDeck = deckFor(lecture.id, submittedDeckRaw);
   const submittedSlideRaw = params.get("slide");
   const submittedSlide = submittedSlideRaw !== null ? Number(submittedSlideRaw) : NaN;
   const text = params.get("text") ?? "";
@@ -2020,6 +2402,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     slide: currentSlideIndex(lecture),
     bars: [] as Bar[],
     reasonCounts: [] as DashboardReasonCount[],
+    helpedCounts: [],
     notes: [] as DashboardNote[],
   };
   const mainClass = projector ? "lecturer projector" : "lecturer";
@@ -2265,6 +2648,13 @@ async function route(req: Request): Promise<Response> {
     return handleReason(id, req);
   }
 
+  const helpedMatch = pathname.match(/^\/l\/([^/]+)\/helped$/);
+  if (method === "POST" && helpedMatch) {
+    const id = safeDecode(helpedMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleHelped(id, req);
+  }
+
   const resolveMatch = pathname.match(/^\/l\/([^/]+)\/resolve$/);
   if (method === "POST" && resolveMatch) {
     const id = safeDecode(resolveMatch[1]);
@@ -2303,6 +2693,14 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Set before anything is written, so every response this request makes
+  // carries the policy: pages, redirects, errors, streams and the stylesheet.
+  const nonce = randomBytes(16).toString("base64");
+  res.setHeader("content-security-policy", contentSecurityPolicy(nonce));
+  await requestNonce.run(nonce, () => routeRequest(req, res));
+}
+
+async function routeRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
   const { pathname } = new URL(url);
 

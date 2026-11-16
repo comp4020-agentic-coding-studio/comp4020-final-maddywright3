@@ -66,7 +66,7 @@ it("the demo lecture page has no axe violations, on the live slide and while bro
   expect(browsingViolations, describeViolations(browsingViolations)).toEqual([]);
 });
 
-it("the demo lecture page has no axe violations once a tap is live (reasons, countdown, note form shown)", async () => {
+it("the demo lecture page has no axe violations once a tap is live (reasons, said-you're-lost line, note form shown)", async () => {
   const cookie = await newBrowserCookie("demo");
   await fetch(new URL("/l/demo/tap", baseUrl), {
     method: "POST",

@@ -1,20 +1,26 @@
 import type { ServerResponse } from "node:http";
 import {
   getLecture,
-  liveTapFor,
+  helpedCounts as rawHelpedCounts,
   liveTapInfo,
   reasonCounts as rawReasonCounts,
+  slidesYouTapped,
   slideNoteCounts,
   slideTapCounts,
   tapCount,
   visibleNotesForSlide,
-  yourTapCount,
 } from "./db.ts";
-import type { Lecture } from "./db.ts";
-import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
+import type { HelpedCount, Lecture, YourSlide } from "./db.ts";
+import {
+  clearDeckClock,
+  currentSlideIndex,
+  lectureElapsedMs,
+  liveWindowMs,
+  msUntilNextSlideChange,
+  startDeckClock,
+} from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
-export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 
 export interface Bar {
@@ -47,9 +53,10 @@ export interface NoteEntry {
 // — a slide clears the bar threshold once >= min_present distinct browsers
 // have ever tapped it, whoever is present right now (ADR 004's refined
 // privacy rule), so `bars` is present on both branches of this union.
-// `liveForMs` and `topReason` are per-browser/per-slide extras: `liveForMs`
-// only appears while `youAreCounted` (the caller's own live tap), never
-// sent to anyone else's stream; `topReason` only appears once the current
+// `yourSlides` and `topReason` are per-browser/per-slide extras:
+// `yourSlides` lists the slides this browser has said it's lost on (one tap
+// per slide, ever) and whether each still counts as live, and is only ever
+// in this browser's own stream; `topReason` only appears once the current
 // slide's top reason has itself cleared its own (deck, slide, reason) gate.
 // `deck` (demo only) names the deck whose live slide `slide` is: each demo
 // stream watches one deck, and each deck runs its own clock.
@@ -59,10 +66,11 @@ export type MeterState =
       shown: false;
       deck?: DeckId;
       slide: number;
+      lectureElapsedMs?: number;
       bars: Bar[];
       yourTapCount: number;
       youAreCounted: boolean;
-      liveForMs?: number;
+      yourSlides: YourSlide[];
       topReason?: string;
     }
   | {
@@ -70,17 +78,26 @@ export type MeterState =
       shown: true;
       deck?: DeckId;
       slide: number;
+      lectureElapsedMs?: number;
       bars: Bar[];
       live: number;
       totalTaps: number;
       yourTapCount: number;
       youAreCounted: boolean;
-      liveForMs?: number;
+      yourSlides: YourSlide[];
       topReason?: string;
     };
 
 export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
+  | {
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
+      notes: NoteEntry[];
+    }
   | {
       present: number;
       shown: true;
@@ -89,6 +106,7 @@ export type LecturerState =
       live: number;
       totalTaps: number;
       reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
       notes: NoteEntry[];
     };
 
@@ -109,6 +127,13 @@ function gatedBars(lectureId: string, minPresent: number): Bar[] {
 // person"), just nested inside an otherwise-qualifying slide.
 function gatedReasonCounts(lectureId: string, minPresent: number): ReasonCountEntry[] {
   return rawReasonCounts(lectureId).filter((entry) => entry.count >= minPresent);
+}
+
+// What helped, gated per (deck, slide, answer) exactly as reasons are: one
+// answer picked by fewer than min_present browsers is absent, even on a
+// slide where other answers qualify. Lecturer-only.
+function gatedHelpedCounts(lectureId: string, minPresent: number): HelpedCount[] {
+  return rawHelpedCounts(lectureId).filter((entry) => entry.count >= minPresent);
 }
 
 // The current slide's most common *qualifying* reason — drawn only from
@@ -257,6 +282,7 @@ interface SharedMeterState {
   shown: boolean;
   deck?: DeckId;
   slide: number;
+  lectureElapsedMs?: number;
   bars: Bar[];
   topReason?: string;
   live?: number;
@@ -269,12 +295,12 @@ interface SharedMeterState {
 interface YourState {
   yourTapCount: number;
   youAreCounted: boolean;
-  liveForMs?: number;
+  yourSlides: YourSlide[];
 }
 
 function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterState {
   const lectureId = lecture.id;
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = deck !== null ? currentSlideIndex(lecture, deck) : currentSlideIndex(lecture);
@@ -286,6 +312,9 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
     shown,
     ...(deck !== null ? { deck } : {}),
     slide,
+    // Where the demo deck's condensed lecture clock is: ungated, like the
+    // slide itself, since it says nothing about anyone.
+    ...(deck !== null ? { lectureElapsedMs: lectureElapsedMs(lectureId, deck) } : {}),
     bars,
     since,
     ...(topReason !== undefined ? { topReason } : {}),
@@ -295,14 +324,15 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
   return { ...base, live, totalTaps: tapCount(lectureId) };
 }
 
+// yourTapCount is the slides this browser has said it's lost on, which
+// with one tap per slide is its count of counted taps; legacy duplicates
+// from before that rule don't inflate it.
 function yourStateFor(lectureId: string, browserId: string, since: string): YourState {
-  const liveTap = liveTapFor(lectureId, browserId, since);
+  const yourSlides = slidesYouTapped(lectureId, browserId, since);
   return {
-    yourTapCount: yourTapCount(lectureId, browserId),
-    youAreCounted: liveTap !== undefined,
-    ...(liveTap !== undefined
-      ? { liveForMs: Math.max(0, new Date(liveTap.created_at).getTime() + LIVE_WINDOW_MS - Date.now()) }
-      : {}),
+    yourTapCount: yourSlides.length,
+    youAreCounted: yourSlides.some((s) => s.live),
+    yourSlides,
   };
 }
 
@@ -310,14 +340,16 @@ function yourStateFor(lectureId: string, browserId: string, since: string): Your
 function meterStateFor(shared: SharedMeterState, yours: YourState): MeterState {
   const deck = shared.deck !== undefined ? { deck: shared.deck } : {};
   const topReason = shared.topReason !== undefined ? { topReason: shared.topReason } : {};
+  const clock = shared.lectureElapsedMs !== undefined ? { lectureElapsedMs: shared.lectureElapsedMs } : {};
   if (!shared.shown) {
-    return { present: shared.present, shown: false, ...deck, slide: shared.slide, bars: shared.bars, ...yours, ...topReason };
+    return { present: shared.present, shown: false, ...deck, slide: shared.slide, ...clock, bars: shared.bars, ...yours, ...topReason };
   }
   return {
     present: shared.present,
     shown: true,
     ...deck,
     slide: shared.slide,
+    ...clock,
     bars: shared.bars,
     live: shared.live!,
     totalTaps: shared.totalTaps!,
@@ -342,11 +374,12 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const slide = currentSlideIndex(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
   const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
+  const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes };
+  const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, helpedCounts, notes };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
@@ -462,9 +495,9 @@ function sendToLecturers(lectureId: string): void {
 
 export function scheduleFade(lectureId: string): void {
   if (fadeTimers.has(lectureId)) return;
-  const { earliest } = liveTapInfo(lectureId, new Date(Date.now() - LIVE_WINDOW_MS).toISOString());
+  const { earliest } = liveTapInfo(lectureId, new Date(Date.now() - liveWindowMs(lectureId)).toISOString());
   if (!earliest) return;
-  const fadesAt = new Date(earliest).getTime() + LIVE_WINDOW_MS;
+  const fadesAt = new Date(earliest).getTime() + liveWindowMs(lectureId);
   const delay = Math.max(0, fadesAt - Date.now());
   const timer = setTimeout(() => {
     fadeTimers.delete(lectureId);

@@ -5,10 +5,12 @@ Cite as: Swift, B. (2026). _COMP4020/COMP8020 Agentic Coding Studio_ [Course mat
 
 ---
 
+<!-- duration: 10 -->
 # context: the agent's working memory
 
 ---
 
+<!-- duration: 33 -->
 ## the window is a budget
 
 the **context window** is everything the model reads on a turn: system prompt,
@@ -23,6 +25,7 @@ with just the right information for the next step")
 
 ---
 
+<!-- duration: 33 -->
 ## `/context`, before the first prompt
 
 ```text
@@ -44,6 +47,7 @@ run it in yours)
 
 ---
 
+<!-- duration: 22 -->
 ## what to include?
 
 **too little**: it guesses at a convention your repo already follows
@@ -55,6 +59,7 @@ the levers for that trade-off: `/clear`, caching, compaction, skills
 
 ---
 
+<!-- duration: 26 -->
 ## one task per session
 
 keep going while the workstream is coherent; `/clear` when the job changes
@@ -66,6 +71,7 @@ the fifth towards the same error
 
 ---
 
+<!-- duration: 30 -->
 ## prompt caching
 
 after the first turn the prefix is cached, so each re-send of it reads back at a
@@ -78,6 +84,7 @@ writing the whole thing again
 
 ---
 
+<!-- duration: 24 -->
 ## Claude Code cheatsheet
 
 `/clear` starts a fresh conversation in the same directory — `CLAUDE.md` stays,
@@ -91,6 +98,7 @@ everything else goes
 
 ---
 
+<!-- duration: 26 -->
 ## compaction
 
 near the limit (or on `/compact`) the history is replaced by a summary of it
@@ -105,6 +113,7 @@ so write a `plan.md`, `/clear`, then `@plan.md`
 
 ---
 
+<!-- duration: 20 -->
 ## skills vs claude files
 
 **`CLAUDE.md`**: loaded every session, so it costs tokens every turn
@@ -116,6 +125,7 @@ when it's invoked
 
 ---
 
+<!-- duration: 76 -->
 ## When a skill's body loads
 
 <div class="diagram-skill-loading">

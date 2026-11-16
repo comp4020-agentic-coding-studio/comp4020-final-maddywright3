@@ -335,13 +335,14 @@ async function demoLecturerCookie(): Promise<string> {
 
 // "Slide 1 on entry" (docs/prompts/finish.md): each demo deck's shared clock
 // starts when its first student stream opens, so nobody lands mid-lecture in
-// an empty room. Real timing — SLIDE_DURATION_MS is 40s, so one wait for
-// the first advance covers every scenario below in a single run:
+// an empty room. Real timing: week-4's first slide lasts 10 s (its
+// duration in slides/week-4.md, ADR 006), so one wait for the first
+// advance covers every scenario below in a single run:
 // - the first viewer of an empty deck gets slide 1;
 // - the slide change reaches an open stream on its own, with no tap or
 //   reload (the bug this once guarded alone: slides only updated when
 //   something else happened to cause a broadcast);
-// - a second viewer who joins after 40s gets the same slide as the first;
+// - a second viewer who joins after that gets the same slide as the first;
 // - watching one deck doesn't restart the other;
 // - a lecturer stream never counts as watching;
 // - after every viewer closes, the next one gets slide 1.
@@ -363,8 +364,12 @@ it(
       expect(first.deck).toBe("week-4");
       expect(first.slide).toBe(1);
 
-      const advanced = await a.waitFor((s) => s.slide !== 1, 41_000);
+      // Exactly the first slide's 10 s: not before (a lower bound the 40 s
+      // version never had), and within the same 1 s of slack as before.
+      const clockStarted = Date.now();
+      const advanced = await a.waitFor((s) => s.slide !== 1, 11_000);
       expect(advanced.slide).toBe(2);
+      expect(Date.now() - clockStarted).toBeGreaterThanOrEqual(9_900);
 
       // Joining a running deck lands on its current slide, not slide 1 —
       // on the stream and on a page render alike.
@@ -548,9 +553,9 @@ it("tapping, undoing, and tapping the same slide again counts once toward its ba
   }
 
   await tapSlide1(tapCookie);
-  // A second tap from the same browser within 60s is deduped by the
-  // existing tapIfNotRecentlyTapped logic — shouldn't change the bar either
-  // way, but exercising it here confirms the dedup and the bar count agree.
+  // A second tap from the same browser on the same slide is ignored (one
+  // tap per slide, ever) — shouldn't change the bar either way, but
+  // exercising it here confirms the dedup and the bar count agree.
   await tapSlide1(tapCookie);
   for (const cookie of otherCookies) await tapSlide1(cookie);
 
@@ -645,7 +650,7 @@ it("no gated field (live, total, or any bar below its own threshold) appears bel
 // to read. The scripts carry the deck names for live updates, so a raw
 // search of the HTML would find them on every page.
 function renderedMarkup(html: string): string {
-  return html.replace(/<script>[\s\S]*?<\/script>/g, "");
+  return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "");
 }
 
 function slideLabel(html: string): string | undefined {
@@ -707,4 +712,57 @@ it("a created lecture has no deck: its pages say Slide N, with (live) on the cur
   expect(slideLabel(studentHtml)).toBe("Slide 1 (live)");
   expect(studentHtml).toContain("<tr><td>Slide 1</td><td>5</td></tr>");
   expect(renderedMarkup(studentHtml)).not.toMatch(/Week \d/);
+});
+
+// A created lecture has no deck, but its tap form carried the demo's
+// default deck, so its taps were stored as "week-4" while its notes had no
+// deck. Taps and notes on the same slide then never grouped together, the
+// lecturer's current-slide panel (which looks for no deck) never found the
+// bar, and the bars named a deck the lecture doesn't have.
+it("a created lecture's tap form sends no deck, and its taps are filed with no deck", async () => {
+  const lecture = await createLectureAndLogIn("No deck on taps test");
+  const cookies = await Promise.all(Array.from({ length: 5 }, () => newBrowserCookie(lecture.id)));
+  for (const cookie of cookies) {
+    const html = await demoPage(`/l/${lecture.id}`, cookie);
+    const form = html.match(/<form method="post" action="[^"]+\/tap" id="tap-form">[\s\S]*?<\/form>/)?.[0];
+    expect(form).toBeDefined();
+    expect(form).not.toMatch(/name="deck"/);
+    // Submit exactly the fields the page's own form carries, as a browser would.
+    const fields = new URLSearchParams([...form!.matchAll(/name="(\w+)"[^>]*value="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    await fetch(new URL(`/l/${lecture.id}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: fields,
+      redirect: "manual",
+    });
+  }
+  const stream = await SseStream.open(`/l/${lecture.id}/events`, lecture.cookie);
+  try {
+    const state = await stream.waitFor((s) => s.bars.length > 0, 2000);
+    expect(state.bars).toEqual([{ deck: null, slide: 1, distinctBrowsers: 5 }]);
+  } finally {
+    await stream.close();
+  }
+});
+
+// Condensed timing (ADR 006): each demo deck stands in for a 60-minute
+// lecture condensed 12x into 5 minutes, and says so beside its clock.
+function lectureTime(html: string): string | undefined {
+  return html.match(/<p id="lecture-time">([^<]*)<\/p>/)?.[1];
+}
+function condensedNote(html: string): string | undefined {
+  return html.match(/<p id="lecture-condensed">([^<]*)<\/p>/)?.[1];
+}
+
+it("the demo shows its lecture time out of 5:00, condensed 12x from 60 minutes", async () => {
+  const cookie = await newBrowserCookie("demo");
+  // Nobody is watching week-6, so its clock reads 0:00.
+  const html = await demoPage("/l/demo?deck=week-6", cookie);
+  expect(lectureTime(html)).toBe("Lecture time 0:00 / 5:00");
+  expect(condensedNote(html)).toBe("Condensed 12x from a 60-minute lecture (real time 0:00)");
+  // A created lecture has no fixed length, so no lecture time.
+  const lecture = await createLectureAndLogIn("No lecture time test");
+  const created = await demoPage(`/l/${lecture.id}`, lecture.cookie);
+  expect(lectureTime(created)).toBeUndefined();
+  expect(condensedNote(created)).toBeUndefined();
 });

@@ -176,41 +176,64 @@ it("shown is false below min_present, true once enough people are present", asyn
   }
 });
 
-// The real 60-second fade: a tap posted now must stop counting as "live"
-// once it passes 60s old, and the server must push that update on its own
-// (no new tap needed). README.md calls this enforced by tests, so it runs
-// for real in every pnpm check — slow (~65s), but that's the actual claim.
-it(
-  "a tap fades out of `live` 60 seconds after it was made",
-  async () => {
-    const cookie = await newBrowserCookie("demo");
-    const otherCookie = await newBrowserCookie("demo");
-    const stream = await SseStream.open("/l/demo/events", cookie);
-    const other = await SseStream.open("/l/demo/events", otherCookie);
-    try {
-      await stream.waitFor((s) => s.shown);
-      await fetch(new URL("/l/demo/tap", baseUrl), {
-        method: "POST",
-        headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-        body: "deck=week-4&slide=1",
-      });
-      const afterTap = await stream.waitFor((s) => s.shown, 1000);
-      expect(afterTap.live).toBeGreaterThanOrEqual(1);
+// The real fade, both windows: a demo tap stops counting as live after 20
+// seconds (ADR 006: a 60-minute lecture condensed 12x), a created
+// lecture's after 60. The server must push that update on its own (no new
+// tap needed). README.md calls this enforced by tests, so both run for real
+// in every pnpm check. Each is bounded on both sides: no earlier than just
+// under its window, no later than 5 s past it.
+async function fadeAfterMs(lectureId: string, watchers: number, tapBody: string): Promise<number> {
+  const cookies = await Promise.all(Array.from({ length: watchers }, () => newBrowserCookie(lectureId)));
+  const streams = await Promise.all(cookies.map((c) => SseStream.open(`/l/${lectureId}/events`, c)));
+  const stream = streams[0];
+  try {
+    await stream.waitFor((s) => s.shown && s.present === watchers);
+    await fetch(new URL(`/l/${lectureId}/tap`, baseUrl), {
+      method: "POST",
+      headers: { cookie: cookies[0], "content-type": "application/x-www-form-urlencoded" },
+      body: tapBody,
+    });
+    const tappedAt = Date.now();
+    const afterTap = await stream.waitFor((s) => s.shown && s.youAreCounted, 1000);
+    expect(afterTap.live).toBeGreaterThanOrEqual(1);
+    // This browser's own tap stops counting: youAreCounted is about this
+    // tap alone, so another test's leftover tap fading can't stand in.
+    const faded = await stream.waitFor((s) => s.shown && !s.youAreCounted, 70_000);
+    const ms = Date.now() - tappedAt;
+    expect(faded.live).toBeLessThan(afterTap.live!);
+    return ms;
+  } finally {
+    for (const s of streams) await s.close();
+  }
+}
 
-      const deadline = Date.now() + 65_000;
-      let sawFade = false;
-      while (Date.now() < deadline) {
-        const state = await stream.next(65_000);
-        if (state.shown && state.live! < afterTap.live!) {
-          sawFade = true;
-          break;
-        }
-      }
-      expect(sawFade).toBe(true);
-    } finally {
-      await stream.close();
-      await other.close();
-    }
+it(
+  "a demo tap fades out of `live` 20 seconds after it was made",
+  async () => {
+    // demo's min_present is 2.
+    const ms = await fadeAfterMs("demo", 2, "deck=week-4&slide=1");
+    expect(ms).toBeGreaterThanOrEqual(19_000);
+    expect(ms).toBeLessThanOrEqual(25_000);
   },
-  70_000,
+  35_000,
+);
+
+it(
+  "a created lecture's tap fades out of `live` 60 seconds after it was made",
+  async () => {
+    const createHtml = await (
+      await fetch(new URL("/new", baseUrl), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "title=Fade+window+test",
+      })
+    ).text();
+    const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
+    if (!lectureId) throw new Error("couldn't parse the new lecture's id");
+    // A created lecture's min_present is 5.
+    const ms = await fadeAfterMs(lectureId, 5, "slide=1");
+    expect(ms).toBeGreaterThanOrEqual(59_000);
+    expect(ms).toBeLessThanOrEqual(65_000);
+  },
+  80_000,
 );

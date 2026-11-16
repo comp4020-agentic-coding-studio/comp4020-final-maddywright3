@@ -55,6 +55,16 @@ async function openWatched(
     if (msg.type() === "error") problems.push(`console error: ${msg.text()}`);
   });
   page.on("pageerror", (err) => problems.push(`page error: ${err.message}`));
+  // A blocked script or load under the Content-Security-Policy, named
+  // rather than only showing up as a console error.
+  await page.exposeFunction("__reportCspViolation", (detail: string) => problems.push(`CSP violation: ${detail}`));
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      (window as unknown as { __reportCspViolation: (d: string) => void }).__reportCspViolation(
+        `${e.violatedDirective} blocked ${e.blockedURI || "inline"}`,
+      );
+    });
+  });
   page.on("request", (req) => {
     const url = new URL(req.url());
     if ((url.protocol === "http:" || url.protocol === "https:") && url.origin !== origin) {
@@ -94,7 +104,10 @@ async function logInAsDemoLecturer(context: BrowserContext): Promise<void> {
 }
 
 async function axeViolations(page: Page): Promise<string[]> {
-  await page.addScriptTag({ content: axeSource });
+  // The page's Content-Security-Policy rightly blocks an injected <script>
+  // tag (addScriptTag), so axe is evaluated through DevTools instead, which
+  // the page's policy doesn't govern. The policy itself is never relaxed.
+  await page.evaluate(axeSource);
   const violations = await page.evaluate(async () => {
     const axe = (window as unknown as { axe: { run: () => Promise<{ violations: { id: string; nodes: { html: string }[] }[] }> } }).axe;
     const results = await axe.run();
@@ -301,11 +314,23 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       // reasons and note, so from Send it's back up the page.
       await tabTo(page, (f) => f.tag === "BUTTON" && f.text === "I get it now", 60, "Shift+Tab");
       await page.keyboard.press("Enter");
-      await expect.poll(() => page.locator("#tap-button").textContent(), { timeout: 2000 }).toBe("I'm lost");
+      // One "I'm lost" per slide, ever: after "I get it now" this slide stays
+      // used for this browser, and the page says so rather than offering a
+      // tap the server would ignore.
+      const tapButton = page.locator("#tap-button");
+      await expect.poll(() => tapButton.textContent(), { timeout: 2000 }).toBe("Counted on this slide");
+      expect(await tapButton.getAttribute("aria-disabled")).toBe("true");
+      expect(await page.locator("#tap-said").textContent()).toBe("You've said you're lost on this slide.");
+      expect(await page.locator("#tap-said").isVisible()).toBe(true);
+      expect(await page.locator("#resolve-form").isVisible()).toBe(false);
       expect((await focusedIsVisible(page)).visible, "focus lost after I get it now").toBe(true);
 
       await page.keyboard.press("ArrowRight");
       await expect.poll(() => label.textContent()).not.toBe(startLabel);
+      // A slide this browser hasn't tapped offers "I'm lost" again.
+      await expect.poll(() => tapButton.textContent()).toBe("I'm lost");
+      expect(await tapButton.getAttribute("aria-disabled")).toBeNull();
+      expect(await page.locator("#tap-said").isVisible()).toBe(false);
       // Back to live is in the slide bar, above the tap bar.
       await tabTo(page, (f) => f.tag === "A" && f.text === "Back to live", 80, "Shift+Tab");
       await page.keyboard.press("Enter");
@@ -316,6 +341,48 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       await w.context.close();
     }
   }, 60_000);
+
+  it("answers lock once sent: reasons, then what helped, with contrast intact", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/l/demo?deck=week-6&slide=4", baseUrl).toString());
+      await page.locator("#tap-button").click();
+      await page.locator("#reasons").waitFor();
+      await page.locator("#reasons button", { hasText: "Missed a step" }).click();
+
+      const reasonButtons = page.locator("#reasons button.answer");
+      await expect.poll(() => reasonButtons.evaluateAll((bs) => bs.every((b) => b.getAttribute("aria-disabled") === "true"))).toBe(true);
+      const states = await reasonButtons.evaluateAll((bs) =>
+        bs.map((b) => [b.textContent, b.getAttribute("aria-pressed"), b.className]),
+      );
+      expect(states).toEqual([
+        ["Too fast", "false", "answer answer-other"],
+        ["Missed a step", "true", "answer answer-chosen"],
+        ["Notation", "false", "answer answer-other"],
+        ["Can't see or hear", "false", "answer answer-other"],
+      ]);
+      // Still locked when the page is loaded again (the server marks it).
+      await page.waitForLoadState("networkidle").catch(() => {});
+      await page.goto(new URL("/l/demo?deck=week-6&slide=4", baseUrl).toString());
+      await page.locator("#reasons").waitFor();
+      expect(await page.locator("#reasons button.answer-chosen").textContent()).toBe("Missed a step");
+      expect(await axeViolations(page)).toEqual([]);
+
+      await page.locator("#resolve-form button").click();
+      await page.locator("#helped").waitFor();
+      expect(await page.locator("#glad-text").textContent()).toBe("Glad you've got it now.");
+      expect(await page.locator("#reasons").count()).toBe(0);
+      await page.locator("#helped button", { hasText: "The example" }).click();
+      await expect.poll(() => page.locator("#helped button.answer-chosen").textContent()).toBe("The example");
+      expect(await page.locator("#helped button[aria-disabled=true]").count()).toBe(5);
+      expect(await axeViolations(page)).toEqual([]);
+      expect(await hasHorizontalScroll(page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
 
   it("two people: a tap in one browser reaches the other within a second", async () => {
     const a = await openWatched(width, height);
@@ -461,5 +528,65 @@ it("live updates name the deck and slide the same way the server does", async ()
     await student.context.close();
     await lecturer.context.close();
     await tapper.context.close();
+  }
+}, 30_000);
+
+// A created lecture's slide is wherever the lecturer's Next/Prev leaves it.
+// The student page has no slides of its own to browse, so it must follow:
+// the label, and the slide a tap records, move when the lecturer presses
+// Next, with no reload.
+it("a created lecture's student page follows the lecturer's Next live", async () => {
+  const lecturer = await openWatched(1920, 1080);
+  const student = await openWatched(390, 844);
+  try {
+    const created = await lecturer.context.request.post(new URL("/new", baseUrl).toString(), { form: { title: "Follow Next test" } });
+    const createdHtml = await created.text();
+    const lectureId = createdHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
+    const code = createdHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
+    await lecturer.context.request.post(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString(), { form: { code }, maxRedirects: 0 });
+
+    await student.page.goto(new URL(`/l/${lectureId}`, baseUrl).toString());
+    const label = student.page.locator("#slide-label");
+    await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
+    // There are no slides here to browse, so the arrow keys don't move the
+    // slide a tap would record.
+    await student.page.keyboard.press("ArrowRight");
+    await student.page.waitForTimeout(200);
+    expect(await label.textContent()).toBe("Slide 1 (live)");
+    expect(await student.page.locator("#slide-input").inputValue()).toBe("1");
+
+    await lecturer.page.goto(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString());
+    await lecturer.page.locator("#slide-next-form button").click();
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toBe("Slide 2 (live)");
+    expect(await student.page.locator("#slide-input").inputValue()).toBe("2");
+
+    // A tap now records slide 2, the one the lecturer moved to.
+    await student.page.locator("#tap-button").click();
+    await expect.poll(() => student.page.locator("#tap-said").isVisible(), { timeout: 3000 }).toBe(true);
+    // The browser's own record of its taps says slide 2, nothing else.
+    const yourSlides = await student.page.evaluate(
+      (id) =>
+        new Promise((resolve) => {
+          const source = new EventSource(`/l/${id}/events`);
+          source.onmessage = (e) => {
+            source.close();
+            resolve(JSON.parse(e.data).yourSlides);
+          };
+        }),
+      lectureId,
+    );
+    expect(yourSlides).toEqual([
+      { deck: null, slide: 2, live: true, resolved: false, answeredReason: false, answeredHelped: false },
+    ]);
+    await lecturer.page.locator("#slide-next-form button").click();
+    await expect.poll(() => label.textContent(), { timeout: 3000 }).toBe("Slide 3 (live)");
+    // A new slide offers "I'm lost" again.
+    await expect.poll(() => student.page.locator("#tap-button").textContent()).toBe("I'm lost");
+
+    expect(student.problems).toEqual([]);
+    expect(lecturer.problems).toEqual([]);
+  } finally {
+    await lecturer.context.close();
+    await student.context.close();
   }
 }, 30_000);

@@ -2,7 +2,19 @@ import { readFileSync } from "node:fs";
 import { marked } from "marked";
 import type { Lecture } from "./db.ts";
 
-export const SLIDE_DURATION_MS = 40_000;
+// Each demo deck stands in for a 60-minute lecture condensed 12x into
+// about 5 minutes (ADR 006). Every slide has its own duration, written in
+// its deck file as `<!-- duration: N -->` (seconds), weighted by how much
+// it covers. The live window for a demo tap is scaled down the same way;
+// a created lecture keeps the real 60 seconds.
+export const CONDENSED_FACTOR = 12;
+export const DEMO_LIVE_WINDOW_MS = 20_000;
+export const CREATED_LIVE_WINDOW_MS = 60_000;
+
+// How long a tap on this lecture stays live.
+export function liveWindowMs(lectureId: string): number {
+  return lectureId === "demo" ? DEMO_LIVE_WINDOW_MS : CREATED_LIVE_WINDOW_MS;
+}
 
 export type DeckId = "week-4" | "week-6";
 export const DECK_IDS: DeckId[] = ["week-4", "week-6"];
@@ -46,7 +58,10 @@ export function slideName(deck: string | null, slide: number, options: SlideName
 interface Deck {
   creditHtml: string;
   slides: string[];
+  durationsMs: number[];
 }
+
+const DURATION_LINE = /^\s*<!-- duration: (\d+) -->\n?/;
 
 // Loaded once at module scope: each deck is fixed content shipped with the
 // app, not per-request input, so there's no reason to re-read or re-parse it
@@ -54,13 +69,20 @@ interface Deck {
 // about page. A deck file's first part (before the first ---) is a credit
 // block, not a slide — split off and rendered once, separately, under every
 // slide view rather than as slide content itself.
+// Each slide's first line is its duration; it's taken off before the
+// slide is rendered, and a slide without one stops the app at startup
+// rather than running a deck with a hole in its clock.
 function loadDeck(id: DeckId): Deck {
   const raw = readFileSync(`slides/${id}.md`, "utf8");
   const [rawCredit, ...rawSlides] = raw.split(/\n---\n/);
-  return {
-    creditHtml: marked.parse(rawCredit.trim()) as string,
-    slides: rawSlides.map((slide) => marked.parse(slide.trim()) as string),
-  };
+  const durationsMs: number[] = [];
+  const slides = rawSlides.map((slide, i) => {
+    const match = slide.match(DURATION_LINE);
+    if (!match) throw new Error(`slides/${id}.md: slide ${i + 1} has no <!-- duration: N --> line`);
+    durationsMs.push(Number(match[1]) * 1000);
+    return marked.parse(slide.slice(match[0].length).trim()) as string;
+  });
+  return { creditHtml: marked.parse(rawCredit.trim()) as string, slides, durationsMs };
 }
 
 const DECKS: Record<DeckId, Deck> = {
@@ -87,6 +109,28 @@ export function deckCreditHtml(deckId: DeckId): string {
 
 export function deckSlideCount(deckId: DeckId): number {
   return DECKS[deckId].slides.length;
+}
+
+// Each slide's duration in this deck, in order (the timeline sizes its
+// segments by these).
+export function slideDurationsMs(deck: DeckId): number[] {
+  return [...DECKS[deck].durationsMs];
+}
+
+export function deckLengthMs(deck: DeckId): number {
+  return DECKS[deck].durationsMs.reduce((a, b) => a + b, 0);
+}
+
+// Where in its cycle the deck's clock is: which slide (0-based), and how
+// far into that slide. The deck loops, so the clock wraps at its length.
+function positionAt(deck: DeckId, elapsedMs: number): { index: number; intoSlideMs: number } {
+  const durations = DECKS[deck].durationsMs;
+  let t = elapsedMs % deckLengthMs(deck);
+  for (let i = 0; i < durations.length; i++) {
+    if (t < durations[i]) return { index: i, intoSlideMs: t };
+    t -= durations[i];
+  }
+  return { index: durations.length - 1, intoSlideMs: durations[durations.length - 1] };
 }
 
 // When each (lecture, deck)'s shared clock started. src/realtime.ts sets it
@@ -124,7 +168,14 @@ function msSinceDeckStart(lectureId: string, deck: DeckId): number | undefined {
 export function liveSlideIndex(lectureId: string, deck: DeckId): number {
   const elapsed = msSinceDeckStart(lectureId, deck);
   if (elapsed === undefined) return 1;
-  return (Math.floor(elapsed / SLIDE_DURATION_MS) % deckSlideCount(deck)) + 1;
+  return positionAt(deck, elapsed).index + 1;
+}
+
+// How far into the condensed lecture the deck's clock is, wrapping as the
+// deck loops; 0 when nobody is watching.
+export function lectureElapsedMs(lectureId: string, deck: DeckId): number {
+  const elapsed = msSinceDeckStart(lectureId, deck);
+  return elapsed === undefined ? 0 : elapsed % deckLengthMs(deck);
 }
 
 // The demo's live slide on `deck` (LIVE_DECK unless named); a created
@@ -143,7 +194,16 @@ export function msUntilNextSlideChange(lectureId: string, deck: DeckId): number 
   if (lectureId !== "demo") return undefined;
   const elapsed = msSinceDeckStart(lectureId, deck);
   if (elapsed === undefined) return undefined;
-  return SLIDE_DURATION_MS - (elapsed % SLIDE_DURATION_MS);
+  const { index, intoSlideMs } = positionAt(deck, elapsed);
+  return DECKS[deck].durationsMs[index] - intoSlideMs;
+}
+
+// "1:20": minutes and seconds, for the lecture time and its real-time note.
+export function clockText(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
 }
 
 // A tap always records the slide (and deck) the viewer says they're looking
