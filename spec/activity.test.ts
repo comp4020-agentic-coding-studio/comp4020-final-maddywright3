@@ -114,7 +114,7 @@ it("min_present taps on one slide give exactly one 'lost' line; one fewer gives 
   const short = await createLectureAndLogIn("Activity below threshold");
   await tapAll(short.id, await browsers(short.id, MIN_PRESENT - 1), 1);
   const shortHtml = await lecturerPage(short);
-  expect(activitySection(shortHtml)).toContain("<h2");
+  expect(activitySection(shortHtml)).toContain("<h3");
   expect(lines(shortHtml)).toEqual([]);
   expect(activitySection(shortHtml)).toContain(
     `Lines appear each time ${MIN_PRESENT} more people do something on a slide.`,

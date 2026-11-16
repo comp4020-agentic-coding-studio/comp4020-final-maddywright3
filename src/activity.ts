@@ -220,7 +220,7 @@ export function activityLogHtml(lecture: Lecture, lines: ActivityLine[], filter:
   const items = shown.map((line) => `<li class="activity-line">${escapeHtml(line.text)}</li>`).join("\n");
   return `
     <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
-      <h2 id="activity-log-heading">Activity</h2>
+      <h3 id="activity-log-heading">Activity</h3>
       ${filterForm}
       <p id="activity-empty"${shown.length > 0 ? " hidden" : ""}>${escapeHtml(emptyText(lecture.min_present))}</p>
       <ul id="activity-lines" class="activity-lines">${items}</ul>

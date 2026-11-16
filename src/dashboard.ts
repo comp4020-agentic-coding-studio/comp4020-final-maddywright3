@@ -8,7 +8,7 @@
 // The same functions render the first page and every live update: the
 // lecturer stream carries these fragments already rendered, so a live frame
 // can't format anything differently from the page it updates.
-import { distinctLostCount, highestSlideUsed, resolvedTotals, slideResolvedCounts } from "./db.ts";
+import { distinctLostByDeck, distinctLostByRun, distinctLostCount, highestSlideUsed, resolvedTotals, slideResolvedCounts } from "./db.ts";
 import type { HelpedCount, Lecture } from "./db.ts";
 import { DECK_IDS, DECK_SHORT_NAMES, DECK_TITLES, currentSlideIndex, deckSlideCount, isDeckId, slideName } from "./slides.ts";
 import type { Bar, NoteEntry, ReasonCountEntry } from "./realtime.ts";
@@ -74,6 +74,9 @@ export interface DashboardFragments {
   graphReasons: string;
   graphHelped: string;
   graphResolved: string;
+  ranking: string;
+  // The live slide's "lost right now" number, in the Live slide group.
+  lostNow: string;
 }
 
 export interface Dashboard {
@@ -113,6 +116,8 @@ export function computeDashboard(input: DashboardInput): Dashboard {
       graphReasons: graphAnswersHtml("reasons", input.reasonCounts.map((r) => ({ ...r, answer: r.reason })), min),
       graphHelped: graphAnswersHtml("helped", input.helpedCounts.map((h) => ({ ...h, answer: h.helped })), min),
       graphResolved: graphResolvedHtml(resolvedSplit, min),
+      ranking: rankingInnerHtml(lecture),
+      lostNow: lostNowInnerHtml(stats),
     },
     noteGroups: noteGroups(
       lecture.id,
@@ -160,21 +165,21 @@ function computeStats(input: DashboardInput): DashboardStats {
 // ---------- Stat tiles ----------
 
 function tile(label: string, body: string): string {
-  return `<div class="card stat-tile"><h2 class="tile-label">${escapeHtml(label)}</h2>${body}</div>`;
+  return `<div class="card stat-tile"><h3 class="tile-label">${escapeHtml(label)}</h3>${body}</div>`;
 }
 
 const value = (id: string, text: string): string => `<p class="tile-value" id="${id}">${escapeHtml(text)}</p>`;
 const wait = (text: string): string => `<p class="tile-wait">${escapeHtml(text)}</p>`;
 const detail = (text: string): string => `<p class="tile-detail">${escapeHtml(text)}</p>`;
 
+// Below min_present present, no number at all, the same rule as the gauge,
+// whose words beside it already say who it's waiting for.
+function lostNowInnerHtml(stats: DashboardStats): string {
+  return stats.live !== undefined ? value("lost-now-value", String(stats.live)) : "";
+}
+
 function tilesInnerHtml(stats: DashboardStats, min: number): string {
   const here = tile("People here", value("present-value", String(stats.present)));
-  const lostNow = tile(
-    "Lost right now",
-    stats.live !== undefined
-      ? value("lost-now-value", String(stats.live))
-      : wait(`Shows once ${min} people are here`),
-  );
   const lostRun = tile(
     "Lost this run",
     stats.lostThisRun !== undefined
@@ -199,7 +204,7 @@ function tilesInnerHtml(stats: DashboardStats, min: number): string {
           )
       : wait(`Shows once ${min} people have been lost on a slide`),
   );
-  return here + lostNow + lostRun + share + hardest;
+  return here + lostRun + share + hardest;
 }
 
 // ---------- Graphs ----------
@@ -372,6 +377,64 @@ function graphResolvedHtml(split: ResolvedSplit[], min: number): string {
   );
 }
 
+// ---------- Lectures, most confusing first ----------
+//
+// "Lectures" in this app's own units: the demo's two decks, or a created
+// lecture's runs (each run is one sitting of it). Never another lecturer's
+// lectures. Ranked by distinct people who said they were lost on any slide,
+// and an entry is listed only when that count is at least min_present: the
+// ranking is a derived number, so every count behind it clears the gate.
+// One left out is absent, never a zero, so a lone entry still ranks only
+// against what qualified.
+
+export interface RankEntry {
+  label: string;
+  href?: string;
+  lost: number;
+}
+
+export function rankingEntries(lecture: Lecture): RankEntry[] {
+  const min = lecture.min_present;
+  const base = `/l/${encodeURIComponent(lecture.id)}/lecturer`;
+  const entries: (RankEntry & { order: number })[] =
+    lecture.id === "demo"
+      ? distinctLostByDeck(lecture.id, lecture.run)
+          .filter((d) => d.deck !== null && isDeckId(d.deck))
+          .map((d) => ({ label: DECK_SHORT_NAMES[d.deck as keyof typeof DECK_SHORT_NAMES], lost: d.count, order: DECK_IDS.indexOf(d.deck as never) }))
+      : distinctLostByRun(lecture.id).map((r) => ({
+          label: r.run === lecture.run ? `Run ${r.run} (live)` : `Run ${r.run}`,
+          href: r.run === lecture.run ? base : `${base}?run=${r.run}`,
+          lost: r.count,
+          order: -r.run,
+        }));
+  // Most lost first; a tie goes to the newer run, or the earlier deck.
+  return entries
+    .filter((e) => e.lost >= min)
+    .sort((a, b) => b.lost - a.lost || a.order - b.order)
+    .map(({ label, href, lost }) => (href === undefined ? { label, lost } : { label, href, lost }));
+}
+
+export function rankingInnerHtml(lecture: Lecture): string {
+  const min = lecture.min_present;
+  const unit = lecture.id === "demo" ? "decks" : "runs";
+  const what =
+    lecture.id === "demo"
+      ? "The demo's lectures are its two decks."
+      : "Each run of this lecture counts as one lecture here.";
+  const entries = rankingEntries(lecture);
+  const measure = `<p class="ranking-measure">${escapeHtml(`${what} Ranked by how many different people said they were lost, on any slide.`)}</p>`;
+  if (entries.length === 0) {
+    return `${measure}<p class="graph-empty">${escapeHtml(`Lectures appear here once each has had ${min} people lost.`)}</p>`;
+  }
+  const items = entries
+    .map((e) => {
+      const name = e.href !== undefined ? `<a href="${e.href}">${escapeHtml(e.label)}</a>` : escapeHtml(e.label);
+      return `<li>${name}: ${e.lost} ${plural(e.lost, "person", "people")} lost</li>`;
+    })
+    .join("");
+  return `${measure}<ol id="ranking-list" class="ranking-list">${items}</ol><p class="tile-detail">${escapeHtml(`Only ${unit} with at least ${min} people lost are listed.`)}</p>`;
+}
+
 // ---------- Notes, grouped by slide ----------
 
 // Groups by slide, the slide with the newest note first, and newest first
@@ -501,7 +564,7 @@ export function dashboardClientJs(filter: NotesFilter, min: number): string {
   return `
         var dashFilter = ${JSON.stringify(filter)};
         var dashEmpty = ${JSON.stringify(notesEmptyText(filter, min))};
-        var dashSlots = { tiles: "dashboard-tiles", graphLost: "bars", graphReasons: "graph-reasons-body", graphHelped: "graph-helped-body", graphResolved: "graph-resolved-body" };
+        var dashSlots = { tiles: "dashboard-tiles", graphLost: "bars", graphReasons: "graph-reasons-body", graphHelped: "graph-helped-body", graphResolved: "graph-resolved-body", ranking: "ranking-body", lostNow: "lost-now-slot" };
         var dashLast = {};
         function swapHtml(el, key, html) {
           if (!el || dashLast[key] === html) return;

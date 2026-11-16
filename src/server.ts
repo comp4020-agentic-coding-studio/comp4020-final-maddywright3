@@ -19,6 +19,7 @@ import {
   resolvedTapOn,
   setTapHelped,
   yourAnswersOn,
+  currentRun,
   runsOf,
   setHelpUrl,
   startRun,
@@ -65,7 +66,7 @@ import {
   startHeartbeat,
 } from "./realtime.ts";
 import type { Bar, LecturerState, PastRunState } from "./realtime.ts";
-import { dashboardClientJs, notesFilterFormHtml, notesListInnerHtml, parseNotesFilter } from "./dashboard.ts";
+import { dashboardClientJs, notesFilterFormHtml, notesListInnerHtml, parseNotesFilter, rankingInnerHtml } from "./dashboard.ts";
 import type { NotesFilter } from "./dashboard.ts";
 import {
   DECK_IDS,
@@ -2134,9 +2135,18 @@ function nowSectionInnerHtml(
   const slideNotes = notes.filter(onSlide(key));
   const notesListHtml =
     slideNotes.length > 0
-      ? `<h3 id="now-notes-heading">What didn't make sense</h3><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
+      ? `<h4 id="now-notes-heading">What didn't make sense</h4><ul id="now-notes" class="notes-list">${noteItemsHtml(lectureId, slideNotes)}</ul>`
       : "";
-  return `<h2 id="now-heading">On the live slide: <span id="now-slide-name">${escapeHtml(slideName(key.deck, key.slide))}</span></h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
+  return `<h3 id="now-heading">On the live slide: <span id="now-slide-name">${escapeHtml(slideName(key.deck, key.slide))}</span></h3><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
+}
+
+// "Lectures, most confusing first" (src/dashboard.ts renders and gates the
+// body). The body is a live fragment, swapped in from each lecturer frame.
+function rankingSectionHtml(bodyHtml: string): string {
+  return `<section id="ranking" class="card ranking" aria-labelledby="ranking-heading">
+        <h3 id="ranking-heading">Lectures, most confusing first</h3>
+        <div id="ranking-body">${bodyHtml}</div>
+      </section>`;
 }
 
 // A timed lecture has no Previous/Next: its clock moves the slides. Before
@@ -2214,54 +2224,70 @@ function lecturerDashboard(
       <h1>Lecturer view</h1>
       ${projectorLinkHtml}
     </div>
-${runControlsHtml(id, state.run)}
-    ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
-    <section id="stat-tiles" class="stat-tiles" aria-label="Right now">
-      <div class="card stat-tile tile-gauge">
-        <h2 class="tile-label">Lost right now</h2>
-        ${gaugeHtml(state, minPresent)}
-        <p id="connection-status" aria-live="polite"></p>
-      </div>
-      <div class="card stat-tile tile-taps">
-        <h2 class="tile-label">Taps this lecture</h2>
-        <p class="tile-wait" id="tap-count-wait"${state.shown ? " hidden" : ""}>Shows once ${minPresent} people are here</p>
-        <div id="tap-count-slot">${tapCountHtml}</div>
-      </div>
-      <div class="card stat-tile tile-slide">
-        <h2 class="tile-label">Live slide</h2>
-        ${slideControlsHtml}
-      </div>
-      <div id="dashboard-tiles" class="dashboard-tiles">${state.dashboardHtml.tiles}</div>
+    <section id="live-now" class="card live-now" aria-label="Live now">
+      <p><span class="live-pill">Live now</span> <span id="live-now-slide">${escapeHtml(slideName(nowKey.deck, state.slide))}</span></p>
     </section>
-    <div class="lecturer-layout">
-      <div class="live-column">
+${runControlsHtml(id, state.run)}
+    <section id="live-group" class="lecturer-group" aria-labelledby="live-group-heading">
+      <h2 id="live-group-heading" class="group-heading">Live slide</h2>
+      ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
+      <div class="live-grid">
+        <div class="live-tiles">
+          <div class="card stat-tile tile-gauge">
+            <h3 class="tile-label">Lost right now</h3>
+            <div id="lost-now-slot">${state.dashboardHtml.lostNow}</div>
+            ${gaugeHtml(state, minPresent)}
+            <p id="connection-status" aria-live="polite"></p>
+          </div>
+          <div class="card stat-tile tile-slide">
+            <h3 class="tile-label">Slide</h3>
+            ${slideControlsHtml}
+          </div>
+        </div>
         <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes, minPresent)}</section>
-        <section id="notes" class="card" aria-labelledby="notes-heading">
-          <h2 id="notes-heading">What didn't make sense, by slide</h2>
-          ${notesFilterFormHtml(lecture, notesFilter)}
-          <div id="notes-groups">${notesListInnerHtml(state.noteGroups, notesFilter, lecture.min_present)}</div>
-        </section>
       </div>
-      <div class="graph-grid">
-        <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
-          <h2 id="graph-lost-heading">Lost, per slide</h2>
-          <div class="slot-body" id="bars">${state.dashboardHtml.graphLost}</div>
-        </section>
-        <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
-          <h2 id="graph-reasons-heading">What kind of lost</h2>
-          <div class="slot-body" id="graph-reasons-body">${state.dashboardHtml.graphReasons}</div>
-        </section>
-        <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
-          <h2 id="graph-helped-heading">What helped</h2>
-          <div class="slot-body" id="graph-helped-body">${state.dashboardHtml.graphHelped}</div>
-        </section>
-        <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
-          <h2 id="graph-resolved-heading">Got it now</h2>
-          <div class="slot-body" id="graph-resolved-body">${state.dashboardHtml.graphResolved}</div>
-        </section>
+    </section>
+    <section id="lecture-group" class="lecturer-group" aria-labelledby="lecture-group-heading">
+      <h2 id="lecture-group-heading" class="group-heading">Whole lecture</h2>
+      <section id="stat-tiles" class="stat-tiles" aria-label="This run so far">
+        <div id="dashboard-tiles" class="dashboard-tiles">${state.dashboardHtml.tiles}</div>
+        <div class="card stat-tile tile-taps">
+          <h3 class="tile-label">Taps this lecture</h3>
+          <p class="tile-wait" id="tap-count-wait"${state.shown ? " hidden" : ""}>Shows once ${minPresent} people are here</p>
+          <div id="tap-count-slot">${tapCountHtml}</div>
+        </div>
+      </section>
+      ${rankingSectionHtml(state.dashboardHtml.ranking)}
+      <div class="lecturer-layout">
+        <div class="notes-column">
+          <section id="notes" class="card" aria-labelledby="notes-heading">
+            <h3 id="notes-heading">What didn't make sense, by slide</h3>
+            ${notesFilterFormHtml(lecture, notesFilter)}
+            <div id="notes-groups">${notesListInnerHtml(state.noteGroups, notesFilter, lecture.min_present)}</div>
+          </section>
+        </div>
+        <div class="graph-grid">
+          <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
+            <h3 id="graph-lost-heading">Lost, per slide</h3>
+            <div class="slot-body" id="bars">${state.dashboardHtml.graphLost}</div>
+          </section>
+          <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
+            <h3 id="graph-reasons-heading">What kind of lost</h3>
+            <div class="slot-body" id="graph-reasons-body">${state.dashboardHtml.graphReasons}</div>
+          </section>
+          <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
+            <h3 id="graph-helped-heading">What helped</h3>
+            <div class="slot-body" id="graph-helped-body">${state.dashboardHtml.graphHelped}</div>
+          </section>
+          <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
+            <h3 id="graph-resolved-heading">Got it now</h3>
+            <div class="slot-body" id="graph-resolved-body">${state.dashboardHtml.graphResolved}</div>
+          </section>
+        </div>
       </div>
-    </div>
 ${activityLogHtml(activity.lecture, activity.lines, activity.filter)}
+    </section>
+${helpLinkSectionHtml(id)}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -2408,7 +2434,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
             if (oldHeading) oldHeading.remove();
             if (oldList) oldList.remove();
             if (nowNotes.length > 0) {
-              var h = document.createElement("h3");
+              var h = document.createElement("h4");
               h.id = "now-notes-heading";
               h.textContent = "What didn't make sense";
               now.appendChild(h);
@@ -2420,6 +2446,7 @@ ${dashboardClientJs(notesFilter, minPresent)}
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) setText(slideLabel, slideName(nowDeck, state.slide, { live: true }));
+          setText(document.getElementById("live-now-slide"), slideName(nowDeck, state.slide));
           // A created lecture's pasted slides follow the live slide.
           var pastedSlides = document.querySelectorAll("#slides.pasted-slides .slide");
           for (var ps = 0; ps < pastedSlides.length; ps++) {
@@ -2476,10 +2503,15 @@ const DEMO_RUN_MESSAGE = "The shared demo keeps its history. Create your own lec
 const DEMO_HELP_LINK_MESSAGE =
   "The shared demo's help link is fixed, because its code is public. Create your own lecture to set one.";
 
-// The run picker and the fresh-run button, in their own block near the top
-// of the lecturer view (ADR 006 section 3). Plain links, so they work
-// without JS. The current run links to the live view; earlier runs to
-// ?run=N. `viewing` is the run on screen, marked aria-current.
+// The runs box, near the top of the lecturer view (ADR 006 section 3): what
+// a run is, which run is current, a plain link to every earlier one, and
+// the reset button, which starts a fresh run and deletes nothing. Oldest
+// first, like the runs' numbers. Plain
+// links and a GET form, so it all works without JS. `viewing` is the run on
+// screen, marked aria-current and labelled "on screen".
+const RUN_EXPLANATION = "A run is one sitting of this lecture. Starting a fresh run keeps every earlier run, viewable here.";
+const RESET_EXPLANATION = "Every count, graph and note starts from zero. Earlier runs aren't deleted: view them below.";
+
 function runControlsHtml(id: string, viewing: number): string {
   const base = `/l/${encodeURIComponent(id)}/lecturer`;
   const runs = runsOf(id);
@@ -2489,23 +2521,31 @@ function runControlsHtml(id: string, viewing: number): string {
       const isCurrent = run.number === current;
       const label = `Run ${run.number}${isCurrent ? " (live)" : ""}`;
       const href = isCurrent ? base : `${base}?run=${run.number}`;
-      const ariaCurrent = run.number === viewing ? ` aria-current="page"` : "";
-      return `<li><a href="${href}"${ariaCurrent}>${label}</a></li>`;
+      const onScreen = run.number === viewing;
+      const ariaCurrent = onScreen ? ` aria-current="page"` : "";
+      const marker = onScreen ? ` <span class="run-onscreen">on screen</span>` : "";
+      return `<li><a href="${href}"${ariaCurrent}>${label}</a>${marker}</li>`;
     })
     .join("");
+  const earlierNote = runs.length <= 1 ? `<p class="runs-none">No earlier runs yet.</p>` : "";
   const freshRun =
     id === "demo"
       ? `<p id="runs-demo">${escapeHtml(DEMO_RUN_MESSAGE)}</p>`
-      : `<form method="get" action="${base}/runs/new" id="fresh-run-form">
-        <button type="submit">Start a fresh run</button>
-      </form>`;
+      : `<div class="fresh-run">
+        <form method="get" action="${base}/runs/new" id="fresh-run-form">
+          <button type="submit">Reset statistics: start a fresh run</button>
+        </form>
+        <p id="fresh-run-explain">${escapeHtml(RESET_EXPLANATION)}</p>
+      </div>`;
   return `
-    <section id="runs" class="runs" aria-labelledby="runs-heading">
+    <section id="runs" class="card runs" aria-labelledby="runs-heading">
       <h2 id="runs-heading">Runs</h2>
-      <ul class="run-picker">${items}</ul>
+      <p>${escapeHtml(RUN_EXPLANATION)}</p>
+      <p id="run-current">The current run is run ${current}.</p>
       ${freshRun}
-    </section>
-${helpLinkSectionHtml(id)}`;
+      <ul class="run-picker">${items}</ul>
+      ${earlierNote}
+    </section>`;
 }
 
 // The lecturer's help link, editable here (the demo's is fixed). Students
@@ -2557,7 +2597,8 @@ function readOnlyNotesHtml(notes: DashboardNote[]): string {
 
 // An earlier run, read-only: a static render with no stream and no
 // controls, gated exactly as the live view is.
-function pastRunHtml(id: string, past: PastRunState): string {
+function pastRunHtml(lecture: Lecture, past: PastRunState): string {
+  const id = lecture.id;
   const totalHtml =
     past.totalTaps !== undefined ? `<p id="tap-count">Total taps in run ${past.run}: ${past.totalTaps}</p>` : "";
   const empty =
@@ -2567,9 +2608,11 @@ function pastRunHtml(id: string, past: PastRunState): string {
   return `
     <div class="lecturer-head">
       <h1>Lecturer view</h1>
-      <p id="run-label">Run ${past.run}, read-only</p>
-      <p><a href="/l/${encodeURIComponent(id)}/lecturer">Back to the live run</a></p>
     </div>
+    <section id="run-viewing" class="card run-viewing" aria-label="Run on screen">
+      <p id="run-label">You're viewing Run ${past.run}, read-only.</p>
+      <p><a href="/l/${encodeURIComponent(id)}/lecturer" id="run-back" class="pill-link primary">Back to the current run, run ${currentRun(id)}</a></p>
+    </section>
 ${runControlsHtml(id, past.run)}
     <div class="lecturer-layout">
       <div class="all-panel">
@@ -2581,6 +2624,7 @@ ${runControlsHtml(id, past.run)}
         ${readOnlyNotesHtml(past.notes)}
       </div>
     </div>
+    ${rankingSectionHtml(rankingInnerHtml(lecture))}
   `;
 }
 
@@ -2612,16 +2656,16 @@ async function handleFreshRunGet(id: string, req: Request): Promise<Response> {
   const base = `/l/${encodeURIComponent(id)}/lecturer`;
   const next = lecture.run + 1;
   const body = `
-    <h1>Start a fresh run?</h1>
-    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the run picker. Nothing is deleted.</p>
-    <p>Run ${next} starts empty, on slide 1. Every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <h1>Reset statistics?</h1>
+    <p>Every count, graph and note starts from zero in run ${next}. It starts on slide 1, every open student page moves to it, and each student can say they're lost on each slide again.</p>
+    <p>Run ${lecture.run} stays exactly as it is, and you can still view it, read-only, from the Runs box. Nothing is deleted.</p>
     <form method="post" action="${base}/runs" id="fresh-run-confirm">
       <input type="hidden" name="run" value="${lecture.run}">
-      <button type="submit">Start run ${next}</button>
+      <button type="submit">Reset statistics: start run ${next}</button>
     </form>
     <p><a href="${base}">Cancel, back to the lecturer view</a></p>
   `;
-  return new Response(page("Start a fresh run", body), {
+  return new Response(page("Reset statistics", body), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
@@ -2726,7 +2770,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     if (!(run >= 1 && run <= lecture.run)) return notFoundResponse();
     if (run < lecture.run) {
       return new Response(
-        page(`Lecturer view, run ${run}`, pastRunHtml(id, computePastRunState(lecture, run)), "lecturer", navKey),
+        page(`Lecturer view, run ${run}`, pastRunHtml(lecture, computePastRunState(lecture, run)), "lecturer", navKey),
         { status: 200, headers },
       );
     }

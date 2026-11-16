@@ -112,7 +112,8 @@ it("the dashboard renders its stat tiles and four graph sections with the slot i
   }
   const tiles = section(html, "stat-tiles").textContent!;
   expect(tiles).toMatch(/People here/);
-  expect(tiles).toMatch(/Lost right now/);
+  // "Lost right now" is about the live slide, so it's in the Live slide group.
+  expect(section(html, "live-group").textContent).toMatch(/Lost right now/);
   expect(tiles).toMatch(/Lost this run/);
   expect(tiles).toMatch(/I get it now/);
   expect(tiles).toMatch(/Hardest slide/);

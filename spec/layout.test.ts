@@ -108,7 +108,7 @@ it("the home page has three cards: student, lecturer, how it works, each with a 
   expect(d.body.textContent).not.toMatch(/\bDEMO\b/);
 });
 
-it("the lecturer page has the layout slots: stat tiles, four graph slots, the live column and the activity log", async () => {
+it("the lecturer page has the layout slots: stat tiles, four graph slots, the notes column and the activity log", async () => {
   const d = doc((await get("/l/demo/lecturer", await demoLecturerCookie())).html);
   expect(d.querySelectorAll(".stat-tiles .stat-tile").length).toBeGreaterThanOrEqual(3);
   const slots = [
@@ -121,8 +121,8 @@ it("the lecturer page has the layout slots: stat tiles, four graph slots, the li
     const slot = d.getElementById(id);
     expect(slot, id).not.toBeNull();
     expect(slot!.closest(".graph-grid"), id).not.toBeNull();
-    expect(slot!.querySelector("h2")!.textContent, id).toBe(heading);
-    expect(slot!.getAttribute("aria-labelledby"), id).toBe(slot!.querySelector("h2")!.id);
+    expect(slot!.querySelector("h3")!.textContent, id).toBe(heading);
+    expect(slot!.getAttribute("aria-labelledby"), id).toBe(slot!.querySelector("h3")!.id);
     expect(slot!.querySelector(".slot-body"), id).not.toBeNull();
   }
   // The graphs have landed in their slots: each slot body holds either its
@@ -136,7 +136,7 @@ it("the lecturer page has the layout slots: stat tiles, four graph slots, the li
 
   const log = d.getElementById("activity-log")!;
   expect(log.tagName).toBe("SECTION");
-  expect(log.querySelector("h2")!.textContent).toBe("Activity");
+  expect(log.querySelector("h3")!.textContent).toBe("Activity");
   // The activity log has landed in its slot: its filter form, its empty
   // message and its list of lines are all there.
   expect(log.querySelector("form.activity-filter")).not.toBeNull();
@@ -151,8 +151,10 @@ it("the lecturer page has the layout slots: stat tiles, four graph slots, the li
   for (const id of ["gauge", "gauge-words", "slide-label", "now", "now-bar", "notes", "connection-status"]) {
     expect(d.getElementById(id), id).not.toBeNull();
   }
-  expect(d.querySelector(".live-column #now")).not.toBeNull();
-  expect(d.querySelector(".live-column #notes")).not.toBeNull();
+  // The live slide's section is in the Live slide group; the notes by slide
+  // are in the whole lecture's notes column, beside the graphs.
+  expect(d.querySelector("#live-group #now")).not.toBeNull();
+  expect(d.querySelector("#lecture-group .notes-column #notes")).not.toBeNull();
 });
 
 it("projector mode is server-rendered: ?projector=1 adds the class and its link turns it off", async () => {
