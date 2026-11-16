@@ -154,24 +154,23 @@ export function activityLog(lecture: Lecture): ActivityLine[] {
   return merged.reverse().map((p) => p.line);
 }
 
+// The log filters by deck only (the demo's two decks); each line already
+// names its slide. A created lecture has no decks, so no filter.
 export interface ActivityFilter {
   deck?: DeckId;
-  slide?: number;
 }
 
-// ?logDeck=week-4&logSlide=5 on the lecturer page. Anything that isn't a
-// real deck (demo only) or a positive whole slide number is ignored.
+// ?logDeck=week-4 on the lecturer page. Anything that isn't a real deck
+// (demo only) is ignored.
 export function parseActivityFilter(lecture: Lecture, params: URLSearchParams): ActivityFilter {
   const filter: ActivityFilter = {};
   const deck = params.get("logDeck");
   if (lecture.id === "demo" && deck !== null && isDeckId(deck)) filter.deck = deck;
-  const slideRaw = params.get("logSlide");
-  if (slideRaw !== null && /^\d{1,4}$/.test(slideRaw) && Number(slideRaw) >= 1) filter.slide = Number(slideRaw);
   return filter;
 }
 
 function matches(filter: ActivityFilter, line: ActivityLine): boolean {
-  return (filter.deck === undefined || line.deck === filter.deck) && (filter.slide === undefined || line.slide === filter.slide);
+  return filter.deck === undefined || line.deck === filter.deck;
 }
 
 const escapeHtml = (s: string): string =>
@@ -187,27 +186,24 @@ function emptyText(minPresent: number): string {
 export function activityLogHtml(lecture: Lecture, lines: ActivityLine[], filter: ActivityFilter): string {
   const base = `/l/${encodeURIComponent(lecture.id)}/lecturer`;
   const shown = lines.filter((line) => matches(filter, line));
-  const filtered = filter.deck !== undefined || filter.slide !== undefined;
-  const deckField =
+  const filterForm =
     lecture.id === "demo"
-      ? `<label for="log-deck">Deck</label>
+      ? `<form method="get" action="${base}" class="activity-filter inline-form">
+        <label for="log-deck">Deck</label>
         <select id="log-deck" name="logDeck">
           <option value="">Every deck</option>
           <option value="week-4"${filter.deck === "week-4" ? " selected" : ""}>Week 4</option>
           <option value="week-6"${filter.deck === "week-6" ? " selected" : ""}>Week 6</option>
-        </select>`
+        </select>
+        <button type="submit">Filter</button>
+        ${filter.deck !== undefined ? `<a href="${base}">Show every deck</a>` : ""}
+      </form>`
       : "";
   const items = shown.map((line) => `<li class="activity-line">${escapeHtml(line.text)}</li>`).join("\n");
   return `
     <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
       <h2 id="activity-log-heading">Activity</h2>
-      <form method="get" action="${base}" class="activity-filter inline-form">
-        ${deckField}
-        <label for="log-slide">Slide</label>
-        <input id="log-slide" name="logSlide" type="number" min="1" step="1" inputmode="numeric" value="${filter.slide ?? ""}">
-        <button type="submit">Filter</button>
-        ${filtered ? `<a href="${base}">Show every slide</a>` : ""}
-      </form>
+      ${filterForm}
       <p id="activity-empty"${shown.length > 0 ? " hidden" : ""}>${escapeHtml(emptyText(lecture.min_present))}</p>
       <ul id="activity-lines" class="activity-lines">${items}</ul>
     </section>`;
@@ -225,8 +221,7 @@ export function activityClientJs(filter: ActivityFilter): string {
           var empty = document.getElementById("activity-empty");
           if (!list || !log) return;
           var shown = log.filter(function (line) {
-            return (activityFilter.deck === undefined || line.deck === activityFilter.deck) &&
-              (activityFilter.slide === undefined || line.slide === activityFilter.slide);
+            return activityFilter.deck === undefined || line.deck === activityFilter.deck;
           });
           var sig = JSON.stringify(shown.map(function (line) { return line.text; }));
           if (sig === activitySig) return;

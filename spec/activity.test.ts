@@ -241,30 +241,22 @@ it("no log line or payload holds a browser id, a hash of one, or a student label
   }
 });
 
-it("the deck and slide filter works as a plain GET, with no script", async () => {
+it("a created lecture's log has no filter: it has no decks, and each line names its slide", async () => {
   const lecture = await createLectureAndLogIn("Activity filter");
   await tapAll(lecture.id, await browsers(lecture.id, MIN_PRESENT), 1);
   await tapAll(lecture.id, await browsers(lecture.id, MIN_PRESENT), 2);
 
   const all = await lecturerPage(lecture);
   expect(lines(all)).toEqual([`Slide 2: ${MIN_PRESENT} more people lost`, `Slide 1: ${MIN_PRESENT} more people lost`]);
-  // A GET form a lecturer can use without JavaScript.
-  expect(activitySection(all)).toMatch(/<form method="get" action="\/l\/[a-f0-9]+\/lecturer"/);
-  expect(activitySection(all)).toContain('name="logSlide"');
+  expect(activitySection(all)).not.toContain("<form");
+  expect(activitySection(all)).not.toContain("logSlide");
 
-  const filtered = await lecturerPage(lecture, "?logSlide=1");
-  expect(lines(filtered)).toEqual([`Slide 1: ${MIN_PRESENT} more people lost`]);
-  expect(activitySection(filtered)).toContain(`href="/l/${lecture.id}/lecturer"`);
-
-  const none = await lecturerPage(lecture, "?logSlide=9");
-  expect(lines(none)).toEqual([]);
-
-  // Junk filters are ignored rather than breaking the page.
-  const junk = await fetch(new URL(`/l/${lecture.id}/lecturer?logSlide=abc&logDeck=%3Cscript%3E`, baseUrl), {
+  // A slide filter in the URL is ignored, not applied.
+  const asked = await fetch(new URL(`/l/${lecture.id}/lecturer?logSlide=1&logDeck=%3Cscript%3E`, baseUrl), {
     headers: { cookie: lecture.lecturerCookie },
   });
-  expect(junk.status).toBe(200);
-  expect(lines(await junk.text())).toHaveLength(2);
+  expect(asked.status).toBe(200);
+  expect(lines(await asked.text())).toHaveLength(2);
 });
 
 it("the demo's deck filter keeps one deck's lines and drops the other's", async () => {
@@ -275,9 +267,15 @@ it("the demo's deck filter keeps one deck's lines and drops the other's", async 
   const cookies = await browsers("demo", 2);
   await tapAll("demo", cookies, 7, "week-6");
 
-  const week6 = lines(await lecturerPage(demo, "?logDeck=week-6&logSlide=7"));
-  expect(week6.length).toBeGreaterThan(0);
-  expect(week6.every((l) => l.includes("Week 6 \u00b7 slide 7"))).toBe(true);
+  // The demo filters by deck only, as a plain GET form with no script.
+  const page = await lecturerPage(demo);
+  expect(activitySection(page)).toMatch(/<form method="get" action="\/l\/demo\/lecturer"/);
+  expect(activitySection(page)).toContain('name="logDeck"');
+  expect(activitySection(page)).not.toContain("logSlide");
+
+  const week6 = lines(await lecturerPage(demo, "?logDeck=week-6"));
+  expect(week6.some((l) => l.includes("Week 6 \u00b7 slide 7"))).toBe(true);
+  expect(week6.every((l) => l.startsWith("Week 6"))).toBe(true);
 
   const week4 = lines(await lecturerPage(demo, "?logDeck=week-4"));
   expect(week4.some((l) => l.includes("Week 6"))).toBe(false);
