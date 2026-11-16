@@ -16,6 +16,7 @@ import {
   clearDeckClock,
   currentSlideIndex,
   lectureElapsedMs,
+  LIVE_DECK,
   liveWindowMs,
   msUntilNextSlideChange,
   msUntilTimedSlideChange,
@@ -23,6 +24,8 @@ import {
 } from "./slides.ts";
 import { activityLog } from "./activity.ts";
 import type { ActivityLine } from "./activity.ts";
+import { computeDashboard } from "./dashboard.ts";
+import type { DashboardFragments, DashboardStats, NoteGroup, ResolvedSplit } from "./dashboard.ts";
 import type { DeckId } from "./slides.ts";
 
 const HEARTBEAT_MS = 20_000;
@@ -94,11 +97,23 @@ export type MeterState =
       topReason?: string;
     };
 
+// The dashboard's part of the lecturer payload (src/dashboard.ts): gated
+// stats, the per-slide "I get it now" split, and the dashboard sections
+// already rendered from them, so a live frame and the first page render are
+// the same markup. Lecturer-only, like everything else in LecturerState.
+export interface LecturerDashboardState {
+  stats: DashboardStats;
+  resolvedSplit: ResolvedSplit[];
+  dashboardHtml: DashboardFragments;
+  noteGroups: NoteGroup[];
+}
+
 // `run` is the current run's number, so an open lecturer page knows when a
 // fresh run has started. Never carries a help link or anything per browser.
 // activityLog (src/activity.ts) is lecturer-only, gated line by line: each
 // line is about min_present more people, so it's present on both branches.
-export type LecturerState =
+export type LecturerState = LecturerDashboardState &
+  (
   | {
       run: number;
       present: number;
@@ -122,7 +137,8 @@ export type LecturerState =
       helpedCounts: HelpedCount[];
       notes: NoteEntry[];
       activityLog: ActivityLine[];
-    };
+    }
+  );
 
 // Bars are gated per (deck, slide) pair, independently of present/shown: a
 // slide with fewer qualifying browsers is simply absent from the array —
@@ -408,7 +424,18 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present, run);
   const notes = gatedNotes(lectureId, lecture.min_present, run);
   const log = activityLog(lecture);
-  if (!shown) return { run, present, shown, slide, bars, reasonCounts, helpedCounts, notes, activityLog: log };
+  const dashboardFor = (live: number | undefined): LecturerDashboardState =>
+    computeDashboard({
+      lecture,
+      present,
+      live,
+      bars,
+      reasonCounts,
+      helpedCounts,
+      notes,
+      current: { deck: lecture.id === "demo" ? LIVE_DECK : null, slide },
+    });
+  if (!shown) return { run, present, shown, slide, bars, reasonCounts, helpedCounts, notes, activityLog: log, ...dashboardFor(undefined) };
   const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const { count: live } = liveTapInfo(lectureId, since, run);
   return {
@@ -423,6 +450,7 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
     helpedCounts,
     notes,
     activityLog: log,
+    ...dashboardFor(live),
   };
 }
 

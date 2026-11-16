@@ -1157,6 +1157,12 @@ main.lecturer.projector {
   margin-bottom: var(--space-3);
 }
 
+/* The dashboard's tiles sit in the same grid as the live tiles; the wrapper
+   is only there so a live update can swap them without touching the gauge. */
+.dashboard-tiles {
+  display: contents;
+}
+
 .stat-tile {
   padding: var(--space-2) var(--space-3);
   min-width: 0;
@@ -1247,7 +1253,15 @@ main.lecturer.projector {
 
 .live-column {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
+}
+
+/* A <select> sizes itself to its longest option (the deck titles), which at
+   projector scale is wider than a phone; let it shrink with its column. */
+.live-column select {
+  max-width: 100%;
+  min-width: 0;
 }
 
 #now h3 {
