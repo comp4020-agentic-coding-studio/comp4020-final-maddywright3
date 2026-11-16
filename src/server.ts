@@ -32,6 +32,8 @@ import {
   validateBrowserId,
   validateLecturerSession,
 } from "./auth.ts";
+import { activityClientJs, activityLogHtml, parseActivityFilter } from "./activity.ts";
+import type { ActivityFilter, ActivityLine } from "./activity.ts";
 import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
@@ -1628,6 +1630,7 @@ function lecturerDashboard(
         notes: DashboardNote[];
       },
   minPresent: number,
+  activity: { lecture: Lecture; lines: ActivityLine[]; filter: ActivityFilter },
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
@@ -1676,6 +1679,7 @@ ${tapCountHtml}
         <div id="other-notes">${notesHtml(id, state.notes.filter((n) => !isNow(n)))}</div>
       </div>
     </div>
+${activityLogHtml(activity.lecture, activity.lines, activity.filter)}
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -1683,6 +1687,7 @@ ${tapCountHtml}
         var lectureBase = ${JSON.stringify(`/l/${encodeURIComponent(id)}`)};
 ${GAUGE_CLIENT_JS}
 ${SLIDE_NAME_CLIENT_JS}
+${activityClientJs(activity.filter)}
         var connectionStatus = document.getElementById("connection-status");
 
         function renderBars(bars) {
@@ -1974,6 +1979,7 @@ ${SLIDE_NAME_CLIENT_JS}
           renderBars(state.bars);
           renderReasonCounts(state.reasonCounts);
           renderOtherNotes((state.notes || []).filter(function (n) { return !isNow(n, state.slide); }));
+          renderActivity(state.activityLog);
         }
 
         var source = new EventSource(${JSON.stringify(`/l/${encodeURIComponent(id)}/lecturer/events`)});
@@ -1999,7 +2005,8 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
   }
 
-  const state = computeLecturerState(id) ?? {
+  const computed = computeLecturerState(id);
+  const state = computed ?? {
     present: 0,
     shown: false as const,
     slide: currentSlideIndex(lecture),
@@ -2007,7 +2014,12 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
+  const activity = {
+    lecture,
+    lines: computed?.activityLog ?? [],
+    filter: parseActivityFilter(lecture, new URL(req.url).searchParams),
+  };
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present, activity), "lecturer"), {
     status: 200,
     headers,
   });
