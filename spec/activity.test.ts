@@ -142,26 +142,43 @@ it("2 * min_present taps on a slide give two lines, newest first, each a multipl
   }
 });
 
-it("'mostly X' appears only once X itself was chosen by min_present people on that slide", async () => {
-  const qualifies = await createLectureAndLogIn("Activity mostly qualifies");
-  const cookies = await browsers(qualifies.id, MIN_PRESENT);
-  await tapAll(qualifies.id, cookies, 2);
+it("a lost line lists the reasons its people gave, each only once min_present gave it", async () => {
+  const lecture = await createLectureAndLogIn("Activity reasons breakdown");
+  const cookies = await browsers(lecture.id, MIN_PRESENT);
+  await tapAll(lecture.id, cookies, 2);
+  // All 5 choose the same reason, so the line names it with its count.
   for (const cookie of cookies) {
-    await post(`/l/${qualifies.id}/reason`, cookie, { reason: "Missed a step", slide: "2" });
+    await post(`/l/${lecture.id}/reason`, cookie, { reason: "Missed a step", slide: "2" });
   }
-  expect(lines(await lecturerPage(qualifies))).toEqual([
-    `Slide 2: ${MIN_PRESENT} more people lost, mostly Missed a step`,
+  expect(lines(await lecturerPage(lecture))).toEqual([
+    `Slide 2: ${MIN_PRESENT} more people lost. Reasons: Missed a step ${MIN_PRESENT}`,
   ]);
 
-  const short = await createLectureAndLogIn("Activity mostly too few");
-  const shortCookies = await browsers(short.id, MIN_PRESENT);
-  await tapAll(short.id, shortCookies, 2);
-  for (const cookie of shortCookies.slice(1)) {
-    await post(`/l/${short.id}/reason`, cookie, { reason: "Missed a step", slide: "2" });
+  // Below the threshold a reason is left out entirely, never shown as a
+  // small number: 4 chose one reason, 1 another.
+  const split = await createLectureAndLogIn("Activity reasons too few");
+  const splitCookies = await browsers(split.id, MIN_PRESENT);
+  await tapAll(split.id, splitCookies, 2);
+  for (const [i, cookie] of splitCookies.entries()) {
+    await post(`/l/${split.id}/reason`, cookie, { reason: i === 0 ? "Notation" : "Missed a step", slide: "2" });
   }
-  const shortLines = lines(await lecturerPage(short));
-  expect(shortLines).toEqual([`Slide 2: ${MIN_PRESENT} more people lost`]);
-  expect(activitySection(await lecturerPage(short))).not.toContain("mostly");
+  const splitLines = lines(await lecturerPage(split));
+  expect(splitLines).toEqual([`Slide 2: ${MIN_PRESENT} more people lost`]);
+  expect(activitySection(await lecturerPage(split))).not.toContain("Notation");
+  expect(activitySection(await lecturerPage(split))).not.toContain("Missed a step");
+});
+
+it("a what-helped line lists the answers its people gave, gated the same way", async () => {
+  const lecture = await createLectureAndLogIn("Activity helped breakdown");
+  const cookies = await browsers(lecture.id, MIN_PRESENT);
+  await tapAll(lecture.id, cookies, 3);
+  for (const cookie of cookies) {
+    await post(`/l/${lecture.id}/resolve`, cookie, { slide: "3" });
+    await post(`/l/${lecture.id}/helped`, cookie, { slide: "3", helped: "The example" });
+  }
+  expect(lines(await lecturerPage(lecture))).toContain(
+    `${MIN_PRESENT} people said what helped on slide 3: The example ${MIN_PRESENT}`,
+  );
 });
 
 it("visible notes make a line; hiding one takes its contribution back out", async () => {
@@ -224,7 +241,7 @@ it("no log line or payload holds a browser id, a hash of one, or a student label
   const html = activitySection(await lecturerPage(lecture));
   const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
   const log = JSON.stringify(JSON.parse(frame).activityLog);
-  expect(log).toContain("more people lost, mostly Too fast");
+  expect(log).toContain(`more people lost. Reasons: Too fast ${MIN_PRESENT}`);
   expect(log).toContain("new notes");
 
   for (const cookie of cookies) {

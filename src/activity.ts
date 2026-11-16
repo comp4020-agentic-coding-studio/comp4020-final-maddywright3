@@ -70,25 +70,42 @@ function crossings<R extends { id: number; deck: string | null; slide: number; b
   }
 }
 
-// "mostly X" only when X was itself chosen by at least minPresent distinct
-// browsers on this slide up to this line, and strictly more than any other
-// such reason. A tie names no reason rather than picking one.
-function mostly(rowsSoFar: ActivityTapRow[], minPresent: number): string | undefined {
-  const byReason = new Map<string, Set<string>>();
-  for (const row of rowsSoFar) {
-    if (row.reason === null) continue;
-    let set = byReason.get(row.reason);
+// The answers this line's people gave (reasons on a lost line, what helped
+// on a what-helped line), as they stand now: a reason or answer can come in
+// after the tap. Counted by distinct browser among `people`, and an answer
+// is listed only once at least minPresent of them gave it, so no count is
+// ever one or two people; the rest are left out, never shown small.
+function breakdown(
+  rows: ActivityTapRow[],
+  people: Set<string>,
+  pick: (row: ActivityTapRow) => string | null,
+  minPresent: number,
+): string {
+  const by = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const answer = pick(row);
+    if (answer === null || !people.has(row.browser_id)) continue;
+    let set = by.get(answer);
     if (!set) {
       set = new Set();
-      byReason.set(row.reason, set);
+      by.set(answer, set);
     }
     set.add(row.browser_id);
   }
-  const qualifying = [...byReason].map(([reason, set]) => ({ reason, count: set.size })).filter((r) => r.count >= minPresent);
-  if (qualifying.length === 0) return undefined;
-  qualifying.sort((a, b) => b.count - a.count);
-  if (qualifying.length > 1 && qualifying[0].count === qualifying[1].count) return undefined;
-  return qualifying[0].reason;
+  return [...by]
+    .map(([answer, set]) => ({ answer, count: set.size }))
+    .filter((a) => a.count >= minPresent)
+    .sort((a, b) => b.count - a.count || a.answer.localeCompare(b.answer))
+    .map((a) => `${a.answer} ${a.count}`)
+    .join(", ");
+}
+
+// The browsers this line is about: the minPresent new ones, in row order,
+// that took the slide's count to this multiple.
+function lineBrowsers(rowsSoFar: { browser_id: string }[], minPresent: number): Set<string> {
+  const ordered: string[] = [];
+  for (const row of rowsSoFar) if (!ordered.includes(row.browser_id)) ordered.push(row.browser_id);
+  return new Set(ordered.slice(-minPresent));
 }
 
 export function activityLog(lecture: Lecture): ActivityLine[] {
@@ -97,13 +114,13 @@ export function activityLog(lecture: Lecture): ActivityLine[] {
 
   const tapLines: Positioned[] = [];
   crossings(taps, minPresent, (row, soFar) => {
-    const reason = mostly(soFar, minPresent);
+    const reasons = breakdown(soFar, lineBrowsers(soFar, minPresent), (r) => r.reason, minPresent);
     tapLines.push({
       line: {
         deck: row.deck,
         slide: row.slide,
         kind: "lost",
-        text: `${slideName(row.deck, row.slide)}: ${minPresent} more people lost${reason !== undefined ? `, mostly ${reason}` : ""}`,
+        text: `${slideName(row.deck, row.slide)}: ${minPresent} more people lost${reasons ? `. Reasons: ${reasons}` : ""}`,
       },
       id: row.id,
       at: row.created_at,
@@ -112,13 +129,14 @@ export function activityLog(lecture: Lecture): ActivityLine[] {
   crossings(
     taps.filter((row) => row.helped !== null),
     minPresent,
-    (row) => {
+    (row, soFar) => {
+      const helped = breakdown(soFar, lineBrowsers(soFar, minPresent), (r) => r.helped, minPresent);
       tapLines.push({
         line: {
           deck: row.deck,
           slide: row.slide,
           kind: "helped",
-          text: `${minPresent} people said what helped on ${slideInSentence(row.deck, row.slide)}`,
+          text: `${minPresent} people said what helped on ${slideInSentence(row.deck, row.slide)}${helped ? `: ${helped}` : ""}`,
         },
         id: row.id,
         at: row.created_at,
