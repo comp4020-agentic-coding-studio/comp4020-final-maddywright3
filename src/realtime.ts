@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import {
   getLecture,
+  helpedCounts as rawHelpedCounts,
   liveTapInfo,
   reasonCounts as rawReasonCounts,
   slidesYouTapped,
@@ -9,7 +10,9 @@ import {
   tapCount,
   visibleNotesForSlide,
 } from "./db.ts";
-import type { Lecture, YourSlide } from "./db.ts";
+import type { HelpedCount, Lecture, YourSlide } from "./db.ts";
+import { computeDashboard } from "./dashboard.ts";
+import type { DashboardFragments, DashboardStats, NoteGroup, ResolvedSplit } from "./dashboard.ts";
 import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
@@ -79,8 +82,28 @@ export type MeterState =
       topReason?: string;
     };
 
-export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
+// The dashboard's part of the lecturer payload (src/dashboard.ts): gated
+// stats, the per-slide "I get it now" split, and the dashboard sections
+// already rendered from them, so a live frame and the first page render are
+// the same markup. Lecturer-only, like everything else in LecturerState.
+export interface LecturerDashboardState {
+  stats: DashboardStats;
+  resolvedSplit: ResolvedSplit[];
+  dashboardHtml: DashboardFragments;
+  noteGroups: NoteGroup[];
+}
+
+export type LecturerState = LecturerDashboardState &
+  (
+  | {
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
+      notes: NoteEntry[];
+    }
   | {
       present: number;
       shown: true;
@@ -89,8 +112,10 @@ export type LecturerState =
       live: number;
       totalTaps: number;
       reasonCounts: ReasonCountEntry[];
+      helpedCounts: HelpedCount[];
       notes: NoteEntry[];
-    };
+    }
+  );
 
 // Bars are gated per (deck, slide) pair, independently of present/shown: a
 // slide with fewer qualifying browsers is simply absent from the array —
@@ -109,6 +134,13 @@ function gatedBars(lectureId: string, minPresent: number): Bar[] {
 // person"), just nested inside an otherwise-qualifying slide.
 function gatedReasonCounts(lectureId: string, minPresent: number): ReasonCountEntry[] {
   return rawReasonCounts(lectureId).filter((entry) => entry.count >= minPresent);
+}
+
+// What helped, gated per (deck, slide, answer) exactly as reasons are: one
+// answer picked by fewer than min_present browsers is absent, even on a
+// slide where other answers qualify. Lecturer-only.
+function gatedHelpedCounts(lectureId: string, minPresent: number): HelpedCount[] {
+  return rawHelpedCounts(lectureId).filter((entry) => entry.count >= minPresent);
 }
 
 // The current slide's most common *qualifying* reason — drawn only from
@@ -343,11 +375,25 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const slide = currentSlideIndex(lecture);
   const bars = gatedBars(lectureId, lecture.min_present);
   const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
+  const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
+  const dashboardFor = (live: number | undefined): LecturerDashboardState =>
+    computeDashboard({ lecture, present, live, bars, reasonCounts, helpedCounts, notes });
+  if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes, ...dashboardFor(undefined) };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
+  return {
+    present,
+    shown,
+    slide,
+    bars,
+    live,
+    totalTaps: tapCount(lectureId),
+    reasonCounts,
+    helpedCounts,
+    notes,
+    ...dashboardFor(live),
+  };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
