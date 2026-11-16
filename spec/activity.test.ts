@@ -60,11 +60,26 @@ function tap(lectureId: string, cookie: string, slide: number, deck?: string): P
   return post(`/l/${lectureId}/tap`, cookie, { slide: String(slide), ...(deck ? { deck } : {}) });
 }
 
-async function lecturerPage(lecture: NewLecture, query = ""): Promise<string> {
+// The lecturer page with nobody present, as a lecturer would see it below
+// the threshold. Most tests read the log through lecturerPage instead, which
+// holds enough people present first (the log is sent only at min_present).
+async function lecturerPageAlone(lecture: NewLecture, query = ""): Promise<string> {
   const res = await fetch(new URL(`/l/${lecture.id}/lecturer${query}`, baseUrl), {
     headers: { cookie: lecture.lecturerCookie },
   });
   return res.text();
+}
+
+// The demo's min_present is 2; a created lecture's is 5.
+const thresholdFor = (lectureId: string): number => (lectureId === "demo" ? 2 : 5);
+
+async function lecturerPage(lecture: NewLecture, query = ""): Promise<string> {
+  const close = await present(lecture.id, thresholdFor(lecture.id));
+  try {
+    return await lecturerPageAlone(lecture, query);
+  } finally {
+    await close();
+  }
 }
 
 // The <section id="activity-log"> element's HTML, or "" when absent.
@@ -133,6 +148,55 @@ async function frameFrom(path: string, cookie: string, want?: (data: string) => 
     controller.abort();
   }
 }
+
+// Holds n student streams open on a lecture, so present >= n, and returns a
+// function that closes them. Below min_present the log isn't sent at all.
+async function present(lectureId: string, n: number): Promise<() => Promise<void>> {
+  const cookies = await browsers(lectureId, n);
+  const controllers = cookies.map(() => new AbortController());
+  await Promise.all(
+    cookies.map(async (cookie, i) => {
+      const res = await fetch(new URL(`/l/${lectureId}/events`, baseUrl), { headers: { cookie }, signal: controllers[i].signal });
+      void res.body!.getReader().read().catch(() => {});
+    }),
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  return async () => {
+    for (const c of controllers) c.abort();
+    await new Promise((r) => setTimeout(r, 200));
+  };
+}
+
+// A lecturer stream frame with enough people present for the log to be sent.
+async function lecturerFrame(lecture: NewLecture, want?: (data: string) => boolean): Promise<string> {
+  const close = await present(lecture.id, thresholdFor(lecture.id));
+  try {
+    return await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie, want);
+  } finally {
+    await close();
+  }
+}
+
+const MIN_PRESENT = 5;
+
+// README "Safety in numbers": below the threshold no tap data reaches the
+// lecturer, the activity log included. It leaves the server only once
+// min_present people are here, like live and totalTaps (CLAUDE.md).
+it("below min_present people here, the log isn't in the lecturer's page or stream at all", async () => {
+  const lecture = await createLectureAndLogIn("Activity below threshold");
+  const cookies = await browsers(lecture.id, 1);
+  await tap(lecture.id, cookies[0], 1);
+
+  const html = await lecturerPageAlone(lecture);
+  expect(lines(html)).toEqual([]);
+  expect(activitySection(html)).not.toContain("said they");
+  expect(activitySection(html)).toContain(`The activity log shows once ${MIN_PRESENT} people are here.`);
+  const frame = JSON.parse(await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie));
+  expect(frame).not.toHaveProperty("activityLog");
+  expect(JSON.stringify(frame)).not.toContain("said they");
+
+  expect(lines(await lecturerPage(lecture))).toEqual(["Person 1 said they're lost on Slide 1"]);
+});
 
 it("with no presses the log says so", async () => {
   const lecture = await createLectureAndLogIn("Activity empty");
@@ -203,7 +267,7 @@ it("a reason, I get it now, what helped and a note each give their own line; the
   for (const time of times(html)) expect(time.text).toMatch(/\d{2}:\d{2}:\d{2} AEST$/);
   expect(activitySection(html)).not.toContain("secret activity note text");
 
-  const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  const frame = await lecturerFrame(lecture);
   const log = JSON.stringify(JSON.parse(frame).activityLog);
   expect(log).toContain("Person 1 wrote a note on Slide 2");
   expect(log).not.toContain("secret activity note text");
@@ -232,7 +296,7 @@ it("the lecturer page and stream carry the log live; the student page and stream
   const lineText = "Person 1 said they're lost on Slide 1";
 
   // An already-open lecturer stream gets the line on a later broadcast.
-  const live = frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie, (d) => d.includes(lineText));
+  const live = lecturerFrame(lecture, (d) => d.includes(lineText));
   await new Promise((r) => setTimeout(r, 100));
   await tap(lecture.id, cookie, 1);
   const state = JSON.parse(await live);
@@ -261,7 +325,7 @@ it("no log line or payload holds a browser id, its sha256, or the first 8 hex of
   }
   const html = await lecturerPage(lecture);
   const section = activitySection(html);
-  const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  const frame = await lecturerFrame(lecture);
   const log = JSON.stringify(JSON.parse(frame).activityLog);
   expect(log).toContain("Person 3 chose a reason on Slide 1: Too fast");
 
@@ -292,7 +356,7 @@ it("the log holds the latest 500 presses and says so", async () => {
   const html = await lecturerPage(lecture);
   expect(lines(html)).toHaveLength(500);
   expect(activitySection(html)).toContain("Showing the latest 500");
-  const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  const frame = await lecturerFrame(lecture);
   const state = JSON.parse(frame);
   expect(state.activityLog).toHaveLength(500);
   expect(state.activityLogCapped).toBe(true);
