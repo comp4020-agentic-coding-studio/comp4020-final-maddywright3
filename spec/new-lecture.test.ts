@@ -71,6 +71,9 @@ it("/new opens by saying what the app is for, and asks for slides, minutes, slid
   expect(form.querySelector('input[name="pacing"]')).toBeNull();
   expect(html).not.toContain("I'll press Next");
   expect((form.querySelector("#minutes") as HTMLInputElement).value).toBe("60");
+  // A title alone is enough from the form: slides start at 10, as minutes
+  // start at 60 (README "Try it" step 4: a marker may fill only the title).
+  expect((form.querySelector("#slides") as HTMLInputElement).value).toBe("10");
 });
 
 it("/new needs a total in minutes or minutes per slide, and a number of slides", async () => {

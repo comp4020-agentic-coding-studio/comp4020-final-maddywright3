@@ -826,3 +826,19 @@ it("the lecturer's activity log shows once 5 are here and clears when the room e
     await lecturer.context.close();
   }
 }, 45_000);
+
+// README "Try it" step 4, as a marker does it: open /new, type a title, and
+// submit. The defaults (10 slides, 60 minutes) make that enough.
+it("/new with only a title typed in creates a lecture", async () => {
+  const w = await openWatched(1920, 1080);
+  try {
+    await w.page.goto(new URL("/new", baseUrl).toString());
+    await w.page.locator('input[name="title"]').fill("Title only");
+    await w.page.locator('form[action="/new"] button[type="submit"]').first().click();
+    await w.page.waitForLoadState("networkidle").catch(() => {});
+    await expect.poll(() => w.page.locator("main").textContent()).toMatch(/Student link: \/l\/[a-f0-9]+/);
+    expect(w.problems).toEqual([]);
+  } finally {
+    await w.context.close();
+  }
+}, 30_000);
