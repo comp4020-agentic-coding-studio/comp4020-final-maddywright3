@@ -567,6 +567,20 @@ export function liveTapFor(lectureId: string, browserId: string, sinceIso: strin
 // once, so a reason or "I get it now" names the slide it's about. A request
 // that names none (a page from before this change) gets the browser's most
 // recent live tap, as it always did.
+// This browser's tap on one slide that hasn't had "I get it now", however
+// old. The reasons and "I get it now" stay for the rest of the lecture on
+// such a slide, not just while the tap is live; only the live count fades.
+export function openTapOn(lectureId: string, browserId: string, slideRef: SlideRef): Tap | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM taps
+       WHERE lecture_id = ? AND run_id = ? AND browser_id = ? AND COALESCE(deck, '') = ? AND slide = ?
+         AND resolved_at IS NULL AND legacy_duplicate = 0
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(lectureId, currentRun(lectureId), browserId, slideRef.deck ?? "", slideRef.slide) as Tap | undefined;
+}
+
 export function liveTapOn(
   lectureId: string,
   browserId: string,

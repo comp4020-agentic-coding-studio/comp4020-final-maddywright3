@@ -14,6 +14,7 @@ import {
   startTimedLecture,
   lectureCount,
   liveTapOn,
+  openTapOn,
   resolveTap,
   resolvedTapOn,
   setTapHelped,
@@ -770,6 +771,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const viewedLive = tapStatus === "live";
   const viewedMine = state.yourSlides.find((s) => s.deck === viewedDeckOrNull && s.slide === viewedSlide);
   const viewedResolved = viewedMine?.resolved ?? false;
+  // Tapped and not yet resolved: the reasons and "I get it now" stay for the
+  // rest of the lecture, not only while the tap is live. The note stays tied
+  // to the live window.
+  const viewedOpen = viewedMine !== undefined && !viewedResolved;
   // This browser's own answers on the viewed slide, to mark the chosen
   // button pressed. Read for this page only; never put in a stream.
   const yourAnswers =
@@ -780,7 +785,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
   const buttonHtml = `<button class="tap-button" id="tap-button" type="submit"${tapStatus === "none" ? "" : " disabled"}>${TAP_BUTTON_TEXT[tapStatus]}</button>`;
   const tapStatusHtml = `<div class="tap-status">
         <p id="tap-said"${tapStatus === "none" ? " hidden" : ""}>${SAID_ON_SLIDE}</p>
-        <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${viewedLive ? "" : " hidden"}>
+        <form method="post" action="/l/${encodeURIComponent(id)}/resolve" id="resolve-form"${viewedOpen ? "" : " hidden"}>
           ${slideFieldsHtml(id === "demo" ? viewedDeck : undefined, viewedSlide)}
           <button type="submit">I get it now</button>
         </form>
@@ -841,7 +846,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       </div>
       <div class="after-tap">
         <div id="help-offer-slot" aria-live="polite">${helpOfferHtml}</div>
-        ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive, yourAnswers?.reason ?? null)}
+        ${reasonButtonsHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedOpen, yourAnswers?.reason ?? null)}
         ${helpedHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedResolved, yourAnswers?.helped ?? null)}
         ${noteFormHtml(id, id === "demo" ? viewedDeck : undefined, viewedSlide, viewedLive)}
         <p id="tap-feedback" aria-live="polite"></p>
@@ -1359,7 +1364,10 @@ ${SLIDE_NAME_CLIENT_JS}
         function renderReasonsAndNote(mine) {
           var live = !!(mine && mine.live);
           var resolved = !!(mine && mine.resolved);
-          renderAnswerSet("reasons", live, live && mine.answeredReason);
+          // Tapped and not resolved: the reasons stay for the rest of the
+          // lecture; the note stays tied to the live window.
+          var open = !!mine && !resolved;
+          renderAnswerSet("reasons", open, open && mine.answeredReason);
           var existingNote = document.getElementById("note-form");
           var key = viewedDeck + ":" + viewedSlide;
           if (existingNote && (!live || noteBuiltFor !== key)) {
@@ -1496,7 +1504,8 @@ ${SLIDE_NAME_CLIENT_JS}
           if (deckField) deckField.value = viewedDeck;
           var slideField = resolveForm.querySelector("input[name=slide]");
           if (slideField) slideField.value = String(viewedSlide);
-          if (status === "live") {
+          var openTap = viewedMine();
+          if (openTap && !openTap.resolved) {
             resolveForm.hidden = false;
           } else if (!resolveForm.hidden) {
             // Hiding a focused control drops focus to <body>; hand it to
@@ -1507,7 +1516,7 @@ ${SLIDE_NAME_CLIENT_JS}
           }
           var mine = viewedMine();
           var afterTap = document.querySelector(".after-tap");
-          var focusInAfterTap = status !== "live" && afterTap && afterTap.contains(document.activeElement)
+          var focusInAfterTap = (!mine || mine.resolved) && afterTap && afterTap.contains(document.activeElement)
             && (document.activeElement.closest("#reasons") || document.activeElement.closest("#note-form"));
           renderReasonsAndNote(mine);
           // Focus that was in the reasons or note, now gone, moves to the
@@ -1723,8 +1732,12 @@ async function handleReason(id: string, req: Request): Promise<Response> {
   // Answers lock once sent (ADR 006): a slide whose tap already has a
   // reason, or has no live tap to put one on, refuses the request. setTapReason's
   // own "reason IS NULL" holds this even for two requests at once.
-  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
-  const tap = liveTapOn(id, browserId, since, slideRef);
+  // A form that names its slide acts on that slide's tap for the rest of the
+  // lecture, until "I get it now"; one that doesn't falls back to the live tap.
+  const tap =
+    slideRef !== undefined
+      ? openTapOn(id, browserId, slideRef)
+      : liveTapOn(id, browserId, new Date(Date.now() - liveWindowMs(id)).toISOString(), slideRef);
   if (tap === undefined || !setTapReason(tap.id, reason)) {
     logAction("reason_refused", id, browserId);
     return answerRefused("A reason can only be sent once per slide, while you're counted as lost on it.");
@@ -1819,8 +1832,12 @@ async function handleResolve(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
-  const tap = liveTapOn(id, browserId, since, slideRef);
+  // A form that names its slide acts on that slide's tap for the rest of the
+  // lecture, until "I get it now"; one that doesn't falls back to the live tap.
+  const tap =
+    slideRef !== undefined
+      ? openTapOn(id, browserId, slideRef)
+      : liveTapOn(id, browserId, new Date(Date.now() - liveWindowMs(id)).toISOString(), slideRef);
   if (tap !== undefined && resolveTap(tap.id)) {
     logAction("tap_resolved", id, browserId);
     broadcast(id);
