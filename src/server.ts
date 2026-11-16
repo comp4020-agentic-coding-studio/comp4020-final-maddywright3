@@ -12,6 +12,7 @@ import {
   hideNoteById,
   lectureSlides,
   startTimedLecture,
+  moveTimedClock,
   lectureCount,
   liveTapOn,
   openTapOn,
@@ -61,6 +62,7 @@ import {
   removeLecturerConnection,
   scheduleFade,
   scheduleTimedAdvance,
+  rescheduleTimedAdvance,
   sendInitialLecturerState,
   sendInitialState,
   startHeartbeat,
@@ -77,6 +79,8 @@ import {
   CONDENSED_FACTOR,
   clockText,
   currentSlideIndex,
+  timedOriginFor,
+  timedStarted,
   deckLengthMs,
   lectureElapsedMs,
   liveWindowMs,
@@ -2220,10 +2224,9 @@ function lecturerDashboard(
   const slideControlsHtml =
     id === "demo"
       ? slideLabelHtml
-      : lecture.pacing === "timed"
-        ? `${slideLabelHtml}\n${timedControlsHtml(lecture)}`
-        : `
+      : `
     ${slideLabelHtml}
+    ${lecture.pacing === "timed" ? timedControlsHtml(lecture) : ""}
     <div class="slide-controls">
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
@@ -2879,17 +2882,20 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
     });
   }
 
-  // A timed lecture's slide is its clock's, not the lecturer's to move.
-  if (lecture.pacing === "timed") {
-    logAction("slide_change_rejected", id, browserId);
-    return new Response("This lecture is timed: its slides move on their own.", {
-      status: 409,
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
+  // A started timed lecture: the lecturer can still move ahead of or
+  // behind the clock. The clock's origin moves so the chosen slide starts
+  // now and carries on from there (timedOriginFor), and the timer is
+  // re-armed for that slide's end. Before Start, and on a lecture paced by
+  // Next, the slide just steps.
+  if (timedStarted(lecture)) {
+    const max = slideDurations(lecture)?.length ?? 1;
+    const target = Math.max(1, Math.min(max, currentSlideIndex(lecture) + direction));
+    moveTimedClock(id, timedOriginFor(lecture, target), target);
+  } else {
+    stepCurrentSlide(id, direction);
   }
-
-  stepCurrentSlide(id, direction);
   logAction("slide_changed", id, browserId);
+  rescheduleTimedAdvance(id);
   broadcast(id);
   broadcastToLecturer(id);
 
@@ -2904,7 +2910,6 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
 interface NewLectureInput {
   title: string;
   slides: string;
-  pacing: string;
   minutes: string;
   slideMinutes: string;
   slidesText: string;
@@ -2914,8 +2919,7 @@ interface NewLectureInput {
 const EMPTY_NEW_LECTURE: NewLectureInput = {
   title: "",
   slides: "",
-  pacing: "next",
-  minutes: "",
+  minutes: "60",
   slideMinutes: "",
   slidesText: "",
   helpUrl: "",
@@ -2927,7 +2931,6 @@ function readNewLectureInput(body: string): NewLectureInput {
   return {
     title: get("title").trim(),
     slides: get("slides").trim(),
-    pacing: get("pacing") || "next",
     minutes: get("minutes").trim(),
     slideMinutes: get("slide_minutes").trim(),
     slidesText: get("slides_text"),
@@ -2964,9 +2967,10 @@ async function handleStartLecture(id: string, req: Request): Promise<Response> {
     });
   }
 
-  if (startTimedLecture(id)) {
+  // The clock starts from whichever slide Previous/Next left it on.
+  if (startTimedLecture(id, timedOriginFor(lecture, lecture.current_slide))) {
     logAction("lecture_started", id, browserId);
-    scheduleTimedAdvance(id);
+    rescheduleTimedAdvance(id);
     broadcast(id);
     broadcastToLecturer(id);
   }
@@ -2979,7 +2983,6 @@ async function handleStartLecture(id: string, req: Request): Promise<Response> {
 
 function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTURE): string {
   const value = (v: string): string => (v ? ` value="${escapeHtml(v)}"` : "");
-  const checked = (pacing: string): string => (input.pacing === pacing ? " checked" : "");
   return `
     <h1>Start a lecture</h1>
     <p class="new-intro">Run this beside your own slides. Students tap on the slide you're on, and you see where the room got lost.</p>
@@ -2989,15 +2992,13 @@ function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTU
       <input id="title" name="title" required maxlength="${LECTURE_TITLE_MAX_LENGTH}"${value(input.title)}>
 
       <label for="slides">Number of slides</label>
-      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}. Pasted slide text below sets this for you.</p>
+      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}, needed unless you paste slide text below, which sets it for you.</p>
       <input id="slides" name="slides" type="number" min="1" max="${MAX_SLIDES}" inputmode="numeric" aria-describedby="slides-hint"${value(input.slides)}>
 
       <fieldset class="pacing">
-        <legend>Pacing</legend>
-        <label class="choice"><input type="radio" name="pacing" value="next"${checked("next")}> I'll press Next</label>
-        <label class="choice"><input type="radio" name="pacing" value="timed"${checked("timed")}> Timed</label>
-        <p class="field-hint">A timed lecture starts when you press Start lecture in the lecturer view, then moves to the next slide on its own.</p>
-        <label for="minutes">Total minutes, if timed</label>
+        <legend>Timing</legend>
+        <p class="field-hint" id="timing-hint">The slides move on their own once you press Start lecture in the lecturer view. Previous and Next still work, and the timer carries on from the slide you choose.</p>
+        <label for="minutes">Total minutes</label>
         <p class="field-hint" id="minutes-hint">${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES}, split evenly across the slides.</p>
         <input id="minutes" name="minutes" type="number" min="${MIN_LECTURE_MINUTES}" max="${MAX_LECTURE_MINUTES}" step="any" aria-describedby="minutes-hint"${value(input.minutes)}>
         <label for="slide-minutes">Or minutes per slide</label>
@@ -3034,8 +3035,8 @@ const LECTURE_TOTAL_CAP = 500;
 interface ValidNewLecture {
   title: string;
   slideCount: number | null;
-  pacing: "next" | "timed";
-  slideDurationsMs: number[] | null;
+  pacing: "timed";
+  slideDurationsMs: number[];
   slides: string[];
   helpUrl: string | null;
 }
@@ -3067,33 +3068,32 @@ function validateNewLecture(input: NewLectureInput): ValidNewLecture | string {
     slideCount = n;
   }
 
-  if (input.pacing !== "next" && input.pacing !== "timed") return "Choose a pacing: I'll press Next, or Timed.";
-  let slideDurationsMs: number[] | null = null;
-  if (input.pacing === "timed") {
-    if (slideCount === null) return "A timed lecture needs a number of slides, or pasted slide text.";
-    const totalMessage = `A timed lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
-    let perSlideMinutes: number[];
-    if (input.slideMinutes !== "") {
-      perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
-      if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
-        return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
-      }
-    } else {
-      const total = input.minutes === "" ? NaN : Number(input.minutes);
-      if (!Number.isFinite(total)) return totalMessage;
-      perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
+  // Every lecture made here is timed (ADR 006, amended): the lecturer
+  // keeps Previous/Next to move ahead of or behind the clock. Per-slide
+  // minutes win over the total, as before.
+  if (slideCount === null) return "A lecture needs a number of slides, or pasted slide text.";
+  const totalMessage = `A lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
+  let perSlideMinutes: number[];
+  if (input.slideMinutes !== "") {
+    perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
+    if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
+      return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
     }
-    const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
-    if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
-    slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
+  } else {
+    const total = input.minutes === "" ? NaN : Number(input.minutes);
+    if (!Number.isFinite(total)) return totalMessage;
+    perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
   }
+  const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
+  if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
+  const slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
 
   // The same rule as editing it from the lecturer view: one parser.
   const parsedHelpUrl = parseHelpUrl(input.helpUrl);
   if ("error" in parsedHelpUrl) return parsedHelpUrl.error;
   const helpUrl = parsedHelpUrl.url;
 
-  return { title: input.title, slideCount, pacing: input.pacing, slideDurationsMs, slides, helpUrl };
+  return { title: input.title, slideCount, pacing: "timed", slideDurationsMs, slides, helpUrl };
 }
 
 async function handleNewGet(req: Request): Promise<Response> {
@@ -3136,10 +3136,7 @@ async function handleNewPost(req: Request): Promise<Response> {
 
   const studentUrl = `/l/${id}`;
   const lecturerUrl = `/l/${id}/lecturer`;
-  const timedHtml =
-    valid.pacing === "timed"
-      ? `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view.</p>`
-      : "";
+  const timedHtml = `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view. Previous and Next still work, and the timer carries on from the slide you choose.</p>`;
   const bodyHtml = `
     <h1>Lecture created</h1>
     <p>Student link: <a href="${studentUrl}">${studentUrl}</a></p>

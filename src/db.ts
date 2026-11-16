@@ -419,12 +419,24 @@ export function lectureSlides(lectureId: string): string[] {
 // The first press starts the clock; a second press (another tab, a double
 // click) changes nothing, because started_at IS NULL is in the WHERE.
 // Returns whether this press started it.
-export function startTimedLecture(lectureId: string): boolean {
+// `origin` is the started_at that puts the clock at the start of the slide
+// the lecturer left it on (timedOriginFor in src/slides.ts).
+export function startTimedLecture(lectureId: string, origin: string): boolean {
   return (
     db
       .prepare("UPDATE lectures SET started_at = ? WHERE id = ? AND pacing = 'timed' AND started_at IS NULL")
-      .run(new Date().toISOString(), lectureId).changes > 0
+      .run(origin, lectureId).changes > 0
   );
+}
+
+// The lecturer's Previous/Next on a started timed lecture: the clock's
+// origin moves so the chosen slide starts now, and the run's current_slide
+// follows, so a restart or anything reading it agrees.
+export function moveTimedClock(lectureId: string, origin: string, slide: number): void {
+  db.prepare("UPDATE lectures SET started_at = ? WHERE id = ? AND started_at IS NOT NULL").run(origin, lectureId);
+  db.prepare(
+    "UPDATE runs SET current_slide = ? WHERE lecture_id = ? AND number = (SELECT MAX(number) FROM runs WHERE lecture_id = ?)",
+  ).run(slide, lectureId, lectureId);
 }
 
 export function lectureCount(): number {

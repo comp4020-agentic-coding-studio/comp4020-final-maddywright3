@@ -182,7 +182,11 @@ export function lectureElapsedMs(lectureId: string, deck: DeckId): number {
 // when the lecturer pressed Start lecture, and how long each slide lasts.
 // Unlike the demo's in-memory clock, it survives a restart, because a real
 // lecture keeps going whether or not the server blinked. Before Start it
-// sits on slide 1; after the last slide's time is up it stays there.
+// sits wherever the lecturer's Previous/Next left it (slide 1 to begin
+// with); after the last slide's time is up it stays there. The lecturer's
+// Previous/Next on a started lecture move the clock's origin, started_at,
+// so the chosen slide starts now (timedOriginFor): the slide is still only
+// ever computed from started_at, one source of truth.
 interface TimedPosition {
   slide: number;
   // Milliseconds until the next slide; undefined once on the last slide.
@@ -210,8 +214,23 @@ function timedPosition(lecture: Lecture, now = Date.now()): TimedPosition | unde
 // lecturer-driven current_slide, which has no deck at all.
 export function currentSlideIndex(lecture: Lecture, deck: DeckId = LIVE_DECK): number {
   if (lecture.id === "demo") return liveSlideIndex(lecture.id, deck);
-  if (lecture.pacing === "timed") return timedPosition(lecture)?.slide ?? 1;
+  if (lecture.pacing === "timed") return timedPosition(lecture)?.slide ?? lecture.current_slide;
   return lecture.current_slide;
+}
+
+// The started_at that puts a timed lecture at the start of `slide` at
+// `now`: now minus the durations of every slide before it. Start lecture
+// uses it to start from the current slide, and the lecturer's Previous/Next
+// to carry the clock on from the slide they chose.
+export function timedOriginFor(lecture: Lecture, slide: number, now = Date.now()): string {
+  const durations = slideDurations(lecture) ?? [];
+  const before = durations.slice(0, Math.max(0, slide - 1)).reduce((sum, ms) => sum + ms, 0);
+  return new Date(now - before).toISOString();
+}
+
+// Whether a timed lecture's clock is running.
+export function timedStarted(lecture: Lecture): boolean {
+  return lecture.pacing === "timed" && lecture.started_at !== null && slideDurations(lecture) !== undefined;
 }
 
 // For a started timed lecture, milliseconds until its slide next moves, so
