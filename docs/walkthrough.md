@@ -135,6 +135,10 @@ catch up the next time something else happened.
   the next slide change. It's started when a
   deck's first viewer connects (`addConnection`) and cleared, with the
   clock, when its last viewer leaves (`removeConnection`).
+- `scheduleTimedAdvance` does the same for a timed lecture made at /new.
+  Its clock is the lecture's `started_at`, set when the lecturer presses
+  Start lecture, so it survives a restart; the timer is re-armed when the
+  next stream opens.
 
 Both only push. The values are always computed from the database and the
 clock, so a lost timer (a restart, say) never makes a value wrong, only
@@ -184,7 +188,10 @@ the lecturer session, so lecturer state never travels on a student stream.
 lecturer sees: the gated reason and "what helped" counts, notes (each
 slide's only once enough people have written one), and the activity log
 (`src/activity.ts`, one line per `min_present` more people, never one
-person). It sends through its own throttle, `broadcastToLecturer`. Nothing
+person). The dashboard's tiles and graphs travel in it already rendered
+(`dashboardHtml`, built by `src/dashboard.ts` from the same gated counts),
+so the page and a live update can't format a number differently. It sends
+through its own throttle, `broadcastToLecturer`. Nothing
 per browser is in it, and never the help link.
 
 ## Where to start a change
