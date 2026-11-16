@@ -369,7 +369,7 @@ it("after a tap, the reasons and the note come after the tap bar, and 'I get it 
   expect(resolveButton?.form?.id).toBe("resolve-form");
 });
 
-it("above min_present the gauge reads 'N of M people are lost right now' over a quiet bar", async () => {
+it("above min_present the gauge reads 'N of M people here are lost right now' over a quiet bar", async () => {
   const closers = [await presence("demo"), await presence("demo")]; // demo's min_present is 2
   try {
     const cookie = await newBrowserCookie("demo");
@@ -378,7 +378,7 @@ it("above min_present the gauge reads 'N of M people are lost right now' over a 
     const doc = new JSDOM(html).window.document;
 
     const words = doc.getElementById("gauge-words")!.textContent!;
-    const m = words.match(/^(\d+) of (\d+) (person|people) (is|are) lost right now$/);
+    const m = words.match(/^(\d+) of (\d+) (person|people) here (is|are) lost right now$/);
     expect(m, words).not.toBeNull();
     const [lost, of] = [Number(m![1]), Number(m![2])];
     expect(lost).toBeGreaterThanOrEqual(1);

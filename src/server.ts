@@ -276,7 +276,7 @@ type GaugeState = { present: number; shown: false } | { present: number; shown: 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 
 // The gauge is three nodes. What a sighted person reads is one sentence,
-// "4 of 23 people are lost right now", but that sentence holds the present
+// "4 of 23 people here are lost right now", but that sentence holds the present
 // count, which changes on every arrival and departure and isn't news worth
 // announcing. So the sentence is aria-hidden, and a screen reader gets the
 // same facts from two visually hidden nodes instead: the lost count, which
@@ -297,7 +297,7 @@ function gaugeOf(state: { present: number; live: number }): number {
 function gaugeWords(state: GaugeState, minPresent: number): string {
   if (state.shown) {
     const of = gaugeOf(state);
-    return `${state.live} of ${of} ${plural(of, "person", "people")} ${plural(state.live, "is", "are")} lost right now`;
+    return `${state.live} of ${of} ${plural(of, "person", "people")} here ${plural(state.live, "is", "are")} lost right now`;
   }
   const more = Math.max(0, minPresent - state.present);
   return `Waiting for ${more} more ${plural(more, "person", "people")}`;
@@ -346,7 +346,7 @@ const GAUGE_CLIENT_JS = `
           setText(document.getElementById("gauge-present"), state.present + " " + plural(state.present, "person", "people") + " here");
           if (state.shown) {
             var of = Math.max(state.present, state.live);
-            setText(words, state.live + " of " + of + " " + plural(of, "person", "people") + " " + plural(state.live, "is", "are") + " lost right now");
+            setText(words, state.live + " of " + of + " " + plural(of, "person", "people") + " here " + plural(state.live, "is", "are") + " lost right now");
             setText(document.getElementById("gauge-lost"), state.live + " " + plural(state.live, "person is", "people are") + " lost right now");
             if (!bar) {
               var holder = document.createElement("div");
