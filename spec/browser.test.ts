@@ -531,11 +531,14 @@ it("live updates name the deck and slide the same way the server does", async ()
         document.getElementById("bars")!.innerHTML = "";
       });
     }
-    // Any tap broadcasts a frame to every open page.
+    // A tap on week-6 slide 9 changes that slide's bar, so every open page
+    // gets a frame with different bars. The lecturer page redraws a
+    // dashboard section only when it changed; a tap below the threshold
+    // elsewhere wouldn't change the bars on a fresh database.
     const other = await openWatched(1920, 1080);
     try {
       await other.context.request.get(new URL("/l/demo", baseUrl).toString());
-      await other.context.request.post(new URL("/l/demo/tap", baseUrl).toString(), { form: { deck: "week-4", slide: "1" } });
+      await other.context.request.post(new URL("/l/demo/tap", baseUrl).toString(), { form: { deck: "week-6", slide: "9" } });
     } finally {
       await other.context.close();
     }
