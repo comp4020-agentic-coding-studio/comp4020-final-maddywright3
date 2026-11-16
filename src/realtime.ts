@@ -18,6 +18,7 @@ import {
   lectureElapsedMs,
   liveWindowMs,
   msUntilNextSlideChange,
+  msUntilTimedSlideChange,
   startDeckClock,
 } from "./slides.ts";
 import { activityLog } from "./activity.ts";
@@ -233,6 +234,7 @@ export function addConnection(
     startDeckClock(lectureId, deck);
     scheduleSlideAdvance(lectureId, deck);
   }
+  scheduleTimedAdvance(lectureId);
   const byBrowser = browsersFor(lectureId);
   let streams = byBrowser.get(browserId);
   if (!streams) {
@@ -265,6 +267,7 @@ export function removeConnection(lectureId: string, browserId: string, res: Serv
 }
 
 export function addLecturerConnection(lectureId: string, res: ServerResponse): void {
+  scheduleTimedAdvance(lectureId);
   let set = lecturerConnections.get(lectureId);
   if (!set) {
     set = new Set();
@@ -594,6 +597,33 @@ function scheduleSlideAdvance(lectureId: string, deck: DeckId): void {
   }, delay);
   timer.unref();
   slideTimers.set(key, timer);
+}
+
+// A timed lecture's slide moves on its stored clock, so open streams need a
+// push exactly when it does: the same shape as scheduleSlideAdvance, one
+// timer per lecture. Armed when the lecturer presses Start lecture and when
+// any stream opens on the lecture (which re-arms it after a restart, since
+// the clock is in the database but timers aren't). It stops re-arming once
+// nobody is connected or the last slide is reached.
+const timedTimers = new Map<string, NodeJS.Timeout>();
+
+function anyoneConnected(lectureId: string): boolean {
+  return (connections.get(lectureId)?.size ?? 0) > 0 || (lecturerConnections.get(lectureId)?.size ?? 0) > 0;
+}
+
+export function scheduleTimedAdvance(lectureId: string): void {
+  if (lectureId === "demo" || timedTimers.has(lectureId)) return;
+  const lecture = getLecture(lectureId);
+  if (!lecture) return;
+  const delay = msUntilTimedSlideChange(lecture);
+  if (delay === undefined) return;
+  const timer = setTimeout(() => {
+    timedTimers.delete(lectureId);
+    broadcast(lectureId);
+    if (anyoneConnected(lectureId)) scheduleTimedAdvance(lectureId);
+  }, delay);
+  timer.unref();
+  timedTimers.set(lectureId, timer);
 }
 
 export function startHeartbeat(): void {

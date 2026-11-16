@@ -457,6 +457,93 @@ form {
   padding-left: var(--space-2);
 }
 
+/* /new: the intro line, the form as a card, and quiet hints under fields. */
+.new-intro {
+  font-size: var(--step-1);
+  color: var(--ink);
+  max-width: 60ch;
+}
+
+.new-lecture-form {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
+  max-width: 40rem;
+}
+
+.new-lecture-form input:not([type="hidden"]):not([type="radio"]),
+.new-lecture-form textarea {
+  width: 100%;
+}
+
+.new-lecture-form textarea {
+  min-height: 10rem;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.field-hint {
+  margin: var(--space-half) 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.9em;
+}
+
+.pacing {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  padding: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+.pacing legend {
+  font-weight: 650;
+  padding: 0 var(--space-half);
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-weight: 400;
+  min-height: 2.75rem;
+}
+
+.choice input {
+  min-height: auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  accent-color: var(--accent);
+}
+
+/* The lecture page's own "Lecturer view" link, and the demo's public code. */
+.lecturer-link {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--ink-muted);
+}
+
+.lecturer-code {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--pill);
+  background: var(--paper);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+}
+
+/* Pasted slides on the lecturer page, outside the student's slide card. */
+main.lecturer .pasted-slides {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
 main.readme > div {
   background: var(--surface);
   border: 1px solid var(--line);

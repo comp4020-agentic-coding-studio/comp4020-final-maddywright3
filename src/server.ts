@@ -10,6 +10,8 @@ import {
   createLecture,
   getLecture,
   hideNoteById,
+  lectureSlides,
+  startTimedLecture,
   lectureCount,
   liveTapOn,
   resolveTap,
@@ -56,6 +58,7 @@ import {
   removeConnection,
   removeLecturerConnection,
   scheduleFade,
+  scheduleTimedAdvance,
   sendInitialLecturerState,
   sendInitialState,
   startHeartbeat,
@@ -78,9 +81,11 @@ import {
   deckSlides,
   isDeckId,
   isValidSlide,
+  slideDurations,
   slideName,
 } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
+import { renderPastedSlide, splitPastedSlides } from "./pasted-slides.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const BROWSER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
@@ -419,11 +424,11 @@ ${sorted.map((bar) => `<tr><td>${escapeHtml(barLabel(bar))}</td><td>${bar.distin
 // never loads content over the wire (which would mean a client-side request
 // back to this same server just to switch what's showing; rendering
 // everything up front avoids that entirely, and keeps a no-JS visitor's
-// browsing behaviour identical to a JS one's). A created (/new) lecture has
-// no deck of its own, just a number the lecturer advances, so there's no
-// content to show here at all.
+// browsing behaviour identical to a JS one's). A created (/new) lecture shows
+// the slide text its lecturer pasted, if any (pastedSlidesHtml); without
+// it there's just the number the lecturer advances, and nothing here.
 function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number): string {
-  if (lectureId !== "demo") return "";
+  if (lectureId !== "demo") return pastedSlidesHtml(lectureId, viewedSlide);
   const deckDivs = DECK_IDS.map((deckId) => {
     const sections = deckSlides(deckId)
       .map((html, i) => {
@@ -436,6 +441,23 @@ function slideSectionHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: nu
     return `<div class="deck" data-deck="${deckId}"${deckHidden}>\n${sections}\n<footer class="slide-credit">${deckCreditHtml(deckId)}</footer>\n</div>`;
   }).join("\n");
   return `<div id="slides">\n${deckDivs}\n</div>`;
+}
+
+// A created lecture's pasted slides, every one rendered and all but the
+// current one hidden, the way the demo shows a deck, so a live slide change
+// is a visibility toggle. Rendered on each view from the stored markdown by
+// the escaping renderer in src/pasted-slides.ts; never stored as HTML.
+function pastedSlidesHtml(lectureId: string, currentSlide: number): string {
+  const slides = lectureSlides(lectureId);
+  if (slides.length === 0) return "";
+  const sections = slides
+    .map((markdown, i) => {
+      const slideNumber = i + 1;
+      const hidden = slideNumber === currentSlide ? "" : " hidden";
+      return `<section class="slide" data-slide="${slideNumber}"${hidden}>${renderPastedSlide(markdown)}</section>`;
+    })
+    .join("\n");
+  return `<div id="slides" class="pasted-slides">\n${sections}\n</div>`;
 }
 
 function slideProgressLabel(lectureId: string, deck: DeckId, slide: number, liveSlide: number): string {
@@ -678,6 +700,14 @@ function noteFormHtml(lectureId: string, deck: DeckId | undefined, slide: number
   `;
 }
 
+// A lecturer who lands on the student page can find their own view. The
+// demo's code is public on purpose (CLAUDE.md, ADR 003), so it's shown
+// beside the link; no other lecture's code is ever shown after creation.
+function lecturerLinkHtml(lectureId: string): string {
+  const code = lectureId === "demo" ? ` <span class="lecturer-code">Code: DEMO</span>` : "";
+  return `<p class="lecturer-link"><a href="/l/${encodeURIComponent(lectureId)}/lecturer">Lecturer view</a>${code}</p>`;
+}
+
 const HELP_OFFER_TEXT = "Want a hand with this?";
 const HELP_OFFER_LINK_TEXT = "Your lecturer offers help here.";
 
@@ -766,6 +796,8 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
       ? `<p id="top-reason">Most people here say: ${escapeHtml(state.topReason)}</p>`
       : "";
 
+  const slidesHtml = slideSectionHtml(id, viewedDeck, viewedSlide);
+
   // Layout containers only; the order in the markup is the phone order
   // (slide, gauge, the sticky tap bar, then reasons and the note below it).
   // style.css places the same blocks in two columns on a wide screen.
@@ -777,15 +809,16 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
     <div class="lecture-head">
       <h1>${escapeHtml(lecture.title)}</h1>
       ${deckMenuHtml(id, viewedDeck)}
+      ${lecturerLinkHtml(id)}
     </div>
-    <div class="lecture-layout${id === "demo" ? "" : " no-deck"}">
+    <div class="lecture-layout${slidesHtml === "" ? " no-deck" : ""}">
       <div class="slide-col">
         <div class="slide-card">
           <div class="slide-bar${onLiveNow ? " on-live" : ""}" id="slide-bar">
             ${slideProgressLabel(id, viewedDeck, viewedSlide, liveSlide)}
             ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
           </div>
-          ${slideSectionHtml(id, viewedDeck, viewedSlide)}
+          ${slidesHtml}
         </div>
         ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
         <div id="timeline">${timelineHtml(lecture, viewedDeck, viewedSlide, liveSlide, state.bars)}</div>
@@ -969,7 +1002,10 @@ ${SLIDE_NAME_CLIENT_JS}
           for (var d = 0; d < decks.length; d++) {
             decks[d].hidden = decks[d].dataset.deck !== deck;
           }
-          var slides = document.querySelectorAll("#slides .deck[data-deck=\\"" + deck + "\\"] .slide");
+          // A created lecture's pasted slides have no deck around them.
+          var slides = isDemo
+            ? document.querySelectorAll("#slides .deck[data-deck=\\"" + deck + "\\"] .slide")
+            : document.querySelectorAll("#slides .slide");
           for (var i = 0; i < slides.length; i++) {
             slides[i].hidden = Number(slides[i].dataset.slide) !== slide;
           }
@@ -2095,6 +2131,22 @@ function nowSectionInnerHtml(
   return `<h2 id="now-heading">On this slide</h2><div id="now-bar">${barHtml}</div>${reasonsHtml}${notesListHtml}`;
 }
 
+// A timed lecture has no Previous/Next: its clock moves the slides. Before
+// it starts, the lecturer gets one button; after, a line saying it's
+// running. Start is idempotent, so a second tab still showing the button
+// does no harm.
+function timedControlsHtml(lecture: Lecture): string {
+  const durations = slideDurations(lecture) ?? [];
+  const totalMinutes = Math.round(durations.reduce((sum, ms) => sum + ms, 0) / 6000) / 10;
+  if (lecture.started_at === null) {
+    return `<form method="post" action="/l/${encodeURIComponent(lecture.id)}/lecturer/start" id="start-lecture-form">
+      <button type="submit">Start lecture</button>
+    </form>
+    <p id="timed-status">Timed, ${totalMinutes} minutes. Slides move on their own once you start.</p>`;
+  }
+  return `<p id="timed-status">Timed, ${totalMinutes} minutes. Started, and slides move on their own.</p>`;
+}
+
 function lecturerDashboard(
   id: string,
   state:
@@ -2118,10 +2170,11 @@ function lecturerDashboard(
         reasonCounts: DashboardReasonCount[];
         notes: DashboardNote[];
       },
-  minPresent: number,
+  lecture: Lecture,
   activity: { lecture: Lecture; lines: ActivityLine[]; filter: ActivityFilter },
   projector = false,
 ): string {
+  const minPresent = lecture.min_present;
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
   // viewer to read past a merely-hidden gauge. Bars, reasonCounts and notes
@@ -2138,7 +2191,9 @@ function lecturerDashboard(
   const slideControlsHtml =
     id === "demo"
       ? slideLabelHtml
-      : `
+      : lecture.pacing === "timed"
+        ? `${slideLabelHtml}\n${timedControlsHtml(lecture)}`
+        : `
     ${slideLabelHtml}
     <div class="slide-controls">
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
@@ -2172,6 +2227,7 @@ function lecturerDashboard(
       ${projectorLinkHtml}
     </div>
 ${runControlsHtml(id, state.run)}
+    ${id === "demo" ? "" : pastedSlidesHtml(id, state.slide)}
     <section class="stat-tiles" aria-label="Right now">
       <div class="card stat-tile tile-gauge">
         <h2 class="tile-label">Lost right now</h2>
@@ -2491,6 +2547,11 @@ ${activityClientJs(activity.filter)}
         function render(state) {
           var slideLabel = document.getElementById("slide-label");
           if (slideLabel) setText(slideLabel, slideName(nowDeck, state.slide, { live: true }));
+          // A created lecture's pasted slides follow the live slide.
+          var pastedSlides = document.querySelectorAll("#slides.pasted-slides .slide");
+          for (var ps = 0; ps < pastedSlides.length; ps++) {
+            pastedSlides[ps].hidden = Number(pastedSlides[ps].dataset.slide) !== state.slide;
+          }
           // renderGauge (shared with the student page) only touches the
           // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
@@ -2815,7 +2876,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     filter: parseActivityFilter(lecture, new URL(req.url).searchParams),
   };
   const mainClass = projector ? "lecturer projector" : "lecturer";
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present, activity, projector), mainClass, navKey), {
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture, activity, projector), mainClass, navKey), {
     status: 200,
     headers,
   });
@@ -2877,6 +2938,15 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
     });
   }
 
+  // A timed lecture's slide is its clock's, not the lecturer's to move.
+  if (lecture.pacing === "timed") {
+    logAction("slide_change_rejected", id, browserId);
+    return new Response("This lecture is timed: its slides move on their own.", {
+      status: 409,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
   stepCurrentSlide(id, direction);
   logAction("slide_changed", id, browserId);
   broadcast(id);
@@ -2888,25 +2958,202 @@ async function handleSlideChange(id: string, req: Request, direction: 1 | -1): P
   });
 }
 
-function newLectureForm(error?: string): string {
+// What a lecturer typed at /new, kept as typed so a rejected form comes
+// back filled in.
+interface NewLectureInput {
+  title: string;
+  slides: string;
+  pacing: string;
+  minutes: string;
+  slideMinutes: string;
+  slidesText: string;
+  helpUrl: string;
+}
+
+const EMPTY_NEW_LECTURE: NewLectureInput = {
+  title: "",
+  slides: "",
+  pacing: "next",
+  minutes: "",
+  slideMinutes: "",
+  slidesText: "",
+  helpUrl: "",
+};
+
+function readNewLectureInput(body: string): NewLectureInput {
+  const params = new URLSearchParams(body);
+  const get = (name: string): string => params.get(name) ?? "";
+  return {
+    title: get("title").trim(),
+    slides: get("slides").trim(),
+    pacing: get("pacing") || "next",
+    minutes: get("minutes").trim(),
+    slideMinutes: get("slide_minutes").trim(),
+    slidesText: get("slides_text"),
+    helpUrl: get("help_url").trim(),
+  };
+}
+
+// ADR 006, section 4: the page says what the app is for before it asks for
+// anything. Plain fields and radio buttons, so it works without JS; every
+// limit is shown here and checked again in handleNewPost.
+// Start lecture (ADR 006, section 4): lecturer-only, session checked, and
+// only for a timed lecture. It stores the start time, so the clock carries
+// on through a restart, arms the timer that pushes each slide change, and
+// tells every open stream at once.
+async function handleStartLecture(id: string, req: Request): Promise<Response> {
+  const lecture = getLecture(id);
+  if (!lecture) return notFoundResponse();
+
+  const cookieHeader = req.headers.get("cookie");
+  const browserId = validateBrowserId(cookieHeader);
+
+  if (id === "demo" || !validateLecturerSession(id, cookieHeader)) {
+    logAction("lecture_start_rejected", id, browserId);
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  if (lecture.pacing !== "timed") {
+    logAction("lecture_start_rejected", id, browserId);
+    return new Response("This lecture moves when you press Next; there's nothing to start.", {
+      status: 409,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  if (startTimedLecture(id)) {
+    logAction("lecture_started", id, browserId);
+    scheduleTimedAdvance(id);
+    broadcast(id);
+    broadcastToLecturer(id);
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/l/${encodeURIComponent(id)}/lecturer` },
+  });
+}
+
+function newLectureForm(error?: string, input: NewLectureInput = EMPTY_NEW_LECTURE): string {
+  const value = (v: string): string => (v ? ` value="${escapeHtml(v)}"` : "");
+  const checked = (pacing: string): string => (input.pacing === pacing ? " checked" : "");
   return `
     <h1>Start a lecture</h1>
-    ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
-    <form method="post" action="/new" class="inline-form">
+    <p class="new-intro">Run this beside your own slides. Students tap on the slide you're on, and you see where the room got lost.</p>
+    ${error ? `<p class="form-error" role="alert">${escapeHtml(error)}</p>` : ""}
+    <form method="post" action="/new" class="new-lecture-form">
       <label for="title">Lecture title</label>
-      <input id="title" name="title" required>
+      <input id="title" name="title" required maxlength="${LECTURE_TITLE_MAX_LENGTH}"${value(input.title)}>
+
+      <label for="slides">Number of slides</label>
+      <p class="field-hint" id="slides-hint">1 to ${MAX_SLIDES}. Pasted slide text below sets this for you.</p>
+      <input id="slides" name="slides" type="number" min="1" max="${MAX_SLIDES}" inputmode="numeric" aria-describedby="slides-hint"${value(input.slides)}>
+
+      <fieldset class="pacing">
+        <legend>Pacing</legend>
+        <label class="choice"><input type="radio" name="pacing" value="next"${checked("next")}> I'll press Next</label>
+        <label class="choice"><input type="radio" name="pacing" value="timed"${checked("timed")}> Timed</label>
+        <p class="field-hint">A timed lecture starts when you press Start lecture in the lecturer view, then moves to the next slide on its own.</p>
+        <label for="minutes">Total minutes, if timed</label>
+        <p class="field-hint" id="minutes-hint">${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES}, split evenly across the slides.</p>
+        <input id="minutes" name="minutes" type="number" min="${MIN_LECTURE_MINUTES}" max="${MAX_LECTURE_MINUTES}" step="any" aria-describedby="minutes-hint"${value(input.minutes)}>
+        <label for="slide-minutes">Or minutes per slide</label>
+        <p class="field-hint" id="slide-minutes-hint">One number per slide, separated by commas, e.g. 2, 3, 1.5. Used instead of the total.</p>
+        <input id="slide-minutes" name="slide_minutes" aria-describedby="slide-minutes-hint"${value(input.slideMinutes)}>
+      </fieldset>
+
+      <label for="slides-text">Slide text (optional)</label>
+      <p class="field-hint" id="slides-text-hint">Markdown, with a line of --- between slides. Up to 50 KB. HTML shows as plain text, images aren't shown, and only http and https links stay links.</p>
+      <textarea id="slides-text" name="slides_text" rows="10" aria-describedby="slides-text-hint">
+${escapeHtml(input.slidesText)}</textarea>
+
+      <label for="help-url">Where students can get help (optional)</label>
+      <p class="field-hint" id="help-url-hint">An https link, up to ${HELP_URL_MAX_LENGTH} characters.</p>
+      <input id="help-url" name="help_url" type="url" maxlength="${HELP_URL_MAX_LENGTH}" aria-describedby="help-url-hint"${value(input.helpUrl)}>
+
       <button type="submit">Create</button>
     </form>
   `;
 }
 
 const LECTURE_TITLE_MAX_LENGTH = 100;
+const MAX_SLIDES = 60;
+const MIN_LECTURE_MINUTES = 5;
+const MAX_LECTURE_MINUTES = 180;
+const SLIDES_TEXT_MAX_BYTES = 50 * 1024;
 // A straight COUNT(*) >= N check with no logic to get wrong — exercising it
 // cleanly means actually creating 500 lectures or adding a test-only seam to
 // lower the threshold, and neither is worth the cost here, so this one is
 // judged by hand rather than enforced by a test (same enforced/judged split
 // the README already uses for other claims).
 const LECTURE_TOTAL_CAP = 500;
+
+interface ValidNewLecture {
+  title: string;
+  slideCount: number | null;
+  pacing: "next" | "timed";
+  slideDurationsMs: number[] | null;
+  slides: string[];
+  helpUrl: string | null;
+}
+
+// Every limit /new states, checked here whatever the browser allowed. The
+// first problem found is the message; the form comes back with the input.
+function validateNewLecture(input: NewLectureInput): ValidNewLecture | string {
+  if (!input.title) return "A title is required.";
+  if (input.title.length > LECTURE_TITLE_MAX_LENGTH) {
+    return `Titles are limited to ${LECTURE_TITLE_MAX_LENGTH} characters.`;
+  }
+
+  let slides: string[] = [];
+  if (input.slidesText.trim() !== "") {
+    if (Buffer.byteLength(input.slidesText, "utf8") > SLIDES_TEXT_MAX_BYTES) {
+      return "Pasted slide text is limited to 50 KB.";
+    }
+    slides = splitPastedSlides(input.slidesText);
+    if (slides.length > MAX_SLIDES) {
+      return `The pasted text makes ${slides.length} slides. A lecture has at most ${MAX_SLIDES}.`;
+    }
+  }
+
+  // Pasted slides' count wins over the number field (ADR 006).
+  let slideCount: number | null = slides.length > 0 ? slides.length : null;
+  if (slideCount === null && input.slides !== "") {
+    const n = Number(input.slides);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_SLIDES) return `The number of slides must be 1 to ${MAX_SLIDES}.`;
+    slideCount = n;
+  }
+
+  if (input.pacing !== "next" && input.pacing !== "timed") return "Choose a pacing: I'll press Next, or Timed.";
+  let slideDurationsMs: number[] | null = null;
+  if (input.pacing === "timed") {
+    if (slideCount === null) return "A timed lecture needs a number of slides, or pasted slide text.";
+    const totalMessage = `A timed lecture runs ${MIN_LECTURE_MINUTES} to ${MAX_LECTURE_MINUTES} minutes in total.`;
+    let perSlideMinutes: number[];
+    if (input.slideMinutes !== "") {
+      perSlideMinutes = input.slideMinutes.split(/[\s,]+/).filter((part) => part !== "").map(Number);
+      if (perSlideMinutes.length !== slideCount || perSlideMinutes.some((m) => !Number.isFinite(m) || m <= 0)) {
+        return `Minutes per slide need one number per slide (${slideCount}), each more than 0.`;
+      }
+    } else {
+      const total = input.minutes === "" ? NaN : Number(input.minutes);
+      if (!Number.isFinite(total)) return totalMessage;
+      perSlideMinutes = Array.from({ length: slideCount }, () => total / slideCount);
+    }
+    const total = perSlideMinutes.reduce((sum, m) => sum + m, 0);
+    if (total < MIN_LECTURE_MINUTES - 1e-9 || total > MAX_LECTURE_MINUTES + 1e-9) return totalMessage;
+    slideDurationsMs = perSlideMinutes.map((m) => Math.round(m * 60_000));
+  }
+
+  // The same rule as editing it from the lecturer view: one parser.
+  const parsedHelpUrl = parseHelpUrl(input.helpUrl);
+  if ("error" in parsedHelpUrl) return parsedHelpUrl.error;
+  const helpUrl = parsedHelpUrl.url;
+
+  return { title: input.title, slideCount, pacing: input.pacing, slideDurationsMs, slides, helpUrl };
+}
 
 async function handleNewGet(req: Request): Promise<Response> {
   const { headers } = ensureBrowserIdentity(req);
@@ -2916,45 +3163,47 @@ async function handleNewGet(req: Request): Promise<Response> {
 async function handleNewPost(req: Request): Promise<Response> {
   const { browserId, headers } = ensureBrowserIdentity(req);
 
-  const body = await req.text();
-  const title = new URLSearchParams(body).get("title")?.trim();
-  if (!title) {
-    return new Response(page("Start a lecture", newLectureForm("A title is required.")), {
-      status: 400,
-      headers,
-    });
-  }
-  if (title.length > LECTURE_TITLE_MAX_LENGTH) {
-    return new Response(
-      page("Start a lecture", newLectureForm(`Titles are limited to ${LECTURE_TITLE_MAX_LENGTH} characters.`)),
-      { status: 400, headers },
-    );
+  const input = readNewLectureInput(await req.text());
+  const valid = validateNewLecture(input);
+  if (typeof valid === "string") {
+    return new Response(page("Start a lecture", newLectureForm(valid, input)), { status: 400, headers });
   }
   if (!checkCreateLectureRateLimit(browserId)) {
     return new Response(
-      page("Start a lecture", newLectureForm("Too many lectures from this browser. Try again in an hour.")),
+      page("Start a lecture", newLectureForm("Too many lectures from this browser. Try again in an hour.", input)),
       { status: 429, headers },
     );
   }
   if (lectureCount() >= LECTURE_TOTAL_CAP) {
     return new Response(
-      page("Start a lecture", newLectureForm("This app isn't accepting new lectures right now.")),
+      page("Start a lecture", newLectureForm("This app isn't accepting new lectures right now.", input)),
       { status: 429, headers },
     );
   }
 
   const id = randomBytes(4).toString("hex");
   const code = generateAccessCode();
-  createLecture(id, title, 5, hashCode(code));
+  createLecture(id, valid.title, 5, hashCode(code), {
+    helpUrl: valid.helpUrl,
+    slideCount: valid.slideCount,
+    pacing: valid.pacing,
+    slideDurationsMs: valid.slideDurationsMs,
+    slides: valid.slides,
+  });
   recordLectureCreation(browserId);
   logAction("lecture_created", id, browserId);
 
   const studentUrl = `/l/${id}`;
   const lecturerUrl = `/l/${id}/lecturer`;
+  const timedHtml =
+    valid.pacing === "timed"
+      ? `<p>This lecture is timed. Its slides start moving when you press Start lecture in the lecturer view.</p>`
+      : "";
   const bodyHtml = `
     <h1>Lecture created</h1>
     <p>Student link: <a href="${studentUrl}">${studentUrl}</a></p>
     <p>Lecturer code (shown once, write it down): <strong>${escapeHtml(code)}</strong></p>
+    ${timedHtml}
     <p><a href="${lecturerUrl}">Go to the lecturer view</a></p>
   `;
   return new Response(page("Lecture created", bodyHtml), { status: 200, headers });
@@ -3027,6 +3276,13 @@ async function route(req: Request): Promise<Response> {
     const id = safeDecode(slideNextMatch[1]);
     if (id === undefined) return notFoundResponse();
     return handleSlideChange(id, req, 1);
+  }
+
+  const startMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/start$/);
+  if (method === "POST" && startMatch) {
+    const id = safeDecode(startMatch[1]);
+    if (id === undefined) return notFoundResponse();
+    return handleStartLecture(id, req);
   }
 
   const slidePrevMatch = pathname.match(/^\/l\/([^/]+)\/lecturer\/slide\/prev$/);

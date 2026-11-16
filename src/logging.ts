@@ -12,6 +12,8 @@ export type LogAction =
   | "lecture_created"
   | "slide_changed"
   | "slide_change_rejected"
+  | "lecture_started"
+  | "lecture_start_rejected"
   | "reason_set"
   | "reason_rejected"
   | "reason_refused"

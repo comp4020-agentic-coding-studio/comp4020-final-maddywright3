@@ -178,10 +178,47 @@ export function lectureElapsedMs(lectureId: string, deck: DeckId): number {
   return elapsed === undefined ? 0 : elapsed % deckLengthMs(deck);
 }
 
-// The demo's live slide on `deck` (LIVE_DECK unless named); a created
-// lecture's lecturer-driven current_slide, which has no deck at all.
+// A timed lecture (ADR 006, section 4) keeps its clock in the database:
+// when the lecturer pressed Start lecture, and how long each slide lasts.
+// Unlike the demo's in-memory clock, it survives a restart, because a real
+// lecture keeps going whether or not the server blinked. Before Start it
+// sits on slide 1; after the last slide's time is up it stays there.
+interface TimedPosition {
+  slide: number;
+  // Milliseconds until the next slide; undefined once on the last slide.
+  msUntilNext: number | undefined;
+}
+
+export function slideDurations(lecture: Lecture): number[] | undefined {
+  if (lecture.pacing !== "timed" || lecture.slide_durations_ms === null) return undefined;
+  return JSON.parse(lecture.slide_durations_ms) as number[];
+}
+
+function timedPosition(lecture: Lecture, now = Date.now()): TimedPosition | undefined {
+  const durations = slideDurations(lecture);
+  if (durations === undefined || lecture.started_at === null) return undefined;
+  let remaining = Math.max(0, now - Date.parse(lecture.started_at));
+  for (let i = 0; i < durations.length - 1; i++) {
+    if (remaining < durations[i]) return { slide: i + 1, msUntilNext: durations[i] - remaining };
+    remaining -= durations[i];
+  }
+  return { slide: durations.length, msUntilNext: undefined };
+}
+
+// The demo's live slide on `deck` (LIVE_DECK unless named); a timed
+// lecture's slide from its stored clock; otherwise a created lecture's
+// lecturer-driven current_slide, which has no deck at all.
 export function currentSlideIndex(lecture: Lecture, deck: DeckId = LIVE_DECK): number {
-  return lecture.id === "demo" ? liveSlideIndex(lecture.id, deck) : lecture.current_slide;
+  if (lecture.id === "demo") return liveSlideIndex(lecture.id, deck);
+  if (lecture.pacing === "timed") return timedPosition(lecture)?.slide ?? 1;
+  return lecture.current_slide;
+}
+
+// For a started timed lecture, milliseconds until its slide next moves, so
+// src/realtime.ts can push the change on time. undefined before Start,
+// on the last slide, and for any other lecture.
+export function msUntilTimedSlideChange(lecture: Lecture): number | undefined {
+  return timedPosition(lecture)?.msUntilNext;
 }
 
 // For a running deck clock, milliseconds until its live slide advances on
@@ -215,10 +252,11 @@ export function clockText(ms: number): string {
 // there's no fixed ceiling to validate against; any positive integer is a
 // plausible slide for one of those (the lecturer may advance further after a
 // student's page loads, and a student may be looking at an earlier slide
-// than the current one too).
+// than the current one too). One made at /new since it asked for a slide
+// count has that ceiling.
 export function isValidSlide(lecture: Lecture, deck: string | undefined, slide: number): boolean {
   if (!Number.isInteger(slide) || slide < 1) return false;
-  if (lecture.id !== "demo") return true;
+  if (lecture.id !== "demo") return lecture.slide_count === null || slide <= lecture.slide_count;
   if (deck === undefined || !isDeckId(deck)) return false;
   return slide <= deckSlideCount(deck);
 }

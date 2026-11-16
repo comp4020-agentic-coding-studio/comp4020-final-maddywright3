@@ -54,6 +54,36 @@ const addingHelpUrl = !lectureColumns.some((c) => c.name === "help_url");
 if (addingHelpUrl) {
   db.exec("ALTER TABLE lectures ADD COLUMN help_url TEXT");
 }
+// ADR 006, section 4: what /new asks for. Every column is optional or
+// defaulted, so a lecture made before this keeps behaving as it did.
+if (!lectureColumns.some((c) => c.name === "slide_count")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN slide_count INTEGER");
+}
+if (!lectureColumns.some((c) => c.name === "pacing")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN pacing TEXT NOT NULL DEFAULT 'next'");
+}
+// A timed lecture's per-slide durations, a JSON array of milliseconds, and
+// when the lecturer pressed Start lecture. Both live here rather than in
+// memory, so the clock survives a restart (unlike the demo's, which is
+// meant to restart with the room).
+if (!lectureColumns.some((c) => c.name === "slide_durations_ms")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN slide_durations_ms TEXT");
+}
+if (!lectureColumns.some((c) => c.name === "started_at")) {
+  db.exec("ALTER TABLE lectures ADD COLUMN started_at TEXT");
+}
+
+// Slide text a lecturer pasted at /new, one row per slide, kept as the
+// markdown they typed. It is rendered on every view through the escaping
+// renderer in src/pasted-slides.ts, so no HTML is ever stored as HTML.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lecture_slides (
+    lecture_id TEXT NOT NULL REFERENCES lectures(id),
+    slide INTEGER NOT NULL,
+    markdown TEXT NOT NULL,
+    PRIMARY KEY (lecture_id, slide)
+  )
+`);
 
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
@@ -249,6 +279,11 @@ export interface Lecture {
   current_slide: number;
   // The current run's number.
   run: number;
+  slide_count: number | null;
+  pacing: "next" | "timed";
+  slide_durations_ms: string | null;
+  // When Start lecture was pressed, for the current run. A fresh run clears it.
+  started_at: string | null;
 }
 
 export interface Tap {
@@ -280,20 +315,45 @@ export function getLecture(id: string): Lecture | undefined {
   return { ...lecture, current_slide: run_current_slide };
 }
 
+export interface NewLectureOptions {
+  helpUrl?: string | null;
+  slideCount?: number | null;
+  pacing?: "next" | "timed";
+  slideDurationsMs?: number[] | null;
+  // Pasted markdown, one entry per slide.
+  slides?: string[];
+}
+
+// The lecture and its slides go in together or not at all.
 export function createLecture(
   id: string,
   title: string,
   minPresent: number,
   code: HashedCode,
-  helpUrl: string | null = null,
+  options: NewLectureOptions = {},
 ): void {
   const nowIso = new Date().toISOString();
   db.exec("BEGIN");
   try {
     db.prepare(
-      "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt, help_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(id, title, nowIso, minPresent, code.hash, code.salt, helpUrl);
+      `INSERT INTO lectures
+         (id, title, created_at, min_present, code_hash, code_salt, help_url, slide_count, pacing, slide_durations_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      title,
+      nowIso,
+      minPresent,
+      code.hash,
+      code.salt,
+      options.helpUrl ?? null,
+      options.slideCount ?? null,
+      options.pacing ?? "next",
+      options.slideDurationsMs ? JSON.stringify(options.slideDurationsMs) : null,
+    );
     db.prepare("INSERT INTO runs (lecture_id, number, started_at) VALUES (?, 1, ?)").run(id, nowIso);
+    const insertSlide = db.prepare("INSERT INTO lecture_slides (lecture_id, slide, markdown) VALUES (?, ?, ?)");
+    (options.slides ?? []).forEach((markdown, i) => insertSlide.run(id, i + 1, markdown));
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");
@@ -336,11 +396,32 @@ export function startRun(lectureId: string, replacing: number): boolean {
        ON CONFLICT DO NOTHING`,
     )
     .run(lectureId, replacing, new Date().toISOString(), lectureId, replacing);
+  // A timed lecture's clock belongs to the run it timed: a fresh run waits
+  // for Start lecture again rather than resuming mid-way.
+  if (result.changes > 0) db.prepare("UPDATE lectures SET started_at = NULL WHERE id = ?").run(lectureId);
   return result.changes > 0;
 }
 
 export function setHelpUrl(lectureId: string, helpUrl: string | null): void {
   db.prepare("UPDATE lectures SET help_url = ? WHERE id = ?").run(helpUrl, lectureId);
+}
+
+export function lectureSlides(lectureId: string): string[] {
+  const rows = db
+    .prepare("SELECT markdown FROM lecture_slides WHERE lecture_id = ? ORDER BY slide")
+    .all(lectureId) as { markdown: string }[];
+  return rows.map((row) => row.markdown);
+}
+
+// The first press starts the clock; a second press (another tab, a double
+// click) changes nothing, because started_at IS NULL is in the WHERE.
+// Returns whether this press started it.
+export function startTimedLecture(lectureId: string): boolean {
+  return (
+    db
+      .prepare("UPDATE lectures SET started_at = ? WHERE id = ? AND pacing = 'timed' AND started_at IS NULL")
+      .run(new Date().toISOString(), lectureId).changes > 0
+  );
 }
 
 export function lectureCount(): number {
@@ -756,10 +837,13 @@ export function lecturerSessionValid(token: string, lectureId: string, sinceIso:
 // moment it actually runs, not a stale value read earlier — same atomicity
 // discipline as tapOncePerSlide's single-statement dedup.
 // The slide moves within the current run only; an earlier run keeps the
-// slide it ended on.
+// slide it ended on. A lecture with a slide count stops at its last slide;
+// one made before /new asked (no count) has no ceiling, as before.
 export function stepCurrentSlide(lectureId: string, direction: 1 | -1): void {
   db.prepare(
-    `UPDATE runs SET current_slide = MAX(1, current_slide + ?)
+    `UPDATE runs
+     SET current_slide = MAX(1, MIN(current_slide + ?,
+       COALESCE((SELECT slide_count FROM lectures WHERE id = ?), current_slide + 1)))
      WHERE lecture_id = ? AND number = (SELECT MAX(number) FROM runs WHERE lecture_id = ?)`,
-  ).run(direction, lectureId, lectureId);
+  ).run(direction, lectureId, lectureId, lectureId);
 }
