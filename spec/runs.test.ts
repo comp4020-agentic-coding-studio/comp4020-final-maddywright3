@@ -16,7 +16,7 @@ async function createLectureAndLogIn(title: string): Promise<NewLecture> {
   const createRes = await fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: `title=${encodeURIComponent(title)}`,
+    body: `title=${encodeURIComponent(title)}&slides=60&minutes=60`,
   });
   const createHtml = await createRes.text();
   const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

@@ -225,7 +225,7 @@ it(
       await fetch(new URL("/new", baseUrl), {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: "title=Fade+window+test",
+        body: "title=Fade+window+test&slides=60&minutes=60",
       })
     ).text();
     const lectureId = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

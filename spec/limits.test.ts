@@ -93,7 +93,7 @@ async function createLecture(cookie: string, title: string): Promise<Response> {
   return fetch(new URL("/new", baseUrl), {
     method: "POST",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ title }),
+    body: new URLSearchParams({ title, slides: "60", minutes: "60" }),
   });
 }
 

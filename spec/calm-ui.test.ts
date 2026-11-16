@@ -117,7 +117,7 @@ async function createLecture(title: string): Promise<{ id: string; code: string 
     await fetch(new URL("/new", baseUrl), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `title=${encodeURIComponent(title)}`,
+      body: `title=${encodeURIComponent(title)}&slides=60&minutes=60`,
     })
   ).text();
   const id = html.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

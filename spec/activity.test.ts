@@ -20,7 +20,7 @@ async function createLectureAndLogIn(title: string): Promise<NewLecture> {
     await fetch(new URL("/new", baseUrl), {
       method: "POST",
       headers: { cookie: creator, "content-type": "application/x-www-form-urlencoded" },
-      body: `title=${encodeURIComponent(title)}`,
+      body: `title=${encodeURIComponent(title)}&slides=60&minutes=60`,
     })
   ).text();
   const id = createHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];

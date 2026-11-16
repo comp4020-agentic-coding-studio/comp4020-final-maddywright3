@@ -294,7 +294,7 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     const w = await openWatched(width, height, undefined, { colorScheme });
     try {
       const request = w.context.request;
-      const created = await (await request.post(new URL("/new", baseUrl).toString(), { form: { title: "Runs and ranking" } })).text();
+      const created = await (await request.post(new URL("/new", baseUrl).toString(), { form: { title: "Runs and ranking", slides: "60", minutes: "60" } })).text();
       const lectureId = created.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
       const code = created.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
       await request.post(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString(), { form: { code }, maxRedirects: 0 });
@@ -407,6 +407,57 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       expect(await page.locator("#timeline .timeline-you").count()).toBe(1);
       // Browsed in place: no navigation.
       expect(page.url()).toBe(urlBefore);
+      expect(await hasHorizontalScroll(page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 60_000);
+
+  // A created lecture's student arrows: plain links reached by Tab,
+  // browsing in place, the arrow keys within 1 to its slide count, and
+  // Back to live.
+  it("a created lecture: arrows by Tab and keyboard, bounded, Back to live", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      const created = await (
+        await w.context.request.post(new URL("/new", baseUrl).toString(), {
+          form: { title: "Student arrows", slides: "5", minutes: "60" },
+        })
+      ).text();
+      const lectureId = created.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
+      await page.goto(new URL(`/l/${lectureId}`, baseUrl).toString());
+      await page.waitForLoadState("networkidle").catch(() => {});
+      const label = page.locator("#slide-label");
+      await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
+
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Next slide", 80);
+      const urlBefore = page.url();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => label.textContent()).toBe("Slide 2");
+      // Browsed in place: no navigation.
+      expect(page.url()).toBe(urlBefore);
+
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => label.textContent()).toBe("Slide 3");
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => label.textContent()).toBe("Slide 4");
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => label.textContent()).toBe("Slide 5");
+      // The last slide is the bound: Next is no longer a link.
+      await page.keyboard.press("ArrowRight");
+      await page.waitForTimeout(200);
+      expect(await label.textContent()).toBe("Slide 5");
+      expect(await page.locator("#slide-next-link").evaluate((el) => el.tagName)).toBe("SPAN");
+
+      const back = page.locator("#back-to-live-link");
+      await expect.poll(() => back.isVisible()).toBe(true);
+      await back.click();
+      await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
+      expect(await back.isVisible()).toBe(false);
+
       expect(await hasHorizontalScroll(page)).toBe(false);
       expect(w.problems).toEqual([]);
     } finally {
@@ -606,15 +657,16 @@ it("live updates name the deck and slide the same way the server does", async ()
   }
 }, 30_000);
 
-// A created lecture's slide is wherever the lecturer's Next/Prev leaves it.
-// The student page has no slides of its own to browse, so it must follow:
-// the label, and the slide a tap records, move when the lecturer presses
-// Next, with no reload.
+// A created lecture's live slide is wherever the lecturer's Next/Prev (or
+// its clock) leaves it. A student can browse with the arrows, as on the
+// demo, without moving anyone's live slide; while on the live slide, the
+// page follows: the label, and the slide a tap records, move when the
+// lecturer presses Next, with no reload.
 it("a created lecture's student page follows the lecturer's Next live", async () => {
   const lecturer = await openWatched(1920, 1080);
   const student = await openWatched(390, 844);
   try {
-    const created = await lecturer.context.request.post(new URL("/new", baseUrl).toString(), { form: { title: "Follow Next test" } });
+    const created = await lecturer.context.request.post(new URL("/new", baseUrl).toString(), { form: { title: "Follow Next test", slides: "60", minutes: "60" } });
     const createdHtml = await created.text();
     const lectureId = createdHtml.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
     const code = createdHtml.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
@@ -623,11 +675,14 @@ it("a created lecture's student page follows the lecturer's Next live", async ()
     await student.page.goto(new URL(`/l/${lectureId}`, baseUrl).toString());
     const label = student.page.locator("#slide-label");
     await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
-    // There are no slides here to browse, so the arrow keys don't move the
-    // slide a tap would record.
+    // The arrow keys browse this browser only, as on the demo: the label,
+    // the slide a tap records and the live marker move, the live slide doesn't.
     await student.page.keyboard.press("ArrowRight");
-    await student.page.waitForTimeout(200);
-    expect(await label.textContent()).toBe("Slide 1 (live)");
+    await expect.poll(() => label.textContent()).toBe("Slide 2");
+    expect(await student.page.locator("#slide-input").inputValue()).toBe("2");
+    expect(await student.page.locator("#live-marker").textContent()).toBe("You're on Slide 2. The lecture is on Slide 1.");
+    await student.page.keyboard.press("ArrowLeft");
+    await expect.poll(() => label.textContent()).toBe("Slide 1 (live)");
     expect(await student.page.locator("#slide-input").inputValue()).toBe("1");
 
     await lecturer.page.goto(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString());
