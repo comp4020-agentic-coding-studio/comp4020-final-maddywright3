@@ -37,6 +37,7 @@ import {
 } from "./auth.ts";
 import { activityClientJs, activityLogHtml, parseActivityFilter } from "./activity.ts";
 import type { ActivityFilter, ActivityLine } from "./activity.ts";
+import { timelineHtml } from "./timeline.ts";
 import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
@@ -770,6 +771,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           ${slideSectionHtml(id, viewedDeck, viewedSlide)}
         </div>
         ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
+        <div id="timeline">${timelineHtml(lecture, viewedDeck, viewedSlide, liveSlide, state.bars)}</div>
         ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
       </div>
       <div class="gauge-panel">
