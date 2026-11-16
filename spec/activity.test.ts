@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { expect, inject, it } from "vitest";
 import { newBrowserCookie } from "./test-helpers.ts";
 
-// The lecturer's activity log (ADR 006, CLAUDE.md: "Every activity log line
-// covers at least min_present actions"). Created lectures have
-// min_present 5, so every line here is about 5, 10, ... people.
+// The lecturer's activity log (CLAUDE.md, changed by the user in b35eaa3):
+// one line per press, newest first, labelled only "Person N" (numbered per
+// run, in order of first press) with an AEST time. The label is never a
+// browser ID or derived from one, never reaches a student, and note text
+// never appears in it.
 const baseUrl = inject("baseUrl");
-const MIN_PRESENT = 5;
 
 interface NewLecture {
   id: string;
@@ -55,12 +56,8 @@ async function browsers(lectureId: string, n: number): Promise<string[]> {
   return Promise.all(Array.from({ length: n }, () => newBrowserCookie(lectureId)));
 }
 
-// Each browser says it's lost on the slide, one after another so row ids
-// follow the order given.
-async function tapAll(lectureId: string, cookies: string[], slide: number, deck?: string): Promise<void> {
-  for (const cookie of cookies) {
-    await post(`/l/${lectureId}/tap`, cookie, { slide: String(slide), ...(deck ? { deck } : {}) });
-  }
+function tap(lectureId: string, cookie: string, slide: number, deck?: string): Promise<Response> {
+  return post(`/l/${lectureId}/tap`, cookie, { slide: String(slide), ...(deck ? { deck } : {}) });
 }
 
 async function lecturerPage(lecture: NewLecture, query = ""): Promise<string> {
@@ -75,8 +72,32 @@ function activitySection(html: string): string {
   return html.match(/<section id="activity-log"[\s\S]*?<\/section>/)?.[0] ?? "";
 }
 
+function lineItems(html: string): string[] {
+  return [...activitySection(html).matchAll(/<li class="activity-line">([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+}
+
+// Each line's words, without its leading <time>.
 function lines(html: string): string[] {
-  return [...activitySection(html).matchAll(/<li class="activity-line">([\s\S]*?)<\/li>/g)].map((m) => m[1].trim());
+  return lineItems(html).map((item) => item.replace(/<time[^>]*>[\s\S]*?<\/time>/, "").trim());
+}
+
+// Each line's <time>: its datetime attribute and its text.
+function times(html: string): { iso: string; text: string }[] {
+  return lineItems(html).map((item) => {
+    const m = item.match(/<time datetime="([^"]*)">([\s\S]*?)<\/time>/);
+    if (!m) throw new Error(`line has no <time>: ${item}`);
+    return { iso: m[1], text: m[2] };
+  });
+}
+
+async function freshRun(lecture: NewLecture): Promise<void> {
+  const confirm = await (
+    await fetch(new URL(`/l/${lecture.id}/lecturer/runs/new`, baseUrl), { headers: { cookie: lecture.lecturerCookie } })
+  ).text();
+  const run = confirm.match(/name="run" value="(\d+)"/)?.[1];
+  if (!run) throw new Error("no run field on the confirmation page");
+  const res = await post(`/l/${lecture.id}/lecturer/runs`, lecture.lecturerCookie, { run });
+  if (res.status !== 303) throw new Error(`fresh run failed: ${res.status}`);
 }
 
 // Reads the first SSE data frame that satisfies `want` (any frame if none).
@@ -110,165 +131,184 @@ async function frameFrom(path: string, cookie: string, want?: (data: string) => 
   }
 }
 
-it("min_present taps on one slide give exactly one 'lost' line; one fewer gives none", async () => {
-  const short = await createLectureAndLogIn("Activity below threshold");
-  await tapAll(short.id, await browsers(short.id, MIN_PRESENT - 1), 1);
-  const shortHtml = await lecturerPage(short);
-  expect(activitySection(shortHtml)).toContain("<h3");
-  expect(lines(shortHtml)).toEqual([]);
-  expect(activitySection(shortHtml)).toContain(
-    `Lines appear each time ${MIN_PRESENT} more people do something on a slide.`,
-  );
-
-  const enough = await createLectureAndLogIn("Activity at threshold");
-  await tapAll(enough.id, await browsers(enough.id, MIN_PRESENT), 1);
-  expect(lines(await lecturerPage(enough))).toEqual([`Slide 1: ${MIN_PRESENT} more people lost`]);
+it("with no presses the log says so", async () => {
+  const lecture = await createLectureAndLogIn("Activity empty");
+  const html = await lecturerPage(lecture);
+  expect(activitySection(html)).toContain("<h3");
+  expect(lines(html)).toEqual([]);
+  expect(activitySection(html)).toContain("No presses yet in this run.");
 });
 
-it("2 * min_present taps on a slide give two lines, newest first, each a multiple of min_present", async () => {
-  const lecture = await createLectureAndLogIn("Activity two lines");
-  await tapAll(lecture.id, await browsers(lecture.id, 2 * MIN_PRESENT), 3);
-  await tapAll(lecture.id, await browsers(lecture.id, MIN_PRESENT), 4);
-  const found = lines(await lecturerPage(lecture));
-  expect(found).toEqual([
-    `Slide 4: ${MIN_PRESENT} more people lost`,
-    `Slide 3: ${MIN_PRESENT} more people lost`,
-    `Slide 3: ${MIN_PRESENT} more people lost`,
-  ]);
-  for (const line of found) {
-    const n = Number(line.match(/(\d+) (?:more|new|people)/)?.[1]);
-    expect(n % MIN_PRESENT).toBe(0);
-    expect(n).toBeGreaterThanOrEqual(MIN_PRESENT);
-  }
+it("one tap gives one line, Person 1, with an AEST time in a <time datetime>", async () => {
+  const lecture = await createLectureAndLogIn("Activity one tap");
+  const [cookie] = await browsers(lecture.id, 1);
+  await tap(lecture.id, cookie, 1);
+  const html = await lecturerPage(lecture);
+  expect(lines(html)).toEqual(["Person 1 said they're lost on Slide 1"]);
+  const [time] = times(html);
+  expect(Number.isNaN(Date.parse(time.iso))).toBe(false);
+  expect(time.text).toMatch(/^(\d{1,2} [A-Z][a-z]{2}, )?\d{2}:\d{2}:\d{2} AEST$/);
 });
 
-it("a lost line lists the reasons its people gave, each only once min_present gave it", async () => {
-  const lecture = await createLectureAndLogIn("Activity reasons breakdown");
-  const cookies = await browsers(lecture.id, MIN_PRESENT);
-  await tapAll(lecture.id, cookies, 2);
-  // All 5 choose the same reason, so the line names it with its count.
-  for (const cookie of cookies) {
-    await post(`/l/${lecture.id}/reason`, cookie, { reason: "Missed a step", slide: "2" });
-  }
+it("a row written at a known instant renders its AEST clock time", async () => {
+  const lecture = await createLectureAndLogIn("Activity AEST");
+  const [cookie] = await browsers(lecture.id, 1);
+  const before = Date.now();
+  await tap(lecture.id, cookie, 4);
+  const after = Date.now();
+  const [time] = times(await lecturerPage(lecture));
+  // The datetime is the row's created_at, written during the request.
+  const at = Date.parse(time.iso);
+  expect(at).toBeGreaterThanOrEqual(before - 1000);
+  expect(at).toBeLessThanOrEqual(after + 1000);
+  // AEST is UTC+10 all year (Brisbane has no daylight saving), so the clock
+  // time is the stored instant shifted ten hours, worked out here from it.
+  const aestClock = new Date(at + 10 * 60 * 60 * 1000).toISOString().slice(11, 19);
+  expect(time.text.endsWith(`${aestClock} AEST`)).toBe(true);
+});
+
+it("two browsers are Person 1 and Person 2 in order of first press; a later press by the first is still Person 1", async () => {
+  const lecture = await createLectureAndLogIn("Activity two people");
+  const [a, b] = await browsers(lecture.id, 2);
+  await tap(lecture.id, a, 1);
+  await tap(lecture.id, b, 1);
+  await tap(lecture.id, a, 2);
   expect(lines(await lecturerPage(lecture))).toEqual([
-    `Slide 2: ${MIN_PRESENT} more people lost. Reasons: Missed a step ${MIN_PRESENT}`,
+    "Person 1 said they're lost on Slide 2",
+    "Person 2 said they're lost on Slide 1",
+    "Person 1 said they're lost on Slide 1",
   ]);
-
-  // Below the threshold a reason is left out entirely, never shown as a
-  // small number: 4 chose one reason, 1 another.
-  const split = await createLectureAndLogIn("Activity reasons too few");
-  const splitCookies = await browsers(split.id, MIN_PRESENT);
-  await tapAll(split.id, splitCookies, 2);
-  for (const [i, cookie] of splitCookies.entries()) {
-    await post(`/l/${split.id}/reason`, cookie, { reason: i === 0 ? "Notation" : "Missed a step", slide: "2" });
-  }
-  const splitLines = lines(await lecturerPage(split));
-  expect(splitLines).toEqual([`Slide 2: ${MIN_PRESENT} more people lost`]);
-  expect(activitySection(await lecturerPage(split))).not.toContain("Notation");
-  expect(activitySection(await lecturerPage(split))).not.toContain("Missed a step");
 });
 
-it("a what-helped line lists the answers its people gave, gated the same way", async () => {
-  const lecture = await createLectureAndLogIn("Activity helped breakdown");
-  const cookies = await browsers(lecture.id, MIN_PRESENT);
-  await tapAll(lecture.id, cookies, 3);
-  for (const cookie of cookies) {
-    await post(`/l/${lecture.id}/resolve`, cookie, { slide: "3" });
-    await post(`/l/${lecture.id}/helped`, cookie, { slide: "3", helped: "The example" });
-  }
-  expect(lines(await lecturerPage(lecture))).toContain(
-    `${MIN_PRESENT} people said what helped on slide 3: The example ${MIN_PRESENT}`,
-  );
+it("a reason, I get it now, what helped and a note each give their own line; the note's text never appears", async () => {
+  const lecture = await createLectureAndLogIn("Activity each kind");
+  const [cookie] = await browsers(lecture.id, 1);
+  await tap(lecture.id, cookie, 2);
+  expect((await post(`/l/${lecture.id}/reason`, cookie, { reason: "Too fast", slide: "2" })).status).toBe(303);
+  expect((await post(`/l/${lecture.id}/resolve`, cookie, { slide: "2" })).status).toBe(303);
+  expect((await post(`/l/${lecture.id}/helped`, cookie, { slide: "2", helped: "The example" })).status).toBe(303);
+  expect((await post(`/l/${lecture.id}/note`, cookie, { slide: "2", text: "secret activity note text" })).status).toBe(303);
+
+  const html = await lecturerPage(lecture);
+  expect(lines(html)).toEqual([
+    "Person 1 wrote a note on Slide 2",
+    "Person 1 said what helped on Slide 2: The example",
+    "Person 1 said they get it now on Slide 2",
+    "Person 1 chose a reason on Slide 2: Too fast",
+    "Person 1 said they're lost on Slide 2",
+  ]);
+  for (const time of times(html)) expect(time.text).toMatch(/\d{2}:\d{2}:\d{2} AEST$/);
+  expect(activitySection(html)).not.toContain("secret activity note text");
+
+  const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  const log = JSON.stringify(JSON.parse(frame).activityLog);
+  expect(log).toContain("Person 1 wrote a note on Slide 2");
+  expect(log).not.toContain("secret activity note text");
 });
 
-it("visible notes make a line; hiding one takes its contribution back out", async () => {
-  const lecture = await createLectureAndLogIn("Activity notes");
-  const cookies = await browsers(lecture.id, MIN_PRESENT);
-  await tapAll(lecture.id, cookies, 5);
-  for (const [i, cookie] of cookies.entries()) {
-    await post(`/l/${lecture.id}/note`, cookie, { slide: "5", text: `activity note number ${"abcde"[i]}` });
-  }
-  const before = await lecturerPage(lecture);
-  expect(lines(before)).toContain(`${MIN_PRESENT} new notes on slide 5`);
-  // Note text is never part of the log itself.
-  expect(activitySection(before)).not.toContain("activity note number");
+it("labels are per run: a fresh run starts again at Person 1", async () => {
+  const lecture = await createLectureAndLogIn("Activity per run");
+  const [a, b] = await browsers(lecture.id, 2);
+  await tap(lecture.id, a, 1);
+  await tap(lecture.id, b, 1);
+  await freshRun(lecture);
+  expect(lines(await lecturerPage(lecture))).toEqual([]);
+  await tap(lecture.id, b, 3);
+  expect(lines(await lecturerPage(lecture))).toEqual(["Person 1 said they're lost on Slide 3"]);
 
-  const noteId = before.match(/data-note-id="(\d+)"/)?.[1];
-  expect(noteId).toBeDefined();
-  const hide = await post(`/l/${lecture.id}/lecturer/note/${noteId}/hide`, lecture.lecturerCookie, {});
-  expect(hide.status).toBe(303);
-
-  const after = lines(await lecturerPage(lecture));
-  expect(after.some((l) => l.includes("new notes"))).toBe(false);
-  expect(after).toContain(`Slide 5: ${MIN_PRESENT} more people lost`);
+  // Run 1, viewed read-only, keeps its own trail and its own numbering.
+  expect(lines(await lecturerPage(lecture, "?run=1"))).toEqual([
+    "Person 2 said they're lost on Slide 1",
+    "Person 1 said they're lost on Slide 1",
+  ]);
 });
 
-it("the lecturer page and stream carry the log; the student page and stream never do", async () => {
+it("the lecturer page and stream carry the log live; the student page and stream never do", async () => {
   const lecture = await createLectureAndLogIn("Activity routes");
-  const cookies = await browsers(lecture.id, MIN_PRESENT);
-  const lineText = `Slide 1: ${MIN_PRESENT} more people lost`;
+  const [cookie] = await browsers(lecture.id, 1);
+  const lineText = "Person 1 said they're lost on Slide 1";
 
   // An already-open lecturer stream gets the line on a later broadcast.
   const live = frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie, (d) => d.includes(lineText));
   await new Promise((r) => setTimeout(r, 100));
-  await tapAll(lecture.id, cookies, 1);
-  const lecturerFrame = await live;
-  const lecturerState = JSON.parse(lecturerFrame);
-  expect(lecturerState.activityLog).toEqual([{ deck: null, slide: 1, kind: "lost", text: lineText }]);
+  await tap(lecture.id, cookie, 1);
+  const state = JSON.parse(await live);
+  expect(state.activityLog).toHaveLength(1);
+  expect(state.activityLog[0]).toMatchObject({ deck: null, slide: 1, kind: "lost", person: 1, text: lineText });
+  expect(state.activityLogCapped).toBe(false);
 
-  expect(activitySection(await lecturerPage(lecture))).toContain(lineText);
+  expect(lines(await lecturerPage(lecture))).toEqual([lineText]);
 
-  const studentHtml = await (
-    await fetch(new URL(`/l/${lecture.id}`, baseUrl), { headers: { cookie: cookies[0] } })
-  ).text();
+  const studentHtml = await (await fetch(new URL(`/l/${lecture.id}`, baseUrl), { headers: { cookie } })).text();
   expect(studentHtml).not.toContain('id="activity-log"');
-  expect(studentHtml).not.toContain(">Activity<");
-  expect(studentHtml).not.toContain(lineText);
+  expect(studentHtml).not.toContain("Person ");
 
-  const studentFrame = await frameFrom(`/l/${lecture.id}/events`, cookies[0]);
+  const studentFrame = await frameFrom(`/l/${lecture.id}/events`, cookie);
   expect(studentFrame).not.toContain("activity");
-  expect(studentFrame).not.toContain(lineText);
+  expect(studentFrame).not.toContain("Person ");
 });
 
-it("no log line or payload holds a browser id, a hash of one, or a student label", async () => {
+it("no log line or payload holds a browser id, its sha256, or the first 8 hex of it", async () => {
   const lecture = await createLectureAndLogIn("Activity privacy");
-  const cookies = await browsers(lecture.id, MIN_PRESENT);
-  await tapAll(lecture.id, cookies, 1);
+  const cookies = await browsers(lecture.id, 3);
   for (const cookie of cookies) {
+    await tap(lecture.id, cookie, 1);
     await post(`/l/${lecture.id}/reason`, cookie, { reason: "Too fast", slide: "1" });
     await post(`/l/${lecture.id}/note`, cookie, { slide: "1", text: "privacy check note" });
   }
-  const html = activitySection(await lecturerPage(lecture));
+  const html = await lecturerPage(lecture);
+  const section = activitySection(html);
   const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
   const log = JSON.stringify(JSON.parse(frame).activityLog);
-  expect(log).toContain(`more people lost. Reasons: Too fast ${MIN_PRESENT}`);
-  expect(log).toContain("new notes");
+  expect(log).toContain("Person 3 chose a reason on Slide 1: Too fast");
 
   for (const cookie of cookies) {
     const bid = cookie.replace(/^bid=/, "");
     const hash = createHash("sha256").update(bid).digest("hex");
-    for (const payload of [html, log]) {
+    for (const payload of [html, frame]) {
       expect(payload).not.toContain(bid);
+      expect(payload).not.toContain(hash);
       expect(payload).not.toContain(hash.slice(0, 8));
     }
   }
-  for (const payload of [html, log]) {
+  for (const payload of [section, log]) {
     expect(payload).not.toMatch(/student/i);
     expect(payload).not.toContain("privacy check note");
   }
 });
 
-it("a created lecture's log has no filter: it has no decks, and each line names its slide", async () => {
+it("the log holds the latest 500 presses and says so", async () => {
+  const lecture = await createLectureAndLogIn("Activity cap");
+  const cookies = await browsers(lecture.id, 9);
+  // 9 browsers x 56 slides = 504 presses.
+  await Promise.all(
+    cookies.map(async (cookie) => {
+      for (let slide = 1; slide <= 56; slide++) await tap(lecture.id, cookie, slide);
+    }),
+  );
+  const html = await lecturerPage(lecture);
+  expect(lines(html)).toHaveLength(500);
+  expect(activitySection(html)).toContain("Showing the latest 500");
+  const frame = await frameFrom(`/l/${lecture.id}/lecturer/events`, lecture.lecturerCookie);
+  const state = JSON.parse(frame);
+  expect(state.activityLog).toHaveLength(500);
+  expect(state.activityLogCapped).toBe(true);
+  // Numbering covers the whole run, not just the lines shown.
+  const people = new Set(lines(html).map((l) => l.match(/^Person (\d+) /)?.[1]));
+  expect([...people].every((n) => Number(n) >= 1 && Number(n) <= 9)).toBe(true);
+});
+
+it("a created lecture's log has no filter", async () => {
   const lecture = await createLectureAndLogIn("Activity filter");
-  await tapAll(lecture.id, await browsers(lecture.id, MIN_PRESENT), 1);
-  await tapAll(lecture.id, await browsers(lecture.id, MIN_PRESENT), 2);
+  const [a, b] = await browsers(lecture.id, 2);
+  await tap(lecture.id, a, 1);
+  await tap(lecture.id, b, 2);
 
   const all = await lecturerPage(lecture);
-  expect(lines(all)).toEqual([`Slide 2: ${MIN_PRESENT} more people lost`, `Slide 1: ${MIN_PRESENT} more people lost`]);
+  expect(lines(all)).toEqual(["Person 2 said they're lost on Slide 2", "Person 1 said they're lost on Slide 1"]);
   expect(activitySection(all)).not.toContain("<form");
-  expect(activitySection(all)).not.toContain("logSlide");
 
-  // A slide filter in the URL is ignored, not applied.
+  // A filter in the URL is ignored, not applied.
   const asked = await fetch(new URL(`/l/${lecture.id}/lecturer?logSlide=1&logDeck=%3Cscript%3E`, baseUrl), {
     headers: { cookie: lecture.lecturerCookie },
   });
@@ -277,19 +317,10 @@ it("a created lecture's log has no filter: it has no decks, and each line names 
 });
 
 it("the demo's deck filter keeps one deck's lines and drops the other's", async () => {
-  // The demo's min_present is 2. Other spec files tap the demo too, so a
-  // slide may already hold an odd count; 2 more then wouldn't cross a new
-  // multiple. Tap fresh browsers one at a time until a week-6 slide 7 line
-  // appears (at most 2 more), so the line exists whatever came before.
   const lecturerCookie = await logIn("demo", "DEMO");
   const demo = { id: "demo", lecturerCookie };
-  const slide7 = async () =>
-    lines(await lecturerPage(demo, "?logDeck=week-6")).filter((l) => l.includes("Week 6 \u00b7 slide 7")).length;
-  const before = await slide7();
-  for (let i = 0; i < 2 && (await slide7()) === before; i++) {
-    await tapAll("demo", await browsers("demo", 1), 7, "week-6");
-  }
-  expect(await slide7()).toBe(before + 1);
+  const [cookie] = await browsers("demo", 1);
+  await tap("demo", cookie, 7, "week-6");
 
   // The demo filters by deck only, as a plain GET form with no script.
   const page = await lecturerPage(demo);
@@ -298,21 +329,9 @@ it("the demo's deck filter keeps one deck's lines and drops the other's", async 
   expect(activitySection(page)).not.toContain("logSlide");
 
   const week6 = lines(await lecturerPage(demo, "?logDeck=week-6"));
-  expect(week6.length).toBeGreaterThan(0);
-  expect(week6.every((l) => l.includes("Week 6 \u00b7 slide"))).toBe(true);
+  expect(week6[0]).toMatch(/^Person \d+ said they're lost on Week 6 · slide 7$/);
+  expect(week6.every((l) => l.includes("Week 6 · slide"))).toBe(true);
 
   const week4 = lines(await lecturerPage(demo, "?logDeck=week-4"));
   expect(week4.some((l) => l.includes("Week 6"))).toBe(false);
-});
-
-// Legacy duplicates (legacy_duplicate = 1) can't be made over HTTP: the
-// taps_one_per_slide index turns a second tap into a no-op, and only the
-// one-time migration in src/db.ts ever sets the flag. This checks the part
-// HTTP can reach: a browser tapping the same slide again adds nothing.
-it("tapping the same slide again never counts twice towards a line", async () => {
-  const lecture = await createLectureAndLogIn("Activity repeat taps");
-  const cookies = await browsers(lecture.id, MIN_PRESENT - 1);
-  await tapAll(lecture.id, cookies, 1);
-  await tapAll(lecture.id, cookies, 1);
-  expect(lines(await lecturerPage(lecture))).toEqual([]);
 });
