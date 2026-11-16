@@ -1046,13 +1046,13 @@ span.timeline-segment.shaded {
   background: var(--lost);
 }
 
-/* A fixed-list answer (what helped) that wasn't picked is dimmed; the one
-   picked stays in wattle. */
-.answer[aria-pressed="false"] {
+/* A fixed-list answer (a reason or what helped) that wasn't picked is
+   dimmed; the one picked stays in wattle. */
+.answer-other {
   color: var(--ink-muted);
 }
 
-.answer[aria-pressed="true"] {
+.answer-chosen {
   border-color: var(--clicked);
   background: var(--clicked);
   color: var(--on-colour);
