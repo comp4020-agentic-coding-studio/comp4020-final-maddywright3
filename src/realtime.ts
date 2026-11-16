@@ -10,6 +10,8 @@ import {
   visibleNotesForSlide,
 } from "./db.ts";
 import type { Lecture, YourSlide } from "./db.ts";
+import { activityLog } from "./activity.ts";
+import type { ActivityLine } from "./activity.ts";
 import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
@@ -79,8 +81,18 @@ export type MeterState =
       topReason?: string;
     };
 
+// activityLog (src/activity.ts) is lecturer-only, gated line by line: each
+// line is about min_present more people, so it's present on both branches.
 export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
+  | {
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      reasonCounts: ReasonCountEntry[];
+      notes: NoteEntry[];
+      activityLog: ActivityLine[];
+    }
   | {
       present: number;
       shown: true;
@@ -90,6 +102,7 @@ export type LecturerState =
       totalTaps: number;
       reasonCounts: ReasonCountEntry[];
       notes: NoteEntry[];
+      activityLog: ActivityLine[];
     };
 
 // Bars are gated per (deck, slide) pair, independently of present/shown: a
@@ -344,10 +357,11 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const bars = gatedBars(lectureId, lecture.min_present);
   const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
+  const log = activityLog(lecture);
+  if (!shown) return { present, shown, slide, bars, reasonCounts, notes, activityLog: log };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
+  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes, activityLog: log };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
