@@ -3,6 +3,7 @@ import {
   getLecture,
   liveTapInfo,
   reasonCounts as rawReasonCounts,
+  runTapperCount,
   slidesYouTapped,
   slideNoteCounts,
   slideTapCounts,
@@ -79,9 +80,20 @@ export type MeterState =
       topReason?: string;
     };
 
+// `run` is the current run's number, so an open lecturer page knows when a
+// fresh run has started.
 export type LecturerState =
-  | { present: number; shown: false; slide: number; bars: Bar[]; reasonCounts: ReasonCountEntry[]; notes: NoteEntry[] }
   | {
+      run: number;
+      present: number;
+      shown: false;
+      slide: number;
+      bars: Bar[];
+      reasonCounts: ReasonCountEntry[];
+      notes: NoteEntry[];
+    }
+  | {
+      run: number;
       present: number;
       shown: true;
       slide: number;
@@ -97,8 +109,8 @@ export type LecturerState =
 // not zeroed, not hidden, absent — same discipline as the shown:false
 // branch. A lone returning visitor still sees bars for any slide that
 // individually cleared the threshold.
-function gatedBars(lectureId: string, minPresent: number): Bar[] {
-  return slideTapCounts(lectureId).filter((bar) => bar.distinctBrowsers >= minPresent);
+function gatedBars(lectureId: string, minPresent: number, run: number): Bar[] {
+  return slideTapCounts(lectureId, run).filter((bar) => bar.distinctBrowsers >= minPresent);
 }
 
 // Reason counts are gated per (deck, slide, reason) triple, NOT inherited
@@ -107,8 +119,8 @@ function gatedBars(lectureId: string, minPresent: number): Bar[] {
 // only one or two people — surfacing that reason's count would be exactly
 // the one-person signal ADR 004 rules out ("no bar can ever be one
 // person"), just nested inside an otherwise-qualifying slide.
-function gatedReasonCounts(lectureId: string, minPresent: number): ReasonCountEntry[] {
-  return rawReasonCounts(lectureId).filter((entry) => entry.count >= minPresent);
+function gatedReasonCounts(lectureId: string, minPresent: number, run: number): ReasonCountEntry[] {
+  return rawReasonCounts(lectureId, run).filter((entry) => entry.count >= minPresent);
 }
 
 // The current slide's most common *qualifying* reason — drawn only from
@@ -130,10 +142,10 @@ function topReasonFor(
 // browsers, and only for those does visibleNotesForSlide get called at all
 // — a pair below threshold contributes nothing to the array, not an empty
 // group. Lecturer-only: this is never called for MeterState.
-function gatedNotes(lectureId: string, minPresent: number): NoteEntry[] {
-  const qualifying = slideNoteCounts(lectureId).filter((count) => count.distinctBrowsers >= minPresent);
+function gatedNotes(lectureId: string, minPresent: number, run: number): NoteEntry[] {
+  const qualifying = slideNoteCounts(lectureId, run).filter((count) => count.distinctBrowsers >= minPresent);
   return qualifying.flatMap((count) =>
-    visibleNotesForSlide(lectureId, count.deck, count.slide).map((note) => ({
+    visibleNotesForSlide(lectureId, count.deck, count.slide, run).map((note) => ({
       deck: count.deck,
       slide: count.slide,
       ...note,
@@ -253,6 +265,7 @@ export function presentCount(lectureId: string): number {
 // full per-browser recompute: previously every field here, shared or not,
 // was recomputed from scratch for each browser in the broadcast loop).
 interface SharedMeterState {
+  run: number;
   present: number;
   shown: boolean;
   deck?: DeckId;
@@ -278,10 +291,11 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = deck !== null ? currentSlideIndex(lecture, deck) : currentSlideIndex(lecture);
-  const bars = gatedBars(lectureId, lecture.min_present);
-  const gatedReasons = gatedReasonCounts(lectureId, lecture.min_present);
+  const bars = gatedBars(lectureId, lecture.min_present, lecture.run);
+  const gatedReasons = gatedReasonCounts(lectureId, lecture.min_present, lecture.run);
   const topReason = topReasonFor(gatedReasons, deck, slide);
   const base = {
+    run: lecture.run,
     present,
     shown,
     ...(deck !== null ? { deck } : {}),
@@ -291,15 +305,15 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
     ...(topReason !== undefined ? { topReason } : {}),
   };
   if (!shown) return base;
-  const { count: live } = liveTapInfo(lectureId, since);
-  return { ...base, live, totalTaps: tapCount(lectureId) };
+  const { count: live } = liveTapInfo(lectureId, since, lecture.run);
+  return { ...base, live, totalTaps: tapCount(lectureId, lecture.run) };
 }
 
 // yourTapCount is the slides this browser has said it's lost on, which
 // with one tap per slide is its count of counted taps; legacy duplicates
 // from before that rule don't inflate it.
-function yourStateFor(lectureId: string, browserId: string, since: string): YourState {
-  const yourSlides = slidesYouTapped(lectureId, browserId, since);
+function yourStateFor(shared: SharedMeterState, lectureId: string, browserId: string): YourState {
+  const yourSlides = slidesYouTapped(lectureId, browserId, shared.since, shared.run);
   return {
     yourTapCount: yourSlides.length,
     youAreCounted: yourSlides.some((s) => s.live),
@@ -332,7 +346,7 @@ export function computeState(lectureId: string, browserId: string, deck: DeckId 
   const lecture = getLecture(lectureId);
   if (!lecture) return undefined;
   const shared = computeSharedState(lecture, deck);
-  return meterStateFor(shared, yourStateFor(lectureId, browserId, shared.since));
+  return meterStateFor(shared, yourStateFor(shared, lectureId, browserId));
 }
 
 export function computeLecturerState(lectureId: string): LecturerState | undefined {
@@ -341,13 +355,37 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = currentSlideIndex(lecture);
-  const bars = gatedBars(lectureId, lecture.min_present);
-  const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present);
-  const notes = gatedNotes(lectureId, lecture.min_present);
-  if (!shown) return { present, shown, slide, bars, reasonCounts, notes };
+  const run = lecture.run;
+  const bars = gatedBars(lectureId, lecture.min_present, run);
+  const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present, run);
+  const notes = gatedNotes(lectureId, lecture.min_present, run);
+  if (!shown) return { run, present, shown, slide, bars, reasonCounts, notes };
   const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-  const { count: live } = liveTapInfo(lectureId, since);
-  return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, notes };
+  const { count: live } = liveTapInfo(lectureId, since, run);
+  return { run, present, shown, slide, bars, live, totalTaps: tapCount(lectureId, run), reasonCounts, notes };
+}
+
+// An earlier run, read-only, for the lecturer's run picker: a static render,
+// no stream. Bars, reasons and notes are gated exactly as in the live view.
+// The run's total is a count of taps, so it follows the live total's rule
+// (present >= min_present now) and, because nobody is present in a past run,
+// also needs at least min_present distinct browsers to have tapped in it.
+export interface PastRunState {
+  run: number;
+  bars: Bar[];
+  reasonCounts: ReasonCountEntry[];
+  notes: NoteEntry[];
+  totalTaps?: number;
+}
+
+export function computePastRunState(lecture: Lecture, run: number): PastRunState {
+  const lectureId = lecture.id;
+  const bars = gatedBars(lectureId, lecture.min_present, run);
+  const reasonCounts = gatedReasonCounts(lectureId, lecture.min_present, run);
+  const notes = gatedNotes(lectureId, lecture.min_present, run);
+  const tappers = runTapperCount(lectureId, run);
+  const showTotal = presentCount(lectureId) >= lecture.min_present && tappers >= lecture.min_present;
+  return { run, bars, reasonCounts, notes, ...(showTotal ? { totalTaps: tapCount(lectureId, run) } : {}) };
 }
 
 // At most one student broadcast and one lecturer broadcast per lecture per
@@ -442,7 +480,7 @@ function sendToStudents(lectureId: string): void {
         let payload = payloadByDeck.get(deck);
         if (payload === undefined) {
           const shared = sharedFor(deck);
-          yours ??= yourStateFor(lectureId, browserId, shared.since);
+          yours ??= yourStateFor(shared, lectureId, browserId);
           payload = `data: ${JSON.stringify(meterStateFor(shared, yours))}\n\n`;
           payloadByDeck.set(deck, payload);
         }
