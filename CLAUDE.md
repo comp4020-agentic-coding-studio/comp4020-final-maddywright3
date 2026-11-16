@@ -24,14 +24,14 @@
 ## Privacy (from the README's one idea)
 - No page, stream, JSON response or log line contains a raw browser ID, cookie, lecture code or session token. Logs use the first 8 hex characters of sha256.
 - Exception: the demo lecture's code, DEMO, is public on purpose and may be shown on the demo's pages only. No other lecture code is ever shown after it's created. (ADR 003: markers need to get in.)
-- No per-person history is ever shown. Taps are shown as counts per slide, by distinct browser.
+- Students never see anyone's history. Taps are shown to students as counts per slide, by distinct browser.
 - Lecturer and student state travel on separate routes.
 - live and totalTaps only leave the server when present >= min_present, in any page, stream or response. Hiding it on screen isn't enough. (Added after C10, when the gauge text was hidden but the stream still carried the live count and total.)
 - A slide's bar, its reason counts, and its notes are each gated on their own distinct-browser count (>= min_present), independent of present/shown — a lone returning visitor still sees a slide's history once it individually qualifies. (Refined in ADR 004 so a returning visitor still sees history.) A browser may always see its own counts.
 - Any derived number (a share, a ranking, the hardest slide) appears only when every count behind it is at least min_present. (Added for the lecturer dashboard: a share reveals its numerator.)
 - Student text (notes) is lecturer-only: never shown to students, never logged, never sent to a third party. Reasons come from a fixed list checked on the server; never add free-text input for students. (Changed in the ADR 004 amendment.)
 - Reset never deletes. It starts a new run, and earlier runs stay viewable. The demo can't be reset. (ADR 006: the demo's code is public, and markers check persistence.)
-- Every activity log line covers at least min_present actions. Never log or show a single student's action to the lecturer. (ADR 006.)
+- The lecturer's activity log shows each press as its own line, labelled only "Person N" (numbered per run, in order of first press) with an AEST time. The label is never a browser ID, a hash, or derived from one, and never reaches a student. Note text never appears in it. (Changed by the user in the finishing stage, replacing the min_present grouping of ADR 006; README "No trail back to you" is the user's to revise.)
 - Lecturer-supplied slide text is escaped. No raw HTML, no images, nothing loaded from elsewhere.
 - Never load anything from a third party (embeds, fonts, analytics, CDNs).
 - Every page sends the CSP header. Never weaken it to make something work. (Enforces the no-third-party rule in the browser.)
