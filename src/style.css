@@ -690,7 +690,18 @@ main.lecture {
   font-size: var(--small);
 }
 
-.slide-bar.on-live #live-marker,
+.slide-bar.on-live #live-marker {
+  padding: var(--space-half) var(--space-2);
+  border: none;
+  border-radius: var(--pill);
+  background: var(--accent);
+  color: var(--on-colour);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The same LIVE pill, for the lecturer's Live now block. */
 .live-pill {
   padding: var(--space-half) var(--space-2);
   border: none;
