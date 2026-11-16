@@ -2944,9 +2944,10 @@ interface NewLectureInput {
   helpUrl: string;
 }
 
+// The form starts at 10 slides and an hour, so a title alone is enough.
 const EMPTY_NEW_LECTURE: NewLectureInput = {
   title: "",
-  slides: "",
+  slides: "10",
   minutes: "60",
   slideMinutes: "",
   slidesText: "",
