@@ -31,7 +31,7 @@ One tap is a confession. Twenty on one slide is a fact about the lecture, and te
 | Claim | Held by |
 |---|---|
 | Nothing about others below the threshold | tests on the data sent |
-| A tap reaches every page within a second | tests; a burst of 50 takes about 1.3 s on Fly |
+| A tap reaches every page within a second | tests; a burst of 50 takes about 1.35 s on Fly |
 | One "I'm lost" per browser per slide | test and a unique index |
 | Notes reach only the lecturer | tests |
 | Nothing loads from another site | CSP header, browser test |
