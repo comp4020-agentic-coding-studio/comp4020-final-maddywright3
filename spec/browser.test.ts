@@ -16,6 +16,15 @@ const VIEWPORTS = [
   { name: "desktop", width: 1920, height: 1080 },
 ];
 const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/new", "/no-such-page"];
+const COLOUR_SCHEMES = ["light", "dark"] as const;
+// The header's nav, in order, on every page.
+const NAV = [
+  { text: "Home", href: "/" },
+  { text: "Join the demo", href: "/l/demo" },
+  { text: "Lecturer view", href: "/l/demo/lecturer" },
+  { text: "Create a lecture", href: "/new" },
+  { text: "How it works", href: "/readme/" },
+];
 
 let browser: Browser;
 beforeAll(async () => {
@@ -33,8 +42,13 @@ interface Watched {
 
 // Every console error, failed request and off-origin request is a test
 // failure, whatever the test is checking. A page can look fine and throw.
-async function openWatched(width: number, height: number, expectedNotFound?: string): Promise<Watched> {
-  const context = await browser.newContext({ viewport: { width, height } });
+async function openWatched(
+  width: number,
+  height: number,
+  expectedNotFound?: string,
+  options: { colorScheme?: "light" | "dark"; javaScriptEnabled?: boolean } = {},
+): Promise<Watched> {
+  const context = await browser.newContext({ viewport: { width, height }, ...options });
   const page = await context.newPage();
   const problems: string[] = [];
   page.on("console", (msg) => {
@@ -93,13 +107,13 @@ async function hasHorizontalScroll(page: Page): Promise<boolean> {
   return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 }
 
-async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string; visible: boolean }> {
+async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string; visible: boolean; href: string | null }> {
   return page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
-    if (!el || el === document.body) return { tag: "body", text: "", visible: false };
+    if (!el || el === document.body) return { tag: "body", text: "", visible: false, href: null };
     const style = getComputedStyle(el);
     const visible = el.matches(":focus-visible") && style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
-    return { tag: el.tagName, text: (el.textContent ?? "").trim(), visible };
+    return { tag: el.tagName, text: (el.textContent ?? "").trim(), visible, href: el.getAttribute("href") };
   });
 }
 
@@ -108,7 +122,7 @@ async function focusedIsVisible(page: Page): Promise<{ tag: string; text: string
 // the page, as a keyboard user would.
 async function tabTo(
   page: Page,
-  matches: (f: { tag: string; text: string }) => boolean,
+  matches: (f: { tag: string; text: string; href: string | null }) => boolean,
   maxTabs = 60,
   key: "Tab" | "Shift+Tab" = "Tab",
 ): Promise<void> {
@@ -131,12 +145,59 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     const url = new URL(path, baseUrl).toString();
     const w = await openWatched(width, height, path === "/no-such-page" ? url : undefined);
     try {
-      if (path === "/l/demo/lecturer") await logInAsDemoLecturer(w.context);
+      if (path.startsWith("/l/demo/lecturer")) await logInAsDemoLecturer(w.context);
       const res = await w.page.goto(url);
       expect(res?.status()).toBe(path === "/no-such-page" ? 404 : 200);
       await w.page.waitForLoadState("networkidle").catch(() => {});
       expect(await axeViolations(w.page)).toEqual([]);
       expect(await hasHorizontalScroll(w.page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  // The same sweep in the dark theme, with contrast: every colour is
+  // redefined there, so passing in light says nothing about dark.
+  it.each(PAGES)("%s in the dark theme has no axe violations (contrast included) and no horizontal scroll", async (path) => {
+    const url = new URL(path, baseUrl).toString();
+    const w = await openWatched(width, height, path === "/no-such-page" ? url : undefined, { colorScheme: "dark" });
+    try {
+      if (path.startsWith("/l/demo/lecturer")) await logInAsDemoLecturer(w.context);
+      await w.page.goto(url);
+      await w.page.waitForLoadState("networkidle").catch(() => {});
+      expect(await w.page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)).toBe(true);
+      expect(await axeViolations(w.page)).toEqual([]);
+      expect(await hasHorizontalScroll(w.page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  it("the header nav is reached by Tab, in order, with a visible focus ring at every stop", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await page.goto(new URL("/readme/", baseUrl).toString());
+      // Skip link, then the app name (home), then the nav in order.
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Skip to content", 1);
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Confusion meter" && f.href === "/", 1);
+      for (const link of NAV) {
+        await tabTo(page, (f) => f.tag === "A" && f.text === link.text && f.href === link.href, 1);
+        // Every nav link is on screen when it has focus: none is clipped
+        // or pushed off the side at 390px.
+        const box = await page.evaluate(() => {
+          const r = document.activeElement!.getBoundingClientRect();
+          return { left: r.left, right: r.right, height: r.height };
+        });
+        expect(box.left, link.text).toBeGreaterThanOrEqual(0);
+        expect(box.right, link.text).toBeLessThanOrEqual(width);
+        expect(box.height, link.text).toBeGreaterThanOrEqual(44);
+      }
+      // Enter follows the focused link: the last one is How it works.
+      await page.keyboard.press("Enter");
+      await page.waitForURL(new URL("/readme/", baseUrl).toString());
       expect(w.problems).toEqual([]);
     } finally {
       await w.context.close();

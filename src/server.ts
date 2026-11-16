@@ -82,7 +82,38 @@ const escapeHtml = (s: string): string =>
 // style="" attribute, so there is exactly one place the look lives.
 const STYLESHEET = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 
-const page = (title: string, bodyHtml: string, mainClass?: string): string => `<!doctype html>
+// The header on every page: the app name (home) and the main nav. Plain
+// links in a wrapping list, so it works without JS and folds onto a second
+// row at 390px instead of scrolling sideways. `current` marks the page the
+// visitor is on with aria-current, for a screen reader and for the style.
+type NavKey = "home" | "demo" | "lecturer" | "new" | "readme";
+const NAV_LINKS: { key: NavKey; href: string; label: string }[] = [
+  { key: "home", href: "/", label: "Home" },
+  { key: "demo", href: "/l/demo", label: "Join the demo" },
+  { key: "lecturer", href: "/l/demo/lecturer", label: "Lecturer view" },
+  { key: "new", href: "/new", label: "Create a lecture" },
+  { key: "readme", href: "/readme/", label: "How it works" },
+];
+
+function siteHeaderHtml(current?: NavKey): string {
+  const links = NAV_LINKS.map(
+    (link) =>
+      `<li><a href="${link.href}"${link.key === current ? ' aria-current="page"' : ""}>${escapeHtml(link.label)}</a></li>`,
+  ).join("\n");
+  return `<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+<div class="site-header-inner">
+<a class="site-name" href="/">Confusion meter</a>
+<nav class="site-nav" aria-label="Main">
+<ul>
+${links}
+</ul>
+</nav>
+</div>
+</header>`;
+}
+
+const page = (title: string, bodyHtml: string, mainClass?: string, current?: NavKey): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -91,7 +122,8 @@ const page = (title: string, bodyHtml: string, mainClass?: string): string => `<
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main${mainClass ? ` class="${mainClass}"` : ""}>
+${siteHeaderHtml(current)}
+<main id="main"${mainClass ? ` class="${mainClass}"` : ""}>
 ${bodyHtml}
 </main>
 </body>
@@ -1071,7 +1103,10 @@ ${SLIDE_NAME_CLIENT_JS}
     </script>
   `;
 
-  return new Response(page(lecture.title, body, "lecture"), { status: 200, headers });
+  return new Response(page(lecture.title, body, "lecture", id === "demo" ? "demo" : undefined), {
+    status: 200,
+    headers,
+  });
 }
 
 async function handleTap(id: string, req: Request): Promise<Response> {
@@ -1899,8 +1934,9 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
 
   const { headers } = ensureBrowserIdentity(req);
 
+  const navKey: NavKey | undefined = id === "demo" ? "lecturer" : undefined;
   if (!validateLecturerSession(id, req.headers.get("cookie"))) {
-    return new Response(page("Lecturer view", lecturerLoginForm(id)), { status: 200, headers });
+    return new Response(page("Lecturer view", lecturerLoginForm(id), undefined, navKey), { status: 200, headers });
   }
 
   const state = computeLecturerState(id) ?? {
@@ -1911,7 +1947,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer"), {
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer", navKey), {
     status: 200,
     headers,
   });
@@ -2006,7 +2042,7 @@ const LECTURE_TOTAL_CAP = 500;
 
 async function handleNewGet(req: Request): Promise<Response> {
   const { headers } = ensureBrowserIdentity(req);
-  return new Response(page("Start a lecture", newLectureForm()), { status: 200, headers });
+  return new Response(page("Start a lecture", newLectureForm(), undefined, "new"), { status: 200, headers });
 }
 
 async function handleNewPost(req: Request): Promise<Response> {
@@ -2060,7 +2096,7 @@ async function handleReadme(): Promise<Response> {
   const md = await readFile("README.md", "utf8");
   const html = await marked.parse(md);
   const body = `<div>${html}</div>`;
-  return new Response(page("About", body), {
+  return new Response(page("About", body, "readme", "readme"), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
