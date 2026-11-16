@@ -64,6 +64,7 @@ export type MeterState =
       yourTapCount: number;
       youAreCounted: boolean;
       yourSlides: YourSlide[];
+      helpUrl?: string;
       topReason?: string;
     }
   | {
@@ -77,11 +78,12 @@ export type MeterState =
       yourTapCount: number;
       youAreCounted: boolean;
       yourSlides: YourSlide[];
+      helpUrl?: string;
       topReason?: string;
     };
 
 // `run` is the current run's number, so an open lecturer page knows when a
-// fresh run has started.
+// fresh run has started. Never carries a help link or anything per browser.
 export type LecturerState =
   | {
       run: number;
@@ -266,6 +268,7 @@ export function presentCount(lectureId: string): number {
 // was recomputed from scratch for each browser in the broadcast loop).
 interface SharedMeterState {
   run: number;
+  helpUrl: string | null;
   present: number;
   shown: boolean;
   deck?: DeckId;
@@ -283,7 +286,12 @@ interface YourState {
   yourTapCount: number;
   youAreCounted: boolean;
   yourSlides: YourSlide[];
+  helpUrl?: string;
 }
+
+// A browser that has said it's lost on this many distinct slides in the
+// current run is offered the lecturer's help link.
+export const HELP_AFTER_SLIDES = 3;
 
 function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterState {
   const lectureId = lecture.id;
@@ -296,6 +304,7 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
   const topReason = topReasonFor(gatedReasons, deck, slide);
   const base = {
     run: lecture.run,
+    helpUrl: lecture.help_url,
     present,
     shown,
     ...(deck !== null ? { deck } : {}),
@@ -312,12 +321,17 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
 // yourTapCount is the slides this browser has said it's lost on, which
 // with one tap per slide is its count of counted taps; legacy duplicates
 // from before that rule don't inflate it.
+// helpUrl is worked out here, per browser, from that browser's own slides in
+// the current run, so it only ever goes into that browser's own frame. It is
+// never in the shared state, the lecturer's state, a log line or a count.
 function yourStateFor(shared: SharedMeterState, lectureId: string, browserId: string): YourState {
   const yourSlides = slidesYouTapped(lectureId, browserId, shared.since, shared.run);
+  const offerHelp = shared.helpUrl !== null && yourSlides.length >= HELP_AFTER_SLIDES;
   return {
     yourTapCount: yourSlides.length,
     youAreCounted: yourSlides.some((s) => s.live),
     yourSlides,
+    ...(offerHelp ? { helpUrl: shared.helpUrl! } : {}),
   };
 }
 

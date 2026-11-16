@@ -48,6 +48,12 @@ if (!lectureColumns.some((c) => c.name === "code_salt")) {
 if (!lectureColumns.some((c) => c.name === "current_slide")) {
   db.exec("ALTER TABLE lectures ADD COLUMN current_slide INTEGER NOT NULL DEFAULT 1");
 }
+// Where a student who's lost on 3 or more slides can get help: https only,
+// at most 300 characters (checked in server.ts), NULL for none.
+const addingHelpUrl = !lectureColumns.some((c) => c.name === "help_url");
+if (addingHelpUrl) {
+  db.exec("ALTER TABLE lectures ADD COLUMN help_url TEXT");
+}
 
 const tapColumns = db.prepare("PRAGMA table_info(taps)").all() as { name: string }[];
 if (!tapColumns.some((c) => c.name === "browser_id")) {
@@ -199,9 +205,16 @@ db.exec(`
   )
 `);
 
+// The demo's help link is the course page, set once: when the demo is first
+// made, or when the column is first added. A lecturer who later changes or
+// clears it isn't overridden on the next start.
+const DEMO_HELP_URL = "https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/";
 db.prepare(
-  "INSERT OR IGNORE INTO lectures (id, title, created_at) VALUES (?, ?, ?)",
-).run("demo", "Demo lecture", new Date().toISOString());
+  "INSERT OR IGNORE INTO lectures (id, title, created_at, help_url) VALUES (?, ?, ?, ?)",
+).run("demo", "Demo lecture", new Date().toISOString(), DEMO_HELP_URL);
+if (addingHelpUrl) {
+  db.prepare("UPDATE lectures SET help_url = ? WHERE id = 'demo'").run(DEMO_HELP_URL);
+}
 
 db.prepare("UPDATE lectures SET min_present = 2 WHERE id = 'demo'").run();
 
@@ -227,6 +240,7 @@ export interface Lecture {
   min_present: number;
   code_hash: string | null;
   code_salt: string | null;
+  help_url: string | null;
   // From the current run, not lectures.current_slide.
   current_slide: number;
   // The current run's number.
@@ -261,13 +275,19 @@ export function getLecture(id: string): Lecture | undefined {
   return { ...lecture, current_slide: run_current_slide };
 }
 
-export function createLecture(id: string, title: string, minPresent: number, code: HashedCode): void {
+export function createLecture(
+  id: string,
+  title: string,
+  minPresent: number,
+  code: HashedCode,
+  helpUrl: string | null = null,
+): void {
   const nowIso = new Date().toISOString();
   db.exec("BEGIN");
   try {
     db.prepare(
-      "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(id, title, nowIso, minPresent, code.hash, code.salt);
+      "INSERT INTO lectures (id, title, created_at, min_present, code_hash, code_salt, help_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, title, nowIso, minPresent, code.hash, code.salt, helpUrl);
     db.prepare("INSERT INTO runs (lecture_id, number, started_at) VALUES (?, 1, ?)").run(id, nowIso);
     db.exec("COMMIT");
   } catch (err) {
@@ -312,6 +332,10 @@ export function startRun(lectureId: string, replacing: number): boolean {
     )
     .run(lectureId, replacing, new Date().toISOString(), lectureId, replacing);
   return result.changes > 0;
+}
+
+export function setHelpUrl(lectureId: string, helpUrl: string | null): void {
+  db.prepare("UPDATE lectures SET help_url = ? WHERE id = ?").run(helpUrl, lectureId);
 }
 
 export function lectureCount(): number {
