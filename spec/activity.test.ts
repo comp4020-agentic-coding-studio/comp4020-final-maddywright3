@@ -260,12 +260,19 @@ it("a created lecture's log has no filter: it has no decks, and each line names 
 });
 
 it("the demo's deck filter keeps one deck's lines and drops the other's", async () => {
-  // The demo's min_present is 2, so 2 fresh browsers on a week-6 slide make
-  // sure a week-6 line exists whatever else has tapped the demo.
+  // The demo's min_present is 2. Other spec files tap the demo too, so a
+  // slide may already hold an odd count; 2 more then wouldn't cross a new
+  // multiple. Tap fresh browsers one at a time until a week-6 slide 7 line
+  // appears (at most 2 more), so the line exists whatever came before.
   const lecturerCookie = await logIn("demo", "DEMO");
   const demo = { id: "demo", lecturerCookie };
-  const cookies = await browsers("demo", 2);
-  await tapAll("demo", cookies, 7, "week-6");
+  const slide7 = async () =>
+    lines(await lecturerPage(demo, "?logDeck=week-6")).filter((l) => l.includes("Week 6 \u00b7 slide 7")).length;
+  const before = await slide7();
+  for (let i = 0; i < 2 && (await slide7()) === before; i++) {
+    await tapAll("demo", await browsers("demo", 1), 7, "week-6");
+  }
+  expect(await slide7()).toBe(before + 1);
 
   // The demo filters by deck only, as a plain GET form with no script.
   const page = await lecturerPage(demo);
@@ -274,8 +281,8 @@ it("the demo's deck filter keeps one deck's lines and drops the other's", async 
   expect(activitySection(page)).not.toContain("logSlide");
 
   const week6 = lines(await lecturerPage(demo, "?logDeck=week-6"));
-  expect(week6.some((l) => l.includes("Week 6 \u00b7 slide 7"))).toBe(true);
-  expect(week6.every((l) => l.startsWith("Week 6"))).toBe(true);
+  expect(week6.length).toBeGreaterThan(0);
+  expect(week6.every((l) => l.includes("Week 6 \u00b7 slide"))).toBe(true);
 
   const week4 = lines(await lecturerPage(demo, "?logDeck=week-4"));
   expect(week4.some((l) => l.includes("Week 6"))).toBe(false);
