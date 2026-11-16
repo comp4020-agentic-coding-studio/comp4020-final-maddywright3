@@ -36,7 +36,7 @@ One tap is a confession. Twenty on one slide is a fact about the lecture, and te
 | Notes reach only the lecturer | tests |
 | Nothing loads from another site | CSP header, browser test |
 | Keyboard, phone, slow connections | browser tests in CI |
-| Survives a redeploy | scripted check on Fly |
+| Survives a redeploy and a machine stop | scripted check; the stop by hand |
 | Calm, and works in a room | judged in a mock lecture, which led to one tap per slide |
 
 ## What I read
