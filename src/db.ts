@@ -72,6 +72,10 @@ if (!tapColumns.some((c) => c.name === "run_id")) {
 if (!tapColumns.some((c) => c.name === "legacy_duplicate")) {
   db.exec("ALTER TABLE taps ADD COLUMN legacy_duplicate INTEGER NOT NULL DEFAULT 0");
 }
+// What helped, from a fixed list, answered once after "I get it now".
+if (!tapColumns.some((c) => c.name === "helped")) {
+  db.exec("ALTER TABLE taps ADD COLUMN helped TEXT");
+}
 
 // One "I'm lost" per (lecture, run, deck, slide, browser), held by a unique
 // index rather than by a check in the insert. Two things make the index
@@ -311,6 +315,82 @@ export function resolveTap(tapId: number): boolean {
       .prepare("UPDATE taps SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL")
       .run(new Date().toISOString(), tapId).changes > 0
   );
+}
+
+export interface HelpedCount {
+  deck: string | null;
+  slide: number;
+  helped: string;
+  count: number;
+}
+
+// Raw counts per (deck, slide, answer); gated in realtime.ts like reasons.
+export function helpedCounts(lectureId: string): HelpedCount[] {
+  return db
+    .prepare(
+      `SELECT deck, slide, helped, COUNT(DISTINCT browser_id) AS count
+       FROM taps WHERE lecture_id = ? AND helped IS NOT NULL AND legacy_duplicate = 0
+       GROUP BY deck, slide, helped`,
+    )
+    .all(lectureId) as unknown as HelpedCount[];
+}
+
+// Distinct browsers that have said they're lost on any slide. Raw; the
+// dashboard shows it only at min_present or more.
+export function distinctLostCount(lectureId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT browser_id) AS count FROM taps
+       WHERE lecture_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL`,
+    )
+    .get(lectureId) as { count: number };
+  return row.count;
+}
+
+export interface SlideResolvedCount {
+  deck: string | null;
+  slide: number;
+  // Distinct browsers whose tap on this slide hasn't had "I get it now".
+  stillLost: number;
+  // Distinct browsers who said "I get it now" on this slide.
+  resolved: number;
+}
+
+// Per (deck, slide): still lost against "I get it now". One counted tap
+// per browser per slide (legacy_duplicate = 0), so the two never overlap.
+export function slideResolvedCounts(lectureId: string): SlideResolvedCount[] {
+  return db
+    .prepare(
+      `SELECT deck, slide,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NULL THEN browser_id END) AS stillLost,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NOT NULL THEN browser_id END) AS resolved
+       FROM taps
+       WHERE lecture_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL AND legacy_duplicate = 0
+       GROUP BY deck, slide`,
+    )
+    .all(lectureId) as unknown as SlideResolvedCount[];
+}
+
+export interface ResolvedTotals {
+  // Counted taps (one per browser per slide) resolved / not resolved.
+  resolvedTaps: number;
+  stillLostTaps: number;
+  // Distinct browsers behind each, for the gate.
+  resolvedBrowsers: number;
+  stillLostBrowsers: number;
+}
+
+export function resolvedTotals(lectureId: string): ResolvedTotals {
+  return db
+    .prepare(
+      `SELECT COUNT(CASE WHEN resolved_at IS NOT NULL THEN 1 END) AS resolvedTaps,
+              COUNT(CASE WHEN resolved_at IS NULL THEN 1 END) AS stillLostTaps,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NOT NULL THEN browser_id END) AS resolvedBrowsers,
+              COUNT(DISTINCT CASE WHEN resolved_at IS NULL THEN browser_id END) AS stillLostBrowsers
+       FROM taps
+       WHERE lecture_id = ? AND slide IS NOT NULL AND browser_id IS NOT NULL AND legacy_duplicate = 0`,
+    )
+    .get(lectureId) as unknown as ResolvedTotals;
 }
 
 export interface ReasonCount {
