@@ -3,7 +3,8 @@ import { expect, inject, it } from "vitest";
 import { newBrowserCookie } from "./test-helpers.ts";
 
 // The page shell from the colour-and-layout prompt (docs/prompts/finish.md):
-// one header on every page, and three cards on the home page. Geometry (no overflow, the 2x2 grid, keyboard focus,
+// one header on every page, three cards on the home page, and the lecturer
+// page's layout slots. Geometry (no overflow, the 2x2 grid, keyboard focus,
 // contrast in light and dark) is checked in a real browser in
 // spec/browser.test.ts; this checks what the server renders.
 const baseUrl = inject("baseUrl");
@@ -49,6 +50,7 @@ it("every page has the header: the app name linking home, and the main nav in or
     ["/l/demo", undefined, 200],
     ["/l/demo/lecturer", undefined, 200],
     ["/l/demo/lecturer", lecturer, 200],
+    ["/l/demo/lecturer?projector=1", lecturer, 200],
   ];
   for (const [path, cookie, status] of pages) {
     const res = await get(path, cookie);
@@ -104,6 +106,67 @@ it("the home page has three cards: student, lecturer, how it works, each with a 
   // CLAUDE.md shows the demo's code on the demo's own pages only, and the
   // home page isn't one of them.
   expect(d.body.textContent).not.toMatch(/\bDEMO\b/);
+});
+
+it("the lecturer page has the layout slots: stat tiles, four empty graph slots, the live column and the activity log", async () => {
+  const d = doc((await get("/l/demo/lecturer", await demoLecturerCookie())).html);
+  expect(d.querySelectorAll(".stat-tiles .stat-tile").length).toBeGreaterThanOrEqual(3);
+  const slots = [
+    ["graph-lost", "Lost, per slide"],
+    ["graph-reasons", "What kind of lost"],
+    ["graph-helped", "What helped"],
+    ["graph-resolved", "Got it now"],
+  ];
+  for (const [id, heading] of slots) {
+    const slot = d.getElementById(id);
+    expect(slot, id).not.toBeNull();
+    expect(slot!.closest(".graph-grid"), id).not.toBeNull();
+    expect(slot!.querySelector("h2")!.textContent, id).toBe(heading);
+    expect(slot!.getAttribute("aria-labelledby"), id).toBe(slot!.querySelector("h2")!.id);
+    expect(slot!.querySelector(".slot-body"), id).not.toBeNull();
+  }
+  // Until the graphs arrive, the bars and reason tables sit in their slots;
+  // the other two slot bodies are empty, for the graph markup to fill.
+  expect(d.querySelector("#graph-lost #bars")).not.toBeNull();
+  expect(d.querySelector("#graph-reasons #reason-counts-container")).not.toBeNull();
+  expect(d.querySelector("#graph-helped .slot-body")!.innerHTML).toBe("");
+  expect(d.querySelector("#graph-resolved .slot-body")!.innerHTML).toBe("");
+
+  const log = d.getElementById("activity-log")!;
+  expect(log.tagName).toBe("SECTION");
+  expect(log.querySelector("h2")!.textContent).toBe("Activity");
+  expect(log.querySelector(".slot-body")!.innerHTML).toBe("");
+  // Full width: outside the two-column layout, after it.
+  expect(log.closest(".lecturer-layout")).toBeNull();
+  expect(d.querySelector(".lecturer-layout")!.compareDocumentPosition(log) & 4).toBe(4);
+
+  // Everything the page showed before is still here: the gauge, the slide
+  // label, the current slide's section and the other slides' notes.
+  for (const id of ["gauge", "gauge-words", "slide-label", "now", "now-bar", "other-notes", "connection-status"]) {
+    expect(d.getElementById(id), id).not.toBeNull();
+  }
+  expect(d.querySelector(".live-column #now")).not.toBeNull();
+  expect(d.querySelector(".live-column #other-notes")).not.toBeNull();
+});
+
+it("projector mode is server-rendered: ?projector=1 adds the class and its link turns it off", async () => {
+  const cookie = await demoLecturerCookie();
+  const off = doc((await get("/l/demo/lecturer", cookie)).html);
+  expect(off.querySelector("main")!.className).toBe("lecturer");
+  const offLink = off.getElementById("projector-link")!;
+  expect(offLink.tagName).toBe("A");
+  expect(offLink.getAttribute("href")).toBe("/l/demo/lecturer?projector=1");
+  expect(offLink.textContent).toBe("Projector mode");
+
+  const on = doc((await get("/l/demo/lecturer?projector=1", cookie)).html);
+  expect(on.querySelector("main")!.className).toBe("lecturer projector");
+  const onLink = on.getElementById("projector-link")!;
+  expect(onLink.getAttribute("href")).toBe("/l/demo/lecturer");
+  expect(onLink.textContent).toBe("Leave projector mode");
+
+  // Anything else is off.
+  const other = doc((await get("/l/demo/lecturer?projector=yes", cookie)).html);
+  expect(other.querySelector("main")!.className).toBe("lecturer");
 });
 
 it("the student slide card has the chip and the live marker together above the slide", async () => {

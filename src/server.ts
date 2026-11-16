@@ -1594,6 +1594,7 @@ function lecturerDashboard(
         notes: DashboardNote[];
       },
   minPresent: number,
+  projector = false,
 ): string {
   // Below min_present, the total isn't rendered at all — not blanked, not
   // an empty placeholder — so there's nothing in the markup for a curious
@@ -1613,35 +1614,81 @@ function lecturerDashboard(
       ? slideLabelHtml
       : `
     ${slideLabelHtml}
+    <div class="slide-controls">
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/prev" id="slide-prev-form">
       <button type="submit">Previous slide</button>
     </form>
     <form method="post" action="/l/${encodeURIComponent(id)}/lecturer/slide/next" id="slide-next-form">
       <button type="submit">Next slide</button>
-    </form>`;
+    </form>
+    </div>`;
 
   const nowKey: SlideKey = { deck: id === "demo" ? LIVE_DECK : null, slide: state.slide };
   const isNow = onSlide(nowKey);
+  const lecturerUrl = `/l/${encodeURIComponent(id)}/lecturer`;
+  // A plain link, so it works without JS: ?projector=1 is rendered with
+  // larger type by the server, and the same link without it turns it off.
+  const projectorLinkHtml = projector
+    ? `<a href="${lecturerUrl}" id="projector-link" class="pill-link">Leave projector mode</a>`
+    : `<a href="${lecturerUrl}?projector=1" id="projector-link" class="pill-link">Projector mode</a>`;
 
+  // The layout shell: stat tiles across the top; below them the live
+  // column (the current slide and its notes) and a 2x2 grid of graph
+  // slots; the activity log full width at the bottom. The live column
+  // comes first in the markup, so a phone and a screen reader reach the
+  // current slide before the history; style.css puts it on the right on a
+  // wide screen. The graph slots and the activity log are headings over an
+  // empty body (.slot-body) for the graphs to fill; until they do, the bars
+  // and reason tables sit in the matching slot.
   return `
     <div class="lecturer-head">
       <h1>Lecturer view</h1>
-${slideControlsHtml}
+      ${projectorLinkHtml}
     </div>
-    <div class="lecturer-layout">
-      <div class="now-panel">
+    <section class="stat-tiles" aria-label="Right now">
+      <div class="card stat-tile tile-gauge">
+        <h2 class="tile-label">Lost right now</h2>
         ${gaugeHtml(state, minPresent)}
         <p id="connection-status" aria-live="polite"></p>
-${tapCountHtml}
-        <section id="now" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
       </div>
-      <div class="all-panel">
-        <h2>Every slide so far</h2>
-        <div id="bars">${barsHtml(state.bars)}</div>
-        <div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div>
+      <div class="card stat-tile tile-taps">
+        <h2 class="tile-label">Taps this lecture</h2>
+        <p class="tile-wait">Shows once enough people are here</p>
+        <div id="tap-count-slot">${tapCountHtml}</div>
+      </div>
+      <div class="card stat-tile tile-slide">
+        <h2 class="tile-label">Live slide</h2>
+        ${slideControlsHtml}
+      </div>
+    </section>
+    <div class="lecturer-layout">
+      <div class="live-column">
+        <section id="now" class="card" aria-labelledby="now-heading">${nowSectionInnerHtml(id, nowKey, state.bars, state.reasonCounts, state.notes)}</section>
         <div id="other-notes">${notesHtml(id, state.notes.filter((n) => !isNow(n)))}</div>
       </div>
+      <div class="graph-grid">
+        <section id="graph-lost" class="card graph-slot" aria-labelledby="graph-lost-heading">
+          <h2 id="graph-lost-heading">Lost, per slide</h2>
+          <div class="slot-body"><div id="bars">${barsHtml(state.bars)}</div></div>
+        </section>
+        <section id="graph-reasons" class="card graph-slot" aria-labelledby="graph-reasons-heading">
+          <h2 id="graph-reasons-heading">What kind of lost</h2>
+          <div class="slot-body"><div id="reason-counts-container">${reasonCountsHtml(state.reasonCounts)}</div></div>
+        </section>
+        <section id="graph-helped" class="card graph-slot" aria-labelledby="graph-helped-heading">
+          <h2 id="graph-helped-heading">What helped</h2>
+          <div class="slot-body"></div>
+        </section>
+        <section id="graph-resolved" class="card graph-slot" aria-labelledby="graph-resolved-heading">
+          <h2 id="graph-resolved-heading">Got it now</h2>
+          <div class="slot-body"></div>
+        </section>
+      </div>
     </div>
+    <section id="activity-log" class="card" aria-labelledby="activity-log-heading">
+      <h2 id="activity-log-heading">Activity</h2>
+      <div class="slot-body"></div>
+    </section>
     <script>
       (function () {
         var minPresent = ${JSON.stringify(minPresent)};
@@ -1923,13 +1970,13 @@ ${SLIDE_NAME_CLIENT_JS}
           // aria-live node on an actual lost-count change or a shown
           // boundary crossing.
           renderGauge(state, minPresent);
-          var gauge = document.getElementById("gauge");
+          var tapCountSlot = document.getElementById("tap-count-slot");
           if (state.shown) {
             var tapCount = document.getElementById("tap-count");
             if (!tapCount) {
               tapCount = document.createElement("p");
               tapCount.id = "tap-count";
-              gauge.insertAdjacentElement("afterend", tapCount);
+              tapCountSlot.appendChild(tapCount);
             }
             setText(tapCount, "Total taps: " + state.totalTaps);
           } else {
@@ -1965,6 +2012,7 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
   if (!validateLecturerSession(id, req.headers.get("cookie"))) {
     return new Response(page("Lecturer view", lecturerLoginForm(id), undefined, navKey), { status: 200, headers });
   }
+  const projector = new URL(req.url).searchParams.get("projector") === "1";
 
   const state = computeLecturerState(id) ?? {
     present: 0,
@@ -1974,7 +2022,8 @@ async function handleLecturerGet(id: string, req: Request): Promise<Response> {
     reasonCounts: [] as DashboardReasonCount[],
     notes: [] as DashboardNote[],
   };
-  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present), "lecturer", navKey), {
+  const mainClass = projector ? "lecturer projector" : "lecturer";
+  return new Response(page("Lecturer view", lecturerDashboard(id, state, lecture.min_present, projector), mainClass, navKey), {
     status: 200,
     headers,
   });

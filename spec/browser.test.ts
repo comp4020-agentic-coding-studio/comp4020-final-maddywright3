@@ -15,7 +15,7 @@ const VIEWPORTS = [
   { name: "phone", width: 390, height: 844 },
   { name: "desktop", width: 1920, height: 1080 },
 ];
-const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/new", "/no-such-page"];
+const PAGES = ["/", "/readme/", "/l/demo", "/l/demo/lecturer", "/l/demo/lecturer?projector=1", "/new", "/no-such-page"];
 const COLOUR_SCHEMES = ["light", "dark"] as const;
 // The header's nav, in order, on every page.
 const NAV = [
@@ -198,6 +198,73 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       // Enter follows the focused link: the last one is How it works.
       await page.keyboard.press("Enter");
       await page.waitForURL(new URL("/readme/", baseUrl).toString());
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  it("projector mode turns on and off by its link, with and without JavaScript, and scales type 1.5x", async () => {
+    for (const javaScriptEnabled of [true, false]) {
+      const w = await openWatched(width, height, undefined, { javaScriptEnabled });
+      const { page } = w;
+      try {
+        await logInAsDemoLecturer(w.context);
+        await page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
+        const main = page.locator("main");
+        const fontSize = (): Promise<number> => main.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+        const normal = await fontSize();
+        expect(await main.getAttribute("class")).toBe("lecturer");
+
+        await page.locator("#projector-link").click();
+        await page.waitForURL(/\?projector=1$/);
+        expect(await main.getAttribute("class")).toBe("lecturer projector");
+        expect(await page.locator("#projector-link").textContent()).toBe("Leave projector mode");
+        expect(await fontSize()).toBeCloseTo(normal * 1.5, 0);
+        expect(await hasHorizontalScroll(page)).toBe(false);
+
+        await page.locator("#projector-link").click();
+        await page.waitForURL(/\/lecturer$/);
+        expect(await main.getAttribute("class")).toBe("lecturer");
+        expect(await page.locator("#projector-link").textContent()).toBe("Projector mode");
+        expect(await fontSize()).toBeCloseTo(normal, 1);
+        expect(w.problems).toEqual([]);
+      } finally {
+        await w.context.close();
+      }
+    }
+  }, 30_000);
+
+  it("the lecturer layout: tiles on top, 2x2 graph slots beside the live column, activity log under both", async () => {
+    const w = await openWatched(width, height);
+    const { page } = w;
+    try {
+      await logInAsDemoLecturer(w.context);
+      await page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
+      const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
+      const [tiles, lost, reasons, helped, resolved, now, log] = await Promise.all(
+        [".stat-tiles", "#graph-lost", "#graph-reasons", "#graph-helped", "#graph-resolved", "#now", "#activity-log"].map(box),
+      );
+      for (const b of [lost, reasons, helped, resolved, now]) expect(b.y).toBeGreaterThan(tiles.y + tiles.height - 1);
+      for (const b of [lost, reasons, helped, resolved, now]) expect(log.y).toBeGreaterThanOrEqual(b.y + b.height);
+      if (width >= 1200) {
+        // 2x2: lost beside reasons, helped beside resolved, one row down.
+        expect(Math.abs(lost.y - reasons.y)).toBeLessThan(1);
+        expect(reasons.x).toBeGreaterThan(lost.x);
+        expect(Math.abs(helped.x - lost.x)).toBeLessThan(1);
+        expect(helped.y).toBeGreaterThan(lost.y);
+        expect(Math.abs(resolved.x - reasons.x)).toBeLessThan(1);
+        // The live column is on the right; the log spans both.
+        expect(now.x).toBeGreaterThan(reasons.x + reasons.width - 1);
+        expect(log.width).toBeGreaterThan(now.x + now.width - lost.x - 2);
+        // About 1200px wide, at normal type.
+        expect(log.width).toBeLessThanOrEqual(1200);
+        expect(await page.locator("main").evaluate((el) => getComputedStyle(el).fontSize)).toBe("18px");
+      } else {
+        // One column: every block starts at the same left edge.
+        for (const b of [reasons, helped, resolved, now, log]) expect(Math.abs(b.x - lost.x)).toBeLessThan(1);
+      }
+      expect(await hasHorizontalScroll(page)).toBe(false);
       expect(w.problems).toEqual([]);
     } finally {
       await w.context.close();
