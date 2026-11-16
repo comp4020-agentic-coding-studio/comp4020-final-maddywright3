@@ -11,10 +11,16 @@ import {
   visibleNotesForSlide,
 } from "./db.ts";
 import type { HelpedCount, Lecture, YourSlide } from "./db.ts";
-import { clearDeckClock, currentSlideIndex, msUntilNextSlideChange, startDeckClock } from "./slides.ts";
+import {
+  clearDeckClock,
+  currentSlideIndex,
+  lectureElapsedMs,
+  liveWindowMs,
+  msUntilNextSlideChange,
+  startDeckClock,
+} from "./slides.ts";
 import type { DeckId } from "./slides.ts";
 
-export const LIVE_WINDOW_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 
 export interface Bar {
@@ -60,6 +66,7 @@ export type MeterState =
       shown: false;
       deck?: DeckId;
       slide: number;
+      lectureElapsedMs?: number;
       bars: Bar[];
       yourTapCount: number;
       youAreCounted: boolean;
@@ -71,6 +78,7 @@ export type MeterState =
       shown: true;
       deck?: DeckId;
       slide: number;
+      lectureElapsedMs?: number;
       bars: Bar[];
       live: number;
       totalTaps: number;
@@ -274,6 +282,7 @@ interface SharedMeterState {
   shown: boolean;
   deck?: DeckId;
   slide: number;
+  lectureElapsedMs?: number;
   bars: Bar[];
   topReason?: string;
   live?: number;
@@ -291,7 +300,7 @@ interface YourState {
 
 function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterState {
   const lectureId = lecture.id;
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const present = presentCount(lectureId);
   const shown = present >= lecture.min_present;
   const slide = deck !== null ? currentSlideIndex(lecture, deck) : currentSlideIndex(lecture);
@@ -303,6 +312,9 @@ function computeSharedState(lecture: Lecture, deck: DeckId | null): SharedMeterS
     shown,
     ...(deck !== null ? { deck } : {}),
     slide,
+    // Where the demo deck's condensed lecture clock is: ungated, like the
+    // slide itself, since it says nothing about anyone.
+    ...(deck !== null ? { lectureElapsedMs: lectureElapsedMs(lectureId, deck) } : {}),
     bars,
     since,
     ...(topReason !== undefined ? { topReason } : {}),
@@ -328,14 +340,16 @@ function yourStateFor(lectureId: string, browserId: string, since: string): Your
 function meterStateFor(shared: SharedMeterState, yours: YourState): MeterState {
   const deck = shared.deck !== undefined ? { deck: shared.deck } : {};
   const topReason = shared.topReason !== undefined ? { topReason: shared.topReason } : {};
+  const clock = shared.lectureElapsedMs !== undefined ? { lectureElapsedMs: shared.lectureElapsedMs } : {};
   if (!shared.shown) {
-    return { present: shared.present, shown: false, ...deck, slide: shared.slide, bars: shared.bars, ...yours, ...topReason };
+    return { present: shared.present, shown: false, ...deck, slide: shared.slide, ...clock, bars: shared.bars, ...yours, ...topReason };
   }
   return {
     present: shared.present,
     shown: true,
     ...deck,
     slide: shared.slide,
+    ...clock,
     bars: shared.bars,
     live: shared.live!,
     totalTaps: shared.totalTaps!,
@@ -363,7 +377,7 @@ export function computeLecturerState(lectureId: string): LecturerState | undefin
   const helpedCounts = gatedHelpedCounts(lectureId, lecture.min_present);
   const notes = gatedNotes(lectureId, lecture.min_present);
   if (!shown) return { present, shown, slide, bars, reasonCounts, helpedCounts, notes };
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - liveWindowMs(lectureId)).toISOString();
   const { count: live } = liveTapInfo(lectureId, since);
   return { present, shown, slide, bars, live, totalTaps: tapCount(lectureId), reasonCounts, helpedCounts, notes };
 }
@@ -481,9 +495,9 @@ function sendToLecturers(lectureId: string): void {
 
 export function scheduleFade(lectureId: string): void {
   if (fadeTimers.has(lectureId)) return;
-  const { earliest } = liveTapInfo(lectureId, new Date(Date.now() - LIVE_WINDOW_MS).toISOString());
+  const { earliest } = liveTapInfo(lectureId, new Date(Date.now() - liveWindowMs(lectureId)).toISOString());
   if (!earliest) return;
-  const fadesAt = new Date(earliest).getTime() + LIVE_WINDOW_MS;
+  const fadesAt = new Date(earliest).getTime() + liveWindowMs(lectureId);
   const delay = Math.max(0, fadesAt - Date.now());
   const timer = setTimeout(() => {
     fadeTimers.delete(lectureId);

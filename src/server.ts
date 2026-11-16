@@ -39,7 +39,6 @@ import { generateAccessCode, hashCode, verifyCode } from "./codes.ts";
 import { serializeCookie } from "./cookies.ts";
 import { logAction, who } from "./logging.ts";
 import {
-  LIVE_WINDOW_MS,
   addConnection,
   addLecturerConnection,
   broadcast,
@@ -59,7 +58,12 @@ import {
   DECK_SHORT_NAMES,
   DECK_TITLES,
   LIVE_DECK,
+  CONDENSED_FACTOR,
+  clockText,
   currentSlideIndex,
+  deckLengthMs,
+  lectureElapsedMs,
+  liveWindowMs,
   deckCreditHtml,
   deckSlideCount,
   deckSlides,
@@ -440,10 +444,28 @@ function slideNavHtml(lectureId: string, viewedDeck: DeckId, viewedSlide: number
   `;
 }
 
+// The demo's condensed clock (ADR 006): how far into the deck's 5 minutes
+// the shared clock is, and what that would be in the 60-minute lecture it
+// stands in for. The page script ticks both each second between frames.
+function lectureTimeText(deck: DeckId, elapsedMs: number): string {
+  return `Lecture time ${clockText(elapsedMs)} / ${clockText(deckLengthMs(deck))}`;
+}
+
+function condensedText(elapsedMs: number): string {
+  return `Condensed ${CONDENSED_FACTOR}x from a 60-minute lecture (real time ${clockText(elapsedMs * CONDENSED_FACTOR)})`;
+}
+
+function lectureTimeHtml(deck: DeckId, elapsedMs: number): string {
+  return `<div class="lecture-clock">
+          <p id="lecture-time">${lectureTimeText(deck, elapsedMs)}</p>
+          <p id="lecture-condensed">${condensedText(elapsedMs)}</p>
+        </div>`;
+}
+
 // Says whether this viewer is on the live slide, or where the lecture is if
 // they've browsed away. Rendered here so it's right without JS; the script
 // rewrites the same text on browsing and on every stream frame. Plain text,
-// not aria-live: the clock moves every 40s, and announcing that each time
+// not aria-live: the clock moves every few seconds, and announcing that each time
 // would chatter.
 function liveMarkerText(deck: DeckId, viewedSlide: number, liveSlide: number): string {
   return viewedSlide === liveSlide
@@ -686,6 +708,7 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
           ${slideNavHtml(id, viewedDeck, viewedSlide, liveSlide)}
         </div>
         ${id === "demo" ? `<p id="live-marker">${escapeHtml(liveMarkerText(viewedDeck, viewedSlide, liveSlide))}</p>` : ""}
+        ${id === "demo" ? lectureTimeHtml(viewedDeck, lectureElapsedMs(id, viewedDeck)) : ""}
         ${slideSectionHtml(id, viewedDeck, viewedSlide)}
       </div>
       <div class="gauge-panel">
@@ -718,6 +741,10 @@ async function handleLecture(id: string, req: Request): Promise<Response> {
         var deckSlideCounts = ${JSON.stringify(
           id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckSlideCount(d)])) : undefined,
         )};
+        var deckLengths = ${JSON.stringify(
+          id === "demo" ? Object.fromEntries(DECK_IDS.map((d) => [d, deckLengthMs(d)])) : undefined,
+        )};
+        var condensedFactor = ${JSON.stringify(CONDENSED_FACTOR)};
 ${GAUGE_CLIENT_JS}
 ${SLIDE_NAME_CLIENT_JS}
         var form = document.getElementById("tap-form");
@@ -1150,6 +1177,7 @@ ${SLIDE_NAME_CLIENT_JS}
           // deck this page has since switched away from.
           if (!state.deck || state.deck === viewedDeck) {
             liveSlide = state.slide;
+            if (typeof state.lectureElapsedMs === "number") syncLectureClock(state.lectureElapsedMs);
             if (landOnLive && isDemo) {
               landOnLive = false;
               showSlide(viewedDeck, liveSlide);
@@ -1249,6 +1277,31 @@ ${SLIDE_NAME_CLIENT_JS}
             (next || button).focus();
           }
         }
+
+        // The demo's condensed clock: re-synced from every frame, ticked
+        // locally each second in between, so it moves in every open page
+        // without a frame per second. Text only, no animation.
+        var lectureTimeEl = document.getElementById("lecture-time");
+        var condensedEl = document.getElementById("lecture-condensed");
+        var clockBase = null;
+        function clockText(ms) {
+          var total = Math.floor(ms / 1000);
+          var m = Math.floor(total / 60);
+          var sec = total % 60;
+          return m + ":" + (sec < 10 ? "0" : "") + sec;
+        }
+        function showLectureClock() {
+          if (!lectureTimeEl || !clockBase || !deckLengths) return;
+          var length = deckLengths[viewedDeck];
+          var elapsed = (clockBase.elapsed + (Date.now() - clockBase.at)) % length;
+          setText(lectureTimeEl, "Lecture time " + clockText(elapsed) + " / " + clockText(length));
+          setText(condensedEl, "Condensed " + condensedFactor + "x from a 60-minute lecture (real time " + clockText(elapsed * condensedFactor) + ")");
+        }
+        function syncLectureClock(elapsed) {
+          clockBase = { elapsed: elapsed, at: Date.now() };
+          showLectureClock();
+        }
+        if (lectureTimeEl) setInterval(showLectureClock, 1000);
 
         var source = null;
         function connect() {
@@ -1427,7 +1480,7 @@ async function handleReason(id: string, req: Request): Promise<Response> {
   // Answers lock once sent (ADR 006): a slide whose tap already has a
   // reason, or has no live tap to put one on, refuses the request. setTapReason's
   // own "reason IS NULL" holds this even for two requests at once.
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
   const tap = liveTapOn(id, browserId, since, slideRef);
   if (tap === undefined || !setTapReason(tap.id, reason)) {
     logAction("reason_refused", id, browserId);
@@ -1523,7 +1576,7 @@ async function handleResolve(id: string, req: Request): Promise<Response> {
     });
   }
 
-  const since = new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - liveWindowMs(id)).toISOString();
   const tap = liveTapOn(id, browserId, since, slideRef);
   if (tap !== undefined && resolveTap(tap.id)) {
     logAction("tap_resolved", id, browserId);

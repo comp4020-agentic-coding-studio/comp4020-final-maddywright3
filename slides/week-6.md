@@ -5,6 +5,7 @@ Cite as: Swift, B. (2026). _COMP4020/COMP8020 Agentic Coding Studio_ [Course mat
 
 ---
 
+<!-- duration: 22 -->
 ## continuous integration
 
 a series of checks that runs on every push, on a machine that isn't yours
@@ -14,14 +15,17 @@ repo; the idea is [decades older](https://comp.anu.edu.au/courses/comp4020-agent
 
 ---
 
+<!-- duration: 10 -->
 ## one push, one run
 
 ---
 
+<!-- duration: 10 -->
 # which box does what?
 
 ---
 
+<!-- duration: 32 -->
 ## the same checks at two distances
 
 **local**: `pnpm check` in seconds, while the agent still holds the context that
@@ -34,6 +38,7 @@ if CI gives different results to local dev, then...
 
 ---
 
+<!-- duration: 30 -->
 ## runner-only failures
 
 ```text
@@ -50,6 +55,7 @@ failed
 
 ---
 
+<!-- duration: 42 -->
 ## reading a red run
 
 ```text
@@ -69,6 +75,7 @@ October; trimmed)
 
 ---
 
+<!-- duration: 31 -->
 ## always-red checks
 
 week 3's fourth property was **trustworthy**: you learn to scroll past a check
@@ -80,6 +87,7 @@ rate limiter or outage would turn every build red (see the comment in
 
 ---
 
+<!-- duration: 33 -->
 ## green when the sweep runs
 
 [the crit sweep](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/studio-crit-model/#in-crit-prototype-marks) starts
@@ -95,6 +103,7 @@ finishes
 
 ---
 
+<!-- duration: 90 -->
 ## One push, one GitHub Actions run
 
 <div class="diagram-actions-run">
