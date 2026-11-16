@@ -1,4 +1,23 @@
 
+## Summary
+
+| Source | Findings | Where they landed |
+|---|---|---|
+| Subagent review of the plan, before any code | 4 | The plan: re-tapping after "I get it now", the retired timeline test, reasons gated per slide and reason, the shared top reason |
+| My review of the harness | 1 | [`0c25fd6`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/0c25fd6), one privacy rule instead of two |
+| Hand checks, Phases 1 to 5 | 5 | The timeline, the lecturer link, the flow after "I get it now", locked answers, the dashboard |
+| Stranger test | 1 | The timeline and condensed timing (ADR 006) |
+| Mock lecture | 1 | One "I'm lost" per slide, held by a unique index |
+| Browser tests in Chromium | 2 | [`dc66e58`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/dc66e58) focus, [`6a731b0`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/6a731b0) overflow |
+| Restyling | 1 | [`f2872ad`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/f2872ad), the nested form |
+| Diagnosis of the blank lecturer view | 2 | Threshold messages, and [`77b741c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/77b741c) then [`e0b6a72`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/e0b6a72) for the no-JS slide bug |
+| Load tests | 2 | ADR 005 and [`10a14f9`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/10a14f9) for bursts, [`57955ae`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/57955ae) for the script's own timing |
+| Re-reading my sources | 1 | README and PROCESS.md now quote Caldwell accurately |
+| Pasted notes | 1 | [`6dd4b20`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/6dd4b20), no emoji |
+| Agent overreach | 1 | [`ae9e31d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/ae9e31d), one approval means one run |
+
+Each entry below says what was found, how, and where the fix went.
+
 ## Before Phase 1: two design changes
 
 *Real slides.* The plan had a deck written for the demo. I switched to a run of slides from the course's own Week 4 lecture, copied in under its CC BY-NC-SA licence, so the demo has something real to be lost in. Students get arrows to go back to the slide where they lost the thread.
