@@ -59,7 +59,7 @@ it("every page has the header: the app name linking home, and the main nav in or
     const headers = d.querySelectorAll("body > header");
     expect(headers.length, path).toBe(1);
     const name = headers[0].querySelector("a.site-name")!;
-    expect(name.textContent, path).toBe("Confusion meter");
+    expect(name.textContent, path).toBe("Hands Down");
     expect(name.getAttribute("href"), path).toBe("/");
     const nav = headers[0].querySelectorAll('nav[aria-label="Main"]');
     expect(nav.length, path).toBe(1);

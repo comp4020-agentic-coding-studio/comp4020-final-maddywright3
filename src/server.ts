@@ -128,7 +128,7 @@ function siteHeaderHtml(current?: NavKey): string {
   return `<a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
 <div class="site-header-inner">
-<a class="site-name" href="/">Confusion meter</a>
+<a class="site-name" href="/">Hands Down</a>
 <nav class="site-nav" aria-label="Main">
 <ul>
 ${links}
@@ -246,8 +246,8 @@ function safeDecode(value: string): string | undefined {
 // the demo's lecturer view, which is where the code is asked for.
 async function handleHome(): Promise<Response> {
   const body = `
-    <h1>Confusion meter</h1>
-    <p class="lede">A button for the moment you stop following a lecture. Nobody sees who pressed it.</p>
+    <h1>Hands Down</h1>
+    <p class="lede">The hand you didn't put up, counted. Tap when you stop following a lecture: nobody sees who, everybody sees how many.</p>
     <ul class="home-cards">
       <li class="card home-card" id="home-student">
         <h2>I'm a student</h2>
@@ -266,7 +266,7 @@ async function handleHome(): Promise<Response> {
       </li>
     </ul>
   `;
-  return new Response(page("Confusion meter", body, "home", "home"), {
+  return new Response(page("Hands Down", body, "home", "home"), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });

@@ -195,7 +195,7 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
       await page.goto(new URL("/readme/", baseUrl).toString());
       // Skip link, then the app name (home), then the nav in order.
       await tabTo(page, (f) => f.tag === "A" && f.text === "Skip to content", 1);
-      await tabTo(page, (f) => f.tag === "A" && f.text === "Confusion meter" && f.href === "/", 1);
+      await tabTo(page, (f) => f.tag === "A" && f.text === "Hands Down" && f.href === "/", 1);
       for (const link of NAV) {
         await tabTo(page, (f) => f.tag === "A" && f.text === link.text && f.href === link.href, 1);
         // Every nav link is on screen when it has focus: none is clipped
