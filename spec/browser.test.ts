@@ -248,18 +248,21 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
     }
   }, 30_000);
 
-  it("the lecturer layout: tiles on top, 2x2 graph slots beside the live column, activity log under both", async () => {
+  it("the lecturer layout: the live slide group, then tiles, 2x2 graph slots beside the notes column, activity log under both", async () => {
     const w = await openWatched(width, height);
     const { page } = w;
     try {
       await logInAsDemoLecturer(w.context);
       await page.goto(new URL("/l/demo/lecturer", baseUrl).toString());
       const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
-      const [tiles, lost, reasons, helped, resolved, now, log] = await Promise.all(
-        [".stat-tiles", "#graph-lost", "#graph-reasons", "#graph-helped", "#graph-resolved", "#now", "#activity-log"].map(box),
+      const [liveNow, live, tiles, lost, reasons, helped, resolved, notes, log] = await Promise.all(
+        ["#live-now", "#live-group", ".stat-tiles", "#graph-lost", "#graph-reasons", "#graph-helped", "#graph-resolved", "#notes", "#activity-log"].map(box),
       );
-      for (const b of [lost, reasons, helped, resolved, now]) expect(b.y).toBeGreaterThan(tiles.y + tiles.height - 1);
-      for (const b of [lost, reasons, helped, resolved, now]) expect(log.y).toBeGreaterThanOrEqual(b.y + b.height);
+      // Live now at the top, then the live slide group, then the whole lecture.
+      expect(live.y).toBeGreaterThan(liveNow.y + liveNow.height - 1);
+      expect(tiles.y).toBeGreaterThan(live.y + live.height - 1);
+      for (const b of [lost, reasons, helped, resolved, notes]) expect(b.y).toBeGreaterThan(tiles.y + tiles.height - 1);
+      for (const b of [lost, reasons, helped, resolved, notes]) expect(log.y).toBeGreaterThanOrEqual(b.y + b.height);
       if (width >= 1200) {
         // 2x2: lost beside reasons, helped beside resolved, one row down.
         expect(Math.abs(lost.y - reasons.y)).toBeLessThan(1);
@@ -267,17 +270,49 @@ describe.each(VIEWPORTS)("at $width x $height", ({ width, height }) => {
         expect(Math.abs(helped.x - lost.x)).toBeLessThan(1);
         expect(helped.y).toBeGreaterThan(lost.y);
         expect(Math.abs(resolved.x - reasons.x)).toBeLessThan(1);
-        // The live column is on the right; the log spans both.
-        expect(now.x).toBeGreaterThan(reasons.x + reasons.width - 1);
-        expect(log.width).toBeGreaterThan(now.x + now.width - lost.x - 2);
+        // The notes column is on the right; the log spans both.
+        expect(notes.x).toBeGreaterThan(reasons.x + reasons.width - 1);
+        expect(log.width).toBeGreaterThan(notes.x + notes.width - lost.x - 2);
         // About 1200px wide, at normal type.
         expect(log.width).toBeLessThanOrEqual(1200);
         expect(await page.locator("main").evaluate((el) => getComputedStyle(el).fontSize)).toBe("18px");
       } else {
         // One column: every block starts at the same left edge.
-        for (const b of [reasons, helped, resolved, now, log]) expect(Math.abs(b.x - lost.x)).toBeLessThan(1);
+        for (const b of [reasons, helped, resolved, notes, log]) expect(Math.abs(b.x - lost.x)).toBeLessThan(1);
       }
       expect(await hasHorizontalScroll(page)).toBe(false);
+      expect(w.problems).toEqual([]);
+    } finally {
+      await w.context.close();
+    }
+  }, 30_000);
+
+  // A created lecture's lecturer view: Live now, the runs box with an
+  // earlier run, both groups and a ranking with entries, in light and dark,
+  // and its earlier run's read-only view.
+  it.each(COLOUR_SCHEMES)("a created lecture's lecturer view with two runs, %s: no axe violations, no horizontal scroll", async (colorScheme) => {
+    const w = await openWatched(width, height, undefined, { colorScheme });
+    try {
+      const request = w.context.request;
+      const created = await (await request.post(new URL("/new", baseUrl).toString(), { form: { title: "Runs and ranking" } })).text();
+      const lectureId = created.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)![1];
+      const code = created.match(/<strong>([A-Z0-9]+)<\/strong>/)![1];
+      await request.post(new URL(`/l/${lectureId}/lecturer`, baseUrl).toString(), { form: { code }, maxRedirects: 0 });
+      // Five people lost in run 1, then a fresh run, so the ranking has an entry.
+      for (let i = 0; i < 5; i++) {
+        const student = await browser.newContext();
+        await student.request.get(new URL(`/l/${lectureId}`, baseUrl).toString());
+        await student.request.post(new URL(`/l/${lectureId}/tap`, baseUrl).toString(), { form: { slide: "1" }, maxRedirects: 0 });
+        await student.close();
+      }
+      await request.post(new URL(`/l/${lectureId}/lecturer/runs`, baseUrl).toString(), { form: { run: "1" }, maxRedirects: 0 });
+      for (const path of [`/l/${lectureId}/lecturer`, `/l/${lectureId}/lecturer?run=1`]) {
+        await w.page.goto(new URL(path, baseUrl).toString());
+        await w.page.waitForLoadState("networkidle").catch(() => {});
+        expect(await w.page.locator("#ranking-list li").count(), path).toBe(1);
+        expect(await axeViolations(w.page), path).toEqual([]);
+        expect(await hasHorizontalScroll(w.page), path).toBe(false);
+      }
       expect(w.problems).toEqual([]);
     } finally {
       await w.context.close();
