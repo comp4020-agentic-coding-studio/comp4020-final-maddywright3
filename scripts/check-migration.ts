@@ -64,6 +64,15 @@ function buildPreMigrationCopy(): void {
   // Pre-C10 rows: no browser, no slide. Can't collide, must be left alone.
   tap.run("demo", at(0.5), null, null, null, null, null);
   tap.run("demo", at(0.6), null, null, null, null, null);
+  // Notes from before runs (ADR 006), one hidden, and a created lecture
+  // left on slide 4 by its lecturer.
+  const note = db.prepare(
+    "INSERT INTO notes (lecture_id, deck, slide, browser_id, text, created_at, hidden_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  note.run("demo", "week-4", 3, "a".repeat(32), "first note", at(1), null);
+  note.run("demo", "week-4", 3, "b".repeat(32), "second note", at(2), at(2.5));
+  note.run("abcd1234", "", 1, "c".repeat(32), "created note", at(1), null);
+  db.prepare("UPDATE lectures SET current_slide = 4 WHERE id = 'abcd1234'").run();
   db.close();
 }
 
@@ -161,6 +170,28 @@ try {
     counted.filter((r) => r.lecture_id === "abcd1234").every((r) => r.deck === null),
   );
   check("pre-C10 rows untouched", counted.filter((r) => r.who === null).every((r) => r.legacy_duplicate === 0));
+
+  // Runs (ADR 006): every tap and note is in run 1, the notes kept their
+  // ids, text and hidden state, and each lecture has one run, on the slide
+  // the lecture was on.
+  check("every tap is in run 1", counted.length > 0 && (db.prepare("SELECT COUNT(*) AS n FROM taps WHERE run_id <> 1").get() as { n: number }).n === 0);
+  const notes = db.prepare("SELECT id, lecture_id, text, hidden_at IS NOT NULL AS hidden, run_id FROM notes ORDER BY id").all() as {
+    id: number; lecture_id: string; text: string; hidden: number; run_id: number;
+  }[];
+  check(
+    "every note kept, in run 1",
+    JSON.stringify(notes.map((n) => [n.id, n.text, n.hidden, n.run_id])) ===
+      JSON.stringify([[1, "first note", 0, 1], [2, "second note", 1, 1], [3, "created note", 0, 1]]),
+    JSON.stringify(notes),
+  );
+  const runs = db.prepare("SELECT lecture_id, number, current_slide FROM runs ORDER BY lecture_id").all() as {
+    lecture_id: string; number: number; current_slide: number;
+  }[];
+  check(
+    "one run 1 per lecture, on the lecture's slide",
+    JSON.stringify(runs.map((r) => [r.lecture_id, r.number, r.current_slide])) === JSON.stringify([["abcd1234", 1, 4], ["demo", 1, 1]]),
+    JSON.stringify(runs),
+  );
   db.close();
 
   // The index holds: a duplicate insert, including a NULL deck, is refused.
