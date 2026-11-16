@@ -51,7 +51,7 @@ export class App {
     });
     const html = await res.text();
     if (res.status !== 200) throw new Error(`/new -> ${res.status}`);
-    const id = html.match(/\/l\/([a-f0-9]+)/)?.[1];
+    const id = html.match(/Student link: <a href="\/l\/([a-f0-9]+)"/)?.[1];
     const code = html.match(/<strong>([A-Z0-9]+)<\/strong>/)?.[1];
     if (!id || !code) throw new Error("couldn't read the new lecture's id and code");
 
