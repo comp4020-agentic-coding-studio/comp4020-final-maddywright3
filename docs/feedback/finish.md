@@ -82,3 +82,25 @@ The script had a bug of its own at first. Every stream reported the same time, b
 ## CI
 
 The last push ([`df9276f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/df9276f)) passed every check and deployed. It predates the Chromium step and the browser tests ([`09125e3`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/09125e3), [`6681449`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/6681449)), whose first CI run is the next push.
+
+## Agent reports I didn't take at their word
+
+An agent saying something is done isn't evidence that it is. In each case I asked for the artefact behind the claim:
+
+- *"The colour agent has finished."* It hadn't. It had just stopped committing for a while. Checking its branch for uncommitted work and new commits showed it was still running, and the report was corrected.
+- *"The load test is done."* It was, nine times, when I'd approved one run. The report admitted it, and the rule is now in CLAUDE.md ([`ae9e31d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-maddywright3/commit/ae9e31d)).
+- *"The lecturer view works."* I asked for the payload the lecturer stream actually sent. That showed the data was there once two people tapped the same slide, and that the page gave no reason when it wasn't.
+- *"The persistence check works."* Only after it caught a snapshot I'd deliberately damaged.
+
+What I ask for each time is something I can check myself: a CI run, a commit hash, a response body, a screenshot, or a test that fails with the old code put back.
+
+## Limits I accepted
+
+These are known and written down, not missed:
+
+- *A private window is a second person.* One person can tap twice with two browsers. Stopping it would need accounts or IP limits, and both break the README's idea (ADR 003).
+- *A power cut can lose the last second of taps.* That's the cost of WAL with synchronous=NORMAL, which made bursts fast enough (ADR 005). An app crash loses nothing.
+- *A small class never clears the threshold.* With fewer than five people on a slide, the lecturer sees nothing about it. That's the price of nobody being singled out.
+- *Notes can still be recognised.* A lecturer who knows a student's writing might guess a note's author. Batching makes it harder, not impossible.
+- *Batching delays the first notes.* A lecturer can't react to a note until enough people have written one on that slide.
+- *Real lectures depend on the lecturer pressing Next.* If they forget, taps land on the wrong slide.
